@@ -260,13 +260,13 @@ export default function Dashboard() {
             </p>
             <p className="mt-1 font-display text-xl font-bold tabular-nums">
               {target.googleReview.currentMonth}
-              <span className="text-sm text-positive">
-                {" "}
-                +{target.googleReview.difference}
-              </span>
             </p>
             <p className="font-mono text-[10px] text-muted-foreground">
-              prev {target.googleReview.previousMonth}
+              prev {target.googleReview.previousMonth} ·{" "}
+              <span className={target.googleReview.difference >= 0 ? "text-positive" : "text-negative"}>
+                {target.googleReview.difference >= 0 ? "+" : ""}
+                {target.googleReview.difference}
+              </span>
             </p>
           </Panel>
         </motion.div>
@@ -300,7 +300,7 @@ export default function Dashboard() {
         <Section
           id="amc-bundle"
           title="AMC & Bundle Incentive Plan"
-          subtitle="Achieved count vs remaining count to close the next slab"
+          subtitle="Every salesperson’s achieved count and how many more are needed to close the next slab"
           right={
             <span className="font-mono text-[11px] text-muted-foreground">
               slabs from target!F17:K23 · M18:P21
@@ -313,7 +313,7 @@ export default function Dashboard() {
         <Section
           id="kpi"
           title="Store KPI — Target vs Achievement"
-          subtitle="Target, achievement, balance, achieved value & achieved GP per KPI criterion"
+          subtitle="Target, achievement, balance, achieved value & achieved GP per KPI criterion, with the salesperson split and daily ideas"
           right={
             <span className="font-mono text-[11px] text-muted-foreground">
               grid from target!A9:M13

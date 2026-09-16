@@ -21,6 +21,8 @@ export interface DayRow {
   dateKey: string;
   weekday: string;
   holiday: boolean;
+  /** Rows in the CRM sheet with no InvoiceDate (cannot be placed on a day) */
+  undated: boolean;
   uniqueInvoices: number;
   serviceRevenue: number;
   accessoryRevenue: number;
@@ -37,6 +39,8 @@ export interface DayRow {
 export interface StoreMetrics {
   daysElapsed: number;
   daysRemaining: number;
+  /** Working (non-holiday) days left in the month, including the current day */
+  remainingWorkingDays: number;
   monthProgressLabel: string;
   totalInvoices: number;
   uniqueInvoices: number;
@@ -62,11 +66,19 @@ export interface AmcRow {
   key: string;
   name: string;
   amcCount: number;
+  /** Slab the count currently falls in (its rate may be Nil) */
+  amcSlab: AmcSlab | null;
+  /** Next incentivised slab to push for */
   amcNextSlab: AmcSlab | null;
+  /** Count still required to reach the next slab */
   amcRemaining: number;
+  /** Incentive earned on the current slab */
+  amcEligible: number;
   accessoryCount: number;
+  accessorySlab: AmcSlab | null;
   accessoryNextSlab: AmcSlab | null;
   accessoryRemaining: number;
+  accessoryEligible: number;
   projectedIncentive: number;
 }
 
@@ -74,7 +86,10 @@ export interface BundleRow {
   key: string;
   name: string;
   count: number;
+  /** Slab the count currently falls in */
+  slab: BundleSlab | null;
   nextSlab: BundleSlab | null;
+  /** Count still required to reach the next slab */
   remaining: number;
   projectedIncentive: number;
 }
@@ -85,8 +100,30 @@ export interface KpiRow extends KpiTarget {
   achievedValue: number;
   achievedGp: number;
   pct: number;
+  /** Unique-invoice achievement for the criterion, per salesperson */
+  byPerson: Record<string, number>;
   /** Extra breakdown rows, e.g. SRD/SHC/ARD code chips or product mix */
   sub?: Array<{ label: string; count: number; value: number; gp: number }>;
+}
+
+/** "Daily target achievement idea" — how many units/day are needed to close a KPI gap. */
+export interface KpiIdea {
+  code: string;
+  label: string;
+  category: KpiTarget["category"];
+  target: number;
+  achieved: number;
+  balance: number;
+  perDay: number;
+  hint: string;
+}
+
+export interface RevenueTypeStat {
+  key: string;
+  label: string;
+  revenue: number;
+  gp: number;
+  uniqueInvoices: number;
 }
 
 export interface KpiSnapshot {
@@ -95,6 +132,8 @@ export interface KpiSnapshot {
   sr: KpiRow[];
   googleReview: { previousMonth: number; currentMonth: number; difference: number };
   threePP: { achieved: number; target: number };
+  /** Units/day required per criterion to close the month's gap */
+  dailyIdeas: KpiIdea[];
 }
 
 export interface BundleOpportunity {
@@ -112,6 +151,8 @@ export interface DashboardData {
   days: DayRow[];
   activeDays: number;
   store: StoreMetrics;
+  /** Total + unique invoice split per revenue type */
+  revenueTypes: RevenueTypeStat[];
   salespeople: SalespersonRow[];
   amc: AmcRow[];
   bundle: BundleRow[];
@@ -173,6 +214,7 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
         dateKey,
         weekday,
         holiday: !isWorkingDay(day),
+        undated: day <= 0,
         uniqueInvoices: 0,
         serviceRevenue: 0,
         accessoryRevenue: 0,
@@ -270,7 +312,10 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
     }
   }
 
-  const days = Array.from(dayMap.values()).sort((a, b) => a.day - b.day);
+  // Undated rows (blank InvoiceDate) are listed last instead of leading as "day 0".
+  const days = Array.from(dayMap.values()).sort(
+    (a, b) => (a.undated ? 99 : a.day) - (b.undated ? 99 : b.day),
+  );
 
   // ----- store-level revenue rollups -----
   const sum = (f: (r: CrmRow) => number, filter?: (r: CrmRow) => boolean) =>
@@ -305,6 +350,7 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
   const store: StoreMetrics = {
     daysElapsed,
     daysRemaining,
+    remainingWorkingDays: remainingWorkingToday,
     monthProgressLabel: `${daysElapsed} of ${WORKING_DAYS_PER_MONTH} days`,
     totalInvoices: crmRows.length,
     uniqueInvoices: invoiceSet.size,
@@ -314,6 +360,33 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
     repair: bucket(target.store.repair, sStore.repair, activeDays, remainingWorkingAfter),
     grossProfit: bucket(target.store.grossProfit, sStore.grossProfit, activeDays, remainingWorkingAfter),
   };
+
+  // ----- revenue type totals & unique invoice counts -----
+  const revenueTypes: RevenueTypeStat[] = (
+    [
+      ["service", "Service Revenue"],
+      ["accessory", "Accessories Revenue"],
+      ["repair", "Repair Revenue"],
+    ] as const
+  ).map(([key, label]) => {
+    const set = new Set<string>();
+    let revenue = 0;
+    let gp = 0;
+    for (const r of crmRows) {
+      if (r.netAmount < 0) continue;
+      if (revenueTypeKey(r.revenueType) !== key) continue;
+      set.add(r.invoiceCode);
+      revenue += r.netAmount;
+      gp += r.grossProfit;
+    }
+    return {
+      key,
+      label,
+      revenue: Math.round(revenue),
+      gp: Math.round(gp),
+      uniqueInvoices: set.size,
+    };
+  });
 
   // ----- salesperson revenue & incentive -----
   const salespeople: SalespersonRow[] = PEOPLE_KEYS.map((key) => {
@@ -382,49 +455,69 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
     }
   }
 
+  // Accessory-AMC tiers are keyed on their accessory count threshold; the
+  // best-paying tier the count qualifies for wins.
+  const accTiers = target.amcSlabs.filter(
+    (s) => (s.accCount ?? 0) > 0 && (s.accRate ?? 0) > 0,
+  );
+  const accPayout = (t: AmcSlab, count: number) =>
+    count * (t.accRate ?? 0) + (t.accFixed ?? 0);
+
   const amc: AmcRow[] = PEOPLE_KEYS.map((key) => {
     const amcCount = amcByPerson.get(key)?.size ?? 0;
     const accessoryCount = accAmcByPerson.get(key)?.size ?? 0;
-    const amcNext =
-      target.amcSlabs.find((s) => amcCount >= s.min && amcCount <= s.max) ??
-      (amcCount > 0
-        ? target.amcSlabs.filter((s) => amcCount > s.min).slice(-1)[0] ?? null
-        : null);
-    const accNext =
-      target.amcSlabs
-        .filter((s) => (s.accCount ?? 0) > 0 && accessoryCount >= (s.accCount ?? Infinity))
-        .slice(-1)[0] ?? null;
-    const svcIncentive = amcNext ? amcCount * amcNext.rate + amcNext.fixed : 0;
-    const accIncentive = accNext
-      ? accessoryCount * (accNext.accRate ?? 0) + (accNext.accFixed ?? 0)
+    const slabs = target.amcSlabs;
+    const amcSlab = slabs.filter((s) => amcCount >= s.min).slice(-1)[0] ?? null;
+    const amcNextSlab =
+      slabs.filter((s) => s.min > amcCount && s.rate > 0).sort((a, b) => a.min - b.min)[0] ??
+      null;
+    const amcEligible = amcSlab ? amcCount * amcSlab.rate + amcSlab.fixed : 0;
+    const amcRemaining = amcNextSlab ? Math.max(0, amcNextSlab.min - amcCount) : 0;
+
+    const accSlab =
+      accTiers
+        .filter((t) => accessoryCount >= (t.accCount ?? 0))
+        .sort((a, b) => accPayout(b, accessoryCount) - accPayout(a, accessoryCount))[0] ?? null;
+    const accNextSlab =
+      accTiers
+        .filter((t) => (t.accCount ?? 0) > accessoryCount)
+        .sort((a, b) => (a.accCount ?? 0) - (b.accCount ?? 0))[0] ?? null;
+    const accEligible = accSlab ? accPayout(accSlab, accessoryCount) : 0;
+    const accRemaining = accNextSlab
+      ? Math.max(0, (accNextSlab.accCount ?? 0) - accessoryCount)
       : 0;
-    const amcRemaining = amcNext ? Math.max(0, amcNext.max - amcCount) : 0;
-    const accRemaining = accNext ? Math.max(0, (accNext.accCount ?? 0) - accessoryCount) : 0;
+
     return {
       key,
       name: key.charAt(0) + key.slice(1).toLowerCase(),
       amcCount,
-      amcNextSlab: amcNext,
+      amcSlab,
+      amcNextSlab,
       amcRemaining,
+      amcEligible,
       accessoryCount,
-      accessoryNextSlab: accNext,
+      accessorySlab: accSlab,
+      accessoryNextSlab: accNextSlab,
       accessoryRemaining: accRemaining,
-      projectedIncentive: svcIncentive + accIncentive,
+      accessoryEligible: accEligible,
+      projectedIncentive: amcEligible + accEligible,
     };
   });
 
   const bundle: BundleRow[] = PEOPLE_KEYS.map((key) => {
     const count = bundleByPerson.get(key)?.size ?? 0;
-    const next = [...target.bundleSlabs].reverse().find((s) => count >= s.min) ?? null;
-    const lower = target.bundleSlabs.filter((s) => count < s.min).sort((a, b) => a.min - b.min)[0] ?? null;
-    const incentive = next ? count * next.perBundle : 0;
+    const slabs = target.bundleSlabs;
+    const slab = slabs.filter((s) => count >= s.min).slice(-1)[0] ?? null;
+    const nextSlab =
+      slabs.filter((s) => s.min > count).sort((a, b) => a.min - b.min)[0] ?? null;
     return {
       key,
       name: key.charAt(0) + key.slice(1).toLowerCase(),
       count,
-      nextSlab: lower ?? next,
-      remaining: lower ? Math.max(0, lower.min - count) : 0,
-      projectedIncentive: incentive,
+      slab,
+      nextSlab,
+      remaining: nextSlab ? Math.max(0, nextSlab.min - count) : 0,
+      projectedIncentive: slab ? count * slab.perBundle : 0,
     };
   });
 
@@ -446,7 +539,7 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
   bundleOpportunities.sort((a, b) => a.dayKey.localeCompare(b.dayKey));
 
   // ----- KPI computations -----
-  const kpi = computeKpis(crmRows, target, invoiceSet);
+  const kpi = computeKpis(crmRows, target, invoiceSet, remainingWorkingToday);
 
   return {
     crmRows,
@@ -454,6 +547,7 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
     days,
     activeDays,
     store,
+    revenueTypes,
     salespeople,
     amc,
     bundle,
@@ -470,7 +564,28 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
 const itemCodeUp = (r: CrmRow) => r.itemCode.toUpperCase();
 const descUp = (r: CrmRow) => r.itemDescription.toUpperCase();
 
-export function computeKpis(crmRows: CrmRow[], target: TargetSheet, invoiceSet: Set<string>): KpiSnapshot {
+/** Short, actionable line per KPI shown in the daily-ideas panel. */
+const KPI_HINTS: Record<string, string> = {
+  CAREPLUS: "Pitch Care+ at every service check-in",
+  PROTECTPLUS: "Bundle Protect+ with device sales",
+  AMC: "Convert repair walk-ins into AMC plans",
+  BUNDLE: "Attach DISC bundle schemes to accessory bills",
+  DISPLAY: "Quote display replacement on cracked iPhones",
+  BATTERY: "Run a battery-health check on every iPhone service",
+  GLASS: "Upsell glass protection on iPhone repairs",
+  OTHERS: "Log repair revenue lines that use non-ACSH part codes",
+  SRD: "Close standard diagnosis jobs (SRD codes)",
+  SHC: "Push standard hardware-care jobs (SHC codes)",
+  ARD: "Move complex repairs onto ARD codes",
+};
+
+export function computeKpis(
+  crmRows: CrmRow[],
+  target: TargetSheet,
+  invoiceSet: Set<string>,
+  remainingWorkingDays: number,
+): KpiSnapshot {
+  void invoiceSet;
   const kpiByKey = new Map<string, KpiTarget>();
   for (const k of target.kpis) kpiByKey.set(k.code, k);
 
@@ -483,6 +598,13 @@ export function computeKpis(crmRows: CrmRow[], target: TargetSheet, invoiceSet: 
     approxAmount: kpiByKey.get(code)?.approxAmount ?? 0,
   });
 
+  // Salesperson attribution for KPI counts (first salesperson seen per invoice).
+  const invoicePerson = new Map<string, string>();
+  for (const r of crmRows) {
+    const pk = normalizePerson(r.salesPerson);
+    if (pk && !invoicePerson.has(r.invoiceCode)) invoicePerson.set(r.invoiceCode, pk);
+  }
+
   const mkRow = (k: KpiTarget, invoices: Set<string>): KpiRow => {
     let achievedValue = 0;
     let achievedGp = 0;
@@ -493,6 +615,11 @@ export function computeKpis(crmRows: CrmRow[], target: TargetSheet, invoiceSet: 
       }
     }
     const achieved = invoices.size;
+    const byPerson: Record<string, number> = {};
+    for (const code of invoices) {
+      const pk = invoicePerson.get(code);
+      if (pk) byPerson[pk] = (byPerson[pk] ?? 0) + 1;
+    }
     return {
       ...k,
       achieved,
@@ -500,6 +627,7 @@ export function computeKpis(crmRows: CrmRow[], target: TargetSheet, invoiceSet: 
       achievedValue: Math.round(achievedValue),
       achievedGp: Math.round(achievedGp),
       pct: pct(achieved, k.target),
+      byPerson,
     };
   };
 
@@ -577,17 +705,18 @@ export function computeKpis(crmRows: CrmRow[], target: TargetSheet, invoiceSet: 
     const ic = itemCodeUp(r);
     const srCode = ic.startsWith("SRD") ? "SRD" : ic.startsWith("SHC") ? "SHC" : ic.startsWith("ARD") ? "ARD" : null;
     if (!srCode) continue;
+    // Product family is the token sitting between the separators of the item
+    // code (e.g. "SRD-IPH-002" -> IPH -> iPhone).
+    const tokens = ic.split(/[^A-Z0-9]+/);
     for (const [code, label] of PRODUCT_CODES) {
-      const idx = ic.indexOf(`-${code}-`);
-      if (idx >= 0) {
-        if (!productMix.has(srCode)) productMix.set(srCode, new Map());
-        const byProduct = productMix.get(srCode)!;
-        if (!byProduct.has(label)) byProduct.set(label, { count: new Set(), value: 0, gp: 0 });
-        const entry = byProduct.get(label)!;
-        entry.count.add(r.invoiceCode);
-        entry.value += r.netAmount;
-        entry.gp += r.grossProfit;
-      }
+      if (!tokens.includes(code)) continue;
+      if (!productMix.has(srCode)) productMix.set(srCode, new Map());
+      const byProduct = productMix.get(srCode)!;
+      if (!byProduct.has(label)) byProduct.set(label, { count: new Set(), value: 0, gp: 0 });
+      const entry = byProduct.get(label)!;
+      entry.count.add(r.invoiceCode);
+      entry.value += r.netAmount;
+      entry.gp += r.grossProfit;
     }
   }
 
@@ -619,18 +748,36 @@ export function computeKpis(crmRows: CrmRow[], target: TargetSheet, invoiceSet: 
   }));
 
   const gr = target.googleReview;
+
+  // "Daily target achievement ideas": units/day needed to close each KPI gap.
+  const workingDays = Math.max(1, remainingWorkingDays);
+  const dailyIdeas: KpiIdea[] = [...ar, ...rr, ...sr]
+    .filter((k) => k.target > 0 && k.balance > 0)
+    .map((k) => ({
+      code: k.code,
+      label: k.label,
+      category: k.category,
+      target: k.target,
+      achieved: k.achieved,
+      balance: k.balance,
+      perDay: Math.ceil(k.balance / workingDays),
+      hint: KPI_HINTS[k.code] ?? "",
+    }))
+    .sort((a, b) => b.balance - a.balance);
+
   return {
     ar,
     rr,
     sr,
     googleReview: {
-      previousMonth: gr.previousMonth || 1475,
-      currentMonth: gr.currentMonth || 1485,
-      difference: gr.difference || Math.max(0, (gr.currentMonth || 1485) - (gr.previousMonth || 1475)),
+      previousMonth: gr.previousMonth,
+      currentMonth: gr.currentMonth,
+      difference: gr.difference || Math.max(0, gr.currentMonth - gr.previousMonth),
     },
     threePP: {
       achieved: threePPFinal.size,
       target: kpiByKey.get("CAREPLUS")?.target ?? 0,
     },
+    dailyIdeas,
   };
 }

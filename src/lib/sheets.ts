@@ -321,13 +321,70 @@ export function incentiveForPct(slabs: IncentiveSlab[], pct: number): number {
 }
 
 /**
+ * The Google-review counters sit in G1:I3:
+ *   G1 "google review" · G2 "previous month" · G3 previous count
+ *   H3 current-month count · I3 difference
+ * They are located by scanning the top block for the first row holding two or
+ * more numbers, so the real sheet values are always used (no hardcoded
+ * placeholders) even if the columns shift.
+ */
+function parseGoogleReview(rows: string[][]): GoogleReview {
+  const numbersIn = (row: string[] | undefined): number[] => {
+    const out: number[] = [];
+    for (let c = 5; c <= 12; c++) {
+      const raw = (row?.[c] ?? "").replace(/[₹\s]/g, "");
+      if (!/^-?\d+(?:,\d+)*(?:\.\d+)?%?$/.test(raw)) continue;
+      out.push(parseMoney(raw));
+    }
+    return out;
+  };
+  const lastRow = Math.min(5, rows.length - 1);
+  for (let r = 0; r <= lastRow; r++) {
+    const nums = numbersIn(rows[r]);
+    if (nums.length < 2) continue;
+    const previousMonth = nums[0];
+    const currentMonth = nums[1];
+    const difference = nums.length >= 3 && nums[2] !== 0
+      ? nums[2]
+      : Math.max(0, currentMonth - previousMonth);
+    return { previousMonth, currentMonth, difference };
+  }
+  return { previousMonth: 0, currentMonth: 0, difference: 0 };
+}
+
+/** First row in [fromCol,toCol] matching `re`, or -1. */
+function findRow(rows: string[][], fromCol: number, toCol: number, re: RegExp): number {
+  for (let r = 0; r < rows.length; r++) {
+    for (let c = fromCol; c <= toCol; c++) {
+      if (re.test((rows[r]?.[c] ?? "").trim())) return r;
+    }
+  }
+  return -1;
+}
+
+/** First matching cell (row + column) in a column window. */
+function findCell(
+  rows: string[][],
+  fromCol: number,
+  toCol: number,
+  re: RegExp,
+): { row: number; col: number } | null {
+  for (let r = 0; r < rows.length; r++) {
+    for (let c = fromCol; c <= toCol; c++) {
+      if (re.test((rows[r]?.[c] ?? "").trim())) return { row: r, col: c };
+    }
+  }
+  return null;
+}
+
+/**
  * Grid-anchored target sheet parser (A1 style anchors from the source doc):
  *  - store target  A1:B5 (rows: Service, Accessories, Repair, Total, Gross Profit)
- *  - salesperson targets D1:E6 (col D name header, subha / dinesh columns are D:E rows)
+ *  - salesperson targets D1:E6 (names in D1:E1, labels in C, values in D:E)
  *  - google review G1:I3 (G3 prev, H3 current, I3 diff)
- *  - KPI grid A8:M12 (row 8 category headers, row 9 targets, row 10 values, row 11 approx)
- *  - AMC slabs G17:H23 + accessory AMC fixed J:K
- *  - Bundle slabs M18:P21
+ *  - KPI grid A9:M13 (row 9 targets, row 10 values, row 11 approx)
+ *  - AMC slabs F:H + J:K (anchored on the "Incentive per AMC" header)
+ *  - Bundle slabs M:P (anchored on the "slab level" row)
  */
 export function parseTargetSheet(rows: string[][]): TargetSheet {
   const at = (r: number, c: number): string => (rows[r]?.[c] ?? "").trim(); // 0-indexed
@@ -374,12 +431,8 @@ export function parseTargetSheet(rows: string[][]): TargetSheet {
     }
   }
 
-  // --- google review (G1:I3 -> row 2 cells G,H,I) ---
-  const googleReview: GoogleReview = {
-    previousMonth: parseMoney(at(2, 6)),
-    currentMonth: parseMoney(at(2, 7)),
-    difference: parseMoney(at(2, 8)),
-  };
+  // --- google review (G1:I3) ---
+  const googleReview: GoogleReview = parseGoogleReview(rows);
 
   // --- KPI grid (A8:M12) ---
   // Row 7 (A8): "KPI","","protect plus",...,"RR","","DISPLAY",...
@@ -435,74 +488,81 @@ export function parseTargetSheet(rows: string[][]): TargetSheet {
     });
   }
 
-  // --- incentive slabs (service % A/B, accessory % C/D — rows incl. "Nil") ---
+  // --- incentive slabs (service % A/B, accessory % C/D) ---
+  // Anchored on the "achivement" header row so rows inserted in the source
+  // sheet cannot silently shift the mapping.
+  const pctAnchor = findRow(rows, 0, 3, /^(achivement|achievement)$/i);
   const svcCells: Array<[string, string]> = [];
   const accCells: Array<[string, string]> = [];
-  for (let r = 12; r <= 20; r++) {
-    const sLabel = at(r, 0);
-    const aLabel = at(r, 2);
-    if (sLabel && /%|nil/i.test(sLabel + at(r, 1))) {
-      svcCells.push([sLabel, at(r, 1)]);
-    }
-    if (aLabel && /%|nil/i.test(aLabel + at(r, 3))) {
-      accCells.push([aLabel, at(r, 3)]);
+  if (pctAnchor >= 0) {
+    const limit = Math.min(rows.length - 1, pctAnchor + 12);
+    for (let r = pctAnchor + 1; r <= limit; r++) {
+      const sLabel = at(r, 0);
+      const sVal = at(r, 1);
+      const aLabel = at(r, 2);
+      const aVal = at(r, 3);
+      if (!sLabel && !aLabel) break;
+      if (/%|nil/i.test(sLabel + sVal)) svcCells.push([sLabel, sVal]);
+      if (/%|nil/i.test(aLabel + aVal)) accCells.push([aLabel, aVal]);
     }
   }
   const serviceSlabs = parsePctSlabs(svcCells);
   const accessorySlabs = parsePctSlabs(accCells);
 
-  // --- AMC slabs (E/F = service range+rate, G/I/J = accessory tier) ---
-  // Columns (0-indexed): 5 range "4-6", 6 rate "200/AMC", 7 acc slab level,
-  // 9 acc rate "200/AMC + 750Fixed", 10 acc tier incentive.
+  // --- AMC slabs: F range · G rate per AMC · I accessory-AMC count ·
+  // J accessory rate (+fixed) · K accessory payout ---
+  const amcAnchor = findRow(rows, 4, 10, /incentive\s*per\s*amc/i);
   const amcSlabs: AmcSlab[] = [];
-  for (let r = 12; r <= 20; r++) {
-    const rangeLabel = at(r, 5);
-    const rateLabel = at(r, 6);
-    const accLevel = parseMoney(at(r, 7));
-    const accRateLabel = at(r, 9);
-    if (!rateLabel && !accRateLabel) continue;
-    const { rate, fixed: svcFixed } = parseAmcRate(rateLabel);
-    let min: number;
-    let max: number;
-    if (rangeLabel && /^\d/.test(rangeLabel)) {
-      const range = parseRangeLabel(rangeLabel);
-      min = range.min;
-      max = range.max;
-    } else if (amcSlabs.length > 0 && rateLabel) {
-      min = amcSlabs[amcSlabs.length - 1].max + 1;
-      max = Number.POSITIVE_INFINITY;
-    } else {
-      continue;
+  if (amcAnchor >= 0) {
+    const limit = Math.min(rows.length - 1, amcAnchor + 12);
+    for (let r = amcAnchor + 1; r <= limit; r++) {
+      const rangeLabel = at(r, 5);
+      const rateLabel = at(r, 6);
+      const accCount = parseMoney(at(r, 8));
+      const accRateLabel = at(r, 9);
+      if (!rangeLabel && !rateLabel && !accRateLabel) break;
+      const { rate, fixed } = parseAmcRate(rateLabel);
+      let min: number;
+      let max: number;
+      if (rangeLabel && /^\d/.test(rangeLabel)) {
+        const range = parseRangeLabel(rangeLabel);
+        min = range.min;
+        max = range.max;
+      } else if (amcSlabs.length > 0) {
+        // Rate-only trailing row (e.g. "500/AMC") continues the ladder.
+        min = amcSlabs[amcSlabs.length - 1].max + 1;
+        max = Number.POSITIVE_INFINITY;
+      } else {
+        continue;
+      }
+      const accRateInfo = parseAmcRate(accRateLabel);
+      amcSlabs.push({
+        label: rangeLabel || `${min}+`,
+        rateLabel,
+        rate,
+        fixed,
+        min,
+        max,
+        incentive: Math.max(rate * min + fixed, 0),
+        accCount: accCount > 0 ? accCount : undefined,
+        accRate: accRateInfo.rate > 0 ? accRateInfo.rate : undefined,
+        accFixed: accRateInfo.fixed > 0 ? accRateInfo.fixed : undefined,
+      });
     }
-    const accRateInfo = parseAmcRate(accRateLabel);
-    amcSlabs.push({
-      label: rangeLabel || `${min}+`,
-      rateLabel,
-      rate,
-      fixed: svcFixed,
-      min,
-      max,
-      incentive: Math.max(rate * min + svcFixed, 0),
-      accCount: accLevel > 0 ? accLevel : undefined,
-      accRate: accRateInfo.rate > 0 ? accRateInfo.rate : undefined,
-      accFixed: accRateInfo.fixed > 0 ? accRateInfo.fixed : undefined,
-    });
   }
 
-  // --- Bundle slabs: "slab level" row (cols N:P = 13..15) + "slab incentive" row ---
+  // --- Bundle slabs: "slab level" row + "slab incentive" row below it ---
   const bundleSlabs: BundleSlab[] = [];
-  let levelRow = -1;
-  for (let r = 12; r <= 20; r++) {
-    if (at(r, 12).toLowerCase().includes("slab level")) levelRow = r;
-  }
-  if (levelRow >= 0) {
-    for (let c = 13; c <= 15; c++) {
-      const level = parseMoney(at(levelRow, c));
-      const per = parseMoney(at(levelRow + 1, c));
+  const levelCell = findCell(rows, 12, 17, /slab\s*level/i);
+  if (levelCell) {
+    for (let c = levelCell.col + 1; c <= levelCell.col + 3; c++) {
+      const level = parseMoney(at(levelCell.row, c));
+      const per = parseMoney(at(levelCell.row + 1, c));
       if (level > 0 && per > 0)
         bundleSlabs.push({ label: `slab level ${level}`, min: level, perBundle: per });
     }
   }
+  bundleSlabs.sort((a, b) => a.min - b.min);
 
   return {
     store,

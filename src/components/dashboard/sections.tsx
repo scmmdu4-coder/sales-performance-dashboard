@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import type {
   DashboardData,
@@ -86,7 +86,7 @@ export function PanelHead({
           {title}
         </p>
         {hint ? (
-          <p className="mt-0.5 truncate text-[11px] text-muted-foreground/70">
+          <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground/70">
             {hint}
           </p>
         ) : null}
@@ -198,6 +198,14 @@ export function PctBadge({ value }: { value: number }) {
 export const money = (n: number) =>
   `₹${Math.round(n).toLocaleString("en-IN")}`;
 
+/** Short money for dense cells: ₹1.2k / ₹1.4L */
+export const moneyCompact = (n: number) =>
+  n >= 100000
+    ? `₹${(n / 100000).toFixed(1)}L`
+    : n >= 1000
+      ? `₹${(n / 1000).toFixed(1)}k`
+      : `₹${Math.round(n)}`;
+
 export function MiniTable({
   head,
   rows,
@@ -270,6 +278,53 @@ export function MiniTable({
 }
 
 /* ------------------------------------------------------------------ */
+/* Per-salesperson colour language                                     */
+/* ------------------------------------------------------------------ */
+
+interface PersonColor {
+  bg: string;
+  chip: string;
+  dot: string;
+  text: string;
+}
+
+const PERSON_COLORS: Record<string, PersonColor> = {
+  SUBHA: {
+    bg: "bg-chart-2/10",
+    chip: "border-chart-2/40 text-chart-2",
+    dot: "bg-chart-2",
+    text: "text-chart-2",
+  },
+  DINESH: {
+    bg: "bg-chart-1/10",
+    chip: "border-chart-1/40 text-chart-1",
+    dot: "bg-chart-1",
+    text: "text-chart-1",
+  },
+};
+
+export function personColor(key: string): PersonColor {
+  return (
+    PERSON_COLORS[key] ?? {
+      bg: "bg-accent/30",
+      chip: "border-border text-foreground",
+      dot: "bg-muted-foreground",
+      text: "text-foreground",
+    }
+  );
+}
+
+export function PersonTag({ personKey, label }: { personKey: string; label?: ReactNode }) {
+  const c = personColor(personKey);
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className={cn("size-1.5 rounded-full", c.dot)} />
+      <span className={c.text}>{label ?? personKey}</span>
+    </span>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* Store performance (Section 1)                                       */
 /* ------------------------------------------------------------------ */
 
@@ -300,8 +355,7 @@ function RevRow({ label, b }: { label: string; b: Bucket }) {
             balance <span className="text-foreground">{money(b.balance)}</span>
           </span>
           <span>
-            req/day{" "}
-            <span className="text-foreground">{money(b.requiredPerDay)}</span>
+            req/day <span className="text-foreground">{money(b.requiredPerDay)}</span>
           </span>
         </div>
       </div>
@@ -315,11 +369,7 @@ function RevRow({ label, b }: { label: string; b: Bucket }) {
   );
 }
 
-export function StorePerformanceSection({
-  data,
-}: {
-  data: DashboardData;
-}) {
+export function StorePerformanceSection({ data }: { data: DashboardData }) {
   const s: StoreMetrics = data.store;
   const buckets: Array<[string, Bucket]> = [
     ["Total Revenue", s.total],
@@ -348,7 +398,11 @@ export function StorePerformanceSection({
       <div className="grid grid-cols-2 gap-2 border-t border-border/70 p-3 sm:grid-cols-5">
         <Stat label="Total Invoices" value={s.totalInvoices} />
         <Stat label="Unique Invoices" value={s.uniqueInvoices} tone="primary" />
-        <Stat label="Revenue Rate" value={`${s.total.pct.toFixed(1)}%`} tone={s.total.pct >= 100 ? "positive" : "default"} />
+        <Stat
+          label="Revenue Rate"
+          value={`${s.total.pct.toFixed(1)}%`}
+          tone={s.total.pct >= 100 ? "positive" : "default"}
+        />
         <Stat label="Run Rate / Day" value={money(s.total.runRate)} />
         <Stat label="Req / Day" value={money(s.total.requiredPerDay)} sub="to close balance" />
       </div>
@@ -366,6 +420,7 @@ function PersonCard({ row }: { row: SalespersonRow }) {
     ["Accessory", row.accessory],
     ["Repair", row.repair],
   ];
+  const c = personColor(row.key);
   return (
     <Panel className="overflow-hidden">
       <PanelHead
@@ -422,6 +477,10 @@ function PersonCard({ row }: { row: SalespersonRow }) {
             </div>
           ))}
         </div>
+        <p className={cn("mt-3 border-t border-border/40 pt-2 font-mono text-[10px]", c.text)}>
+          target · service {money(row.service.target)} · accessory {money(row.accessory.target)} ·
+          repair {money(row.repair.target)}
+        </p>
       </div>
     </Panel>
   );
@@ -443,92 +502,126 @@ export function SalespersonSection({ data }: { data: DashboardData }) {
 
 export function AmcBundleSection({ data }: { data: DashboardData }) {
   const { amc, bundle, target } = data;
-  const slabLabels = (slabs: { label: string; value?: number; perBundle?: number }[]) =>
-    slabs
-      .map((s) => `${s.label}${s.value != null ? `: ₹${s.value}` : s.perBundle != null ? `: ₹${s.perBundle}` : ""}`)
-      .join("  ·  ");
+  const amcTotal = amc.reduce((a, r) => a + r.projectedIncentive, 0);
+  const bundleTotal = bundle.reduce((a, r) => a + r.projectedIncentive, 0);
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 lg:grid-cols-2">
-        {amc.map((row) => (
-          <Panel key={row.key}>
-            <PanelHead
-              title={`${row.name} · AMC`}
-              hint={`achieved ${row.amcCount} AMCs`}
-              right={
-                <span className="font-mono text-[11px] text-positive">
-                  {money(row.projectedIncentive)}
-                </span>
+      <Panel>
+        <PanelHead
+          title="AMC Incentive — achieved count vs next slab"
+          hint="AMC = unique invoices with crm!SubCategory “AMC Charge” · accessory AMC = those AMC invoices without a service/repair line"
+          right={<span className="font-mono text-[11px] text-positive">{money(amcTotal)}</span>}
+        />
+        <MiniTable
+          head={[
+            "Salesperson",
+            "AMC Ach",
+            "Current Slab",
+            "Eligible",
+            "Next Slab",
+            "To Next",
+            "Acc. AMC",
+            "Acc. Tier",
+            "Acc. To Next",
+          ]}
+          rows={amc.map((row) => [
+            <PersonTag personKey={row.key} label={row.name} />,
+            <span className="font-semibold">{row.amcCount}</span>,
+            row.amcSlab ? (
+              <span className="text-[11px]">
+                {row.amcSlab.label}
+                {row.amcSlab.rate > 0 ? ` · ₹${row.amcSlab.rate}/AMC` : " · Nil"}
+              </span>
+            ) : (
+              <span className="text-muted-foreground">none</span>
+            ),
+            <span className={row.amcEligible > 0 ? "text-positive" : "text-muted-foreground"}>
+              {row.amcEligible > 0 ? money(row.amcEligible) : "Nil"}
+            </span>,
+            row.amcNextSlab ? (
+              <span className="text-[11px]">
+                {row.amcNextSlab.label} · ₹{row.amcNextSlab.rate}/AMC
+              </span>
+            ) : (
+              <span className="text-muted-foreground">top slab</span>
+            ),
+            <span className={row.amcRemaining === 0 ? "text-positive" : "text-warning"}>
+              {row.amcNextSlab ? `${row.amcRemaining} more` : "—"}
+            </span>,
+            row.accessoryCount,
+            row.accessorySlab ? (
+              <span className="text-[11px]">
+                {row.accessorySlab.accCount}+ · ₹{row.accessorySlab.accRate}
+                {row.accessorySlab.accFixed ? ` + ₹${row.accessorySlab.accFixed}` : ""}
+              </span>
+            ) : (
+              <span className="text-muted-foreground">—</span>
+            ),
+            <span
+              className={
+                row.accessoryNextSlab ? "text-warning" : "text-muted-foreground"
               }
-            />
-            <div className="grid grid-cols-2 gap-2 p-3">
-              <Stat
-                label="AMC Count"
-                value={row.amcCount}
-                sub={row.amcNextSlab ? `slab ${row.amcNextSlab.label} @ ₹${row.amcNextSlab.rate}/AMC` : "no slab yet"}
-              />
-              <Stat
-                label="To Next Slab"
-                value={row.amcRemaining}
-                sub={row.amcNextSlab ? `${row.amcRemaining} more to close ${row.amcNextSlab.label}` : "—"}
-                tone={row.amcRemaining === 0 ? "positive" : "warning"}
-              />
-              <Stat
-                label="Accessory AMC"
-                value={row.accessoryCount}
-                sub={row.accessoryNextSlab ? `fixed ₹${row.accessoryNextSlab.accFixed ?? 0}` : "below slab"}
-              />
-              <Stat
-                label="Accessory Left"
-                value={row.accessoryRemaining}
-                sub="to close current tier"
-              />
-            </div>
-          </Panel>
-        ))}
-      </div>
-      <div className="grid gap-4 lg:grid-cols-2">
-        {bundle.map((row) => (
-          <Panel key={row.key}>
-            <PanelHead
-              title={`${row.name} · Bundle`}
-              hint={`${row.count} DISC invoices`}
-              right={
-                <span className="font-mono text-[11px] text-positive">
-                  {money(row.projectedIncentive)}
-                </span>
-              }
-            />
-            <div className="grid grid-cols-2 gap-2 p-3">
-              <Stat
-                label="Bundle Count"
-                value={row.count}
-                sub={row.nextSlab ? `next slab at ${row.nextSlab.min}` : "top slab"}
-              />
-              <Stat
-                label="To Next Slab"
-                value={row.remaining}
-                sub={
-                  row.nextSlab
-                    ? `${row.remaining} more → ₹${row.nextSlab.perBundle}/bundle`
-                    : "—"
-                }
-                tone={row.remaining === 0 ? "positive" : "warning"}
-              />
-            </div>
-          </Panel>
-        ))}
-      </div>
+            >
+              {row.accessoryNextSlab ? `${row.accessoryRemaining} more` : "—"}
+            </span>,
+          ])}
+        />
+      </Panel>
+
+      <Panel>
+        <PanelHead
+          title="Bundle Incentive — achieved count vs next slab"
+          hint="Bundle = unique invoices whose crm!SchemeCode starts with “DISC”"
+          right={<span className="font-mono text-[11px] text-positive">{money(bundleTotal)}</span>}
+        />
+        <MiniTable
+          head={[
+            "Salesperson",
+            "Bundles",
+            "Current Slab",
+            "Rate / Bundle",
+            "Eligible",
+            "Next Slab",
+            "To Next",
+          ]}
+          rows={bundle.map((row) => [
+            <PersonTag personKey={row.key} label={row.name} />,
+            <span className="font-semibold">{row.count}</span>,
+            row.slab ? (
+              <span className="text-[11px]">level {row.slab.min}+</span>
+            ) : (
+              <span className="text-muted-foreground">not eligible</span>
+            ),
+            row.slab ? `₹${row.slab.perBundle}` : "—",
+            <span className={row.projectedIncentive > 0 ? "text-positive" : "text-muted-foreground"}>
+              {money(row.projectedIncentive)}
+            </span>,
+            row.nextSlab ? (
+              <span className="text-[11px]">
+                {row.nextSlab.min} bundles · ₹{row.nextSlab.perBundle}
+              </span>
+            ) : (
+              <span className="text-muted-foreground">top slab</span>
+            ),
+            <span className={row.remaining === 0 ? "text-positive" : "text-warning"}>
+              {row.nextSlab ? `${row.remaining} more` : "—"}
+            </span>,
+          ])}
+        />
+      </Panel>
+
       <Panel className="p-3">
         <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
           Plan reference
         </p>
         <p className="mt-1 font-mono text-[11px] leading-relaxed text-muted-foreground">
-          {target.amcSlabs.map((s) => `${s.label}: ${s.rateLabel}`).join("  ·  ")}
+          {target.amcSlabs
+            .map((s) => `${s.label}: ${s.rateLabel || "—"}${s.accRate ? ` · acc ${s.accCount}+ @ ₹${s.accRate}/AMC` : ""}`)
+            .join("  ·  ")}
         </p>
         <p className="mt-1.5 font-mono text-[11px] leading-relaxed text-muted-foreground">
-          {slabLabels(target.bundleSlabs)}
+          {target.bundleSlabs.map((s) => `${s.label} → ₹${s.perBundle}/bundle`).join("  ·  ")}
         </p>
       </Panel>
     </div>
@@ -539,6 +632,30 @@ export function AmcBundleSection({ data }: { data: DashboardData }) {
 /* KPI grid (Section 4)                                                */
 /* ------------------------------------------------------------------ */
 
+function PersonChips({ byPerson }: { byPerson: Record<string, number> }) {
+  const entries = Object.entries(byPerson).filter(([, n]) => n > 0);
+  if (entries.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-wrap gap-1">
+      {entries
+        .sort((a, b) => b[1] - a[1])
+        .map(([key, n]) => (
+          <span
+            key={key}
+            className={cn(
+              "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] font-normal",
+              personColor(key).chip,
+              personColor(key).bg,
+            )}
+          >
+            <span className={cn("size-1.5 rounded-full", personColor(key).dot)} />
+            {key} {n}
+          </span>
+        ))}
+    </div>
+  );
+}
+
 function KpiCard({ row }: { row: KpiRow }) {
   return (
     <div className="rounded-md border border-border/60 bg-background/40 p-3">
@@ -546,7 +663,8 @@ function KpiCard({ row }: { row: KpiRow }) {
         <div>
           <p className="text-sm font-semibold">{row.label}</p>
           <p className="font-mono text-[10px] text-muted-foreground">
-            value ₹{row.value.toLocaleString("en-IN")} · approx {money(row.approxAmount)}
+            {row.category} · value ₹{row.value.toLocaleString("en-IN")} · approx{" "}
+            {money(row.approxAmount)}
           </p>
         </div>
         <PctBadge value={row.pct} />
@@ -575,21 +693,250 @@ function KpiCard({ row }: { row: KpiRow }) {
       <p className="mt-1 font-mono text-[10px] text-muted-foreground">
         GP {money(row.achievedGp)}
       </p>
-      {row.sub && row.sub.length > 0 ? (
-        <div className="mt-2 flex flex-wrap gap-1 border-t border-border/40 pt-2">
-          {row.sub.map((s) => (
-            <Badge
-              key={s.label}
-              variant="outline"
-              className="gap-1 font-mono text-[10px] font-normal"
+      <PersonChips byPerson={row.byPerson} />
+    </div>
+  );
+}
+
+function GoogleReviewCard({
+  googleReview,
+}: {
+  googleReview: DashboardData["kpi"]["googleReview"];
+}) {
+  const { previousMonth, currentMonth, difference } = googleReview;
+  return (
+    <div className="rounded-md border border-border/60 bg-background/40 p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-sm font-semibold">Google Review</p>
+          <p className="font-mono text-[10px] text-muted-foreground">
+            AR category · target!G1:I3
+          </p>
+        </div>
+        <span
+          className={cn(
+            "inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums",
+            difference >= 0
+              ? "border-positive/40 bg-positive/10 text-positive"
+              : "border-negative/40 bg-negative/10 text-negative",
+          )}
+        >
+          {difference >= 0 ? "+" : ""}
+          {difference}
+        </span>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-1.5 font-mono text-[10px]">
+        <div>
+          <p className="text-muted-foreground">PREV MONTH</p>
+          <p className="text-foreground">{previousMonth}</p>
+        </div>
+        <div>
+          <p className="text-muted-foreground">CURRENT MONTH</p>
+          <p className="text-primary">{currentMonth}</p>
+        </div>
+      </div>
+      <p className="mt-2 font-mono text-[10px] text-muted-foreground">
+        difference {difference >= 0 ? "+" : ""}
+        {difference} reviews vs previous month
+      </p>
+    </div>
+  );
+}
+
+const SR_PRODUCT_ROWS = ["iPhone", "Mac", "Watch", "iPad", "AirPods", "Consumables"];
+const SR_MATRIX_CODES = ["SHC", "SRD", "ARD"] as const;
+
+/** Small-font product mix under the SR KPI, e.g. SRD-IPH-002 → iPhone. */
+function SrProductMatrix({ sr }: { sr: KpiRow[] }) {
+  const byCode = new Map(sr.map((r) => [r.code, r]));
+  const cell = (code: string, label: string) =>
+    (byCode.get(code)?.sub ?? []).find((s) => s.label === label) ?? null;
+
+  return (
+    <Panel>
+      <PanelHead
+        title="SR KPI — product mix (small font)"
+        hint="Item codes starting with SRD / SHC / ARD, split by the product token inside the code (iph · air · mac · wat · pad · con)"
+        right={
+          <span className="font-mono text-[11px] text-muted-foreground">
+            prefix rule · crm!ItemCode
+          </span>
+        }
+      />
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[520px] text-sm">
+          <thead>
+            <tr className="border-b border-border/70 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+              <th className="px-3 py-2 text-left font-semibold">Product</th>
+              {SR_MATRIX_CODES.map((code) => (
+                <th key={code} className="px-3 py-2 text-right font-semibold">
+                  {code}
+                  <span className="block text-[9px] font-normal normal-case tracking-normal text-muted-foreground/70">
+                    achieved {byCode.get(code)?.achieved ?? 0} / target{" "}
+                    {byCode.get(code)?.target ?? 0}
+                  </span>
+                </th>
+              ))}
+              <th className="px-3 py-2 text-right font-semibold">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {SR_PRODUCT_ROWS.map((label) => {
+              const cells = SR_MATRIX_CODES.map((code) => cell(code, label));
+              const rowTotal = cells.reduce((a, c) => a + (c?.count ?? 0), 0);
+              const rowValue = cells.reduce((a, c) => a + (c?.value ?? 0), 0);
+              return (
+                <tr
+                  key={label}
+                  className="border-b border-border/40 transition-colors last:border-0 hover:bg-accent/20"
+                >
+                  <td className="px-3 py-1.5 text-left text-xs">{label}</td>
+                  {cells.map((c, i) => (
+                    <td key={i} className="px-3 py-1.5 text-right align-top">
+                      <span className="font-mono text-sm font-semibold tabular-nums">
+                        {c?.count ?? 0}
+                      </span>
+                      <span className="block font-mono text-[9px] text-muted-foreground/70">
+                        {moneyCompact(c?.value ?? 0)}
+                      </span>
+                    </td>
+                  ))}
+                  <td className="px-3 py-1.5 text-right align-top">
+                    <span className="font-mono text-sm font-semibold tabular-nums">
+                      {rowTotal}
+                    </span>
+                    <span className="block font-mono text-[9px] text-muted-foreground/70">
+                      {moneyCompact(rowValue)}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Panel>
+  );
+}
+
+function SalespersonKpiTable({ data }: { data: DashboardData }) {
+  const people = data.salespeople.map((p) => p.key);
+  const rows = [...data.kpi.ar, ...data.kpi.rr, ...data.kpi.sr];
+  const workingDays = Math.max(1, data.store.remainingWorkingDays);
+
+  return (
+    <Panel>
+      <PanelHead
+        title="Salesperson KPI — target vs achievement"
+        hint="targets from target!A9:M13 · achievement is unique invoices per salesperson"
+        right={
+          <span className="font-mono text-[11px] text-muted-foreground">
+            {data.store.remainingWorkingDays} working days left
+          </span>
+        }
+      />
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[560px] text-sm">
+          <thead>
+            <tr className="border-b border-border/70 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+              <th className="px-3 py-2 text-left font-semibold">KPI</th>
+              <th className="px-3 py-2 text-left font-semibold">Cat</th>
+              {people.map((p) => (
+                <th
+                  key={p}
+                  className={cn("px-3 py-2 text-right font-semibold", personColor(p).text)}
+                >
+                  {p}
+                </th>
+              ))}
+              <th className="px-3 py-2 text-right font-semibold">Target</th>
+              <th className="px-3 py-2 text-right font-semibold">Balance</th>
+              <th className="px-3 py-2 text-right font-semibold">Req / day</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr
+                key={row.code}
+                className="border-b border-border/40 transition-colors last:border-0 hover:bg-accent/20"
+              >
+                <td className="px-3 py-2 text-left text-xs font-medium">{row.label}</td>
+                <td className="px-3 py-2 text-left font-mono text-[10px] text-muted-foreground">
+                  {row.category}
+                </td>
+                {people.map((p) => (
+                  <td
+                    key={p}
+                    className={cn(
+                      "px-3 py-2 text-right font-mono tabular-nums",
+                      personColor(p).text,
+                    )}
+                  >
+                    {row.byPerson[p] ?? 0}
+                  </td>
+                ))}
+                <td className="px-3 py-2 text-right font-mono tabular-nums">{row.target}</td>
+                <td
+                  className={cn(
+                    "px-3 py-2 text-right font-mono tabular-nums",
+                    row.balance === 0 ? "text-positive" : "text-warning",
+                  )}
+                >
+                  {row.balance}
+                </td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                  {row.target > 0 ? Math.ceil(row.balance / workingDays) : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Panel>
+  );
+}
+
+function DailyIdeasPanel({ data }: { data: DashboardData }) {
+  const ideas = data.kpi.dailyIdeas;
+  return (
+    <Panel>
+      <PanelHead
+        title="Daily target achievement ideas"
+        hint={`balance ÷ ${data.store.remainingWorkingDays} working days left (target!A9:M13)`}
+      />
+      {ideas.length === 0 ? (
+        <p className="px-4 py-3 text-xs text-muted-foreground">
+          Every KPI target is already closed for the month.
+        </p>
+      ) : (
+        <div className="divide-y divide-border/40">
+          {ideas.map((idea) => (
+            <div
+              key={idea.code}
+              className="flex items-start justify-between gap-3 px-4 py-2.5"
             >
-              {s.label} <span className="text-primary">{s.count}</span>
-              <span className="text-muted-foreground">{money(s.value)}</span>
-            </Badge>
+              <div className="min-w-0">
+                <p className="text-xs font-semibold">
+                  {idea.label}{" "}
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    {idea.category}
+                  </span>
+                </p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">{idea.hint}</p>
+              </div>
+              <div className="shrink-0 text-right">
+                <p className="font-mono text-sm font-semibold text-warning">
+                  {idea.perDay}/day
+                </p>
+                <p className="font-mono text-[10px] text-muted-foreground">
+                  {idea.achieved}/{idea.target} · {idea.balance} left
+                </p>
+              </div>
+            </div>
           ))}
         </div>
-      ) : null}
-    </div>
+      )}
+    </Panel>
   );
 }
 
@@ -597,10 +944,11 @@ export function KpiSection({ data }: { data: DashboardData }) {
   const { ar, rr, sr, googleReview, threePP } = data.kpi;
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {ar.map((row) => (
           <KpiCard key={row.code} row={row} />
         ))}
+        <GoogleReviewCard googleReview={googleReview} />
       </div>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {rr.map((row) => (
@@ -612,31 +960,31 @@ export function KpiSection({ data }: { data: DashboardData }) {
           <KpiCard key={row.code} row={row} />
         ))}
       </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Panel className="p-4">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-            Google Review KPI
-          </p>
-          <div className="mt-2 grid grid-cols-3 gap-2">
-            <Stat label="Previous" value={googleReview.previousMonth} />
-            <Stat label="Current" value={googleReview.currentMonth} tone="primary" />
-            <Stat
-              label="Difference"
-              value={`+${googleReview.difference}`}
-              tone={googleReview.difference > 0 ? "positive" : "negative"}
-            />
-          </div>
-        </Panel>
-        <Panel className="p-4">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-            3PP Attachment (accessory + service/repair invoice)
-          </p>
-          <div className="mt-2 grid grid-cols-2 gap-2">
-            <Stat label="Qualifying Invoices" value={threePP.achieved} tone="primary" />
-            <Stat label="Attachment Rate" value={`${((threePP.achieved / Math.max(1, data.store.uniqueInvoices)) * 100).toFixed(1)}%`} />
-          </div>
-        </Panel>
+      <SrProductMatrix sr={sr} />
+      <div className="grid gap-4 xl:grid-cols-2">
+        <SalespersonKpiTable data={data} />
+        <DailyIdeasPanel data={data} />
       </div>
+      <Panel className="p-4">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          3PP Attachment (accessory + service/repair on the same invoice)
+        </p>
+        <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+          <Stat label="Qualifying Invoices" value={threePP.achieved} tone="primary" />
+          <Stat
+            label="Attachment Rate"
+            value={`${((threePP.achieved / Math.max(1, data.store.uniqueInvoices)) * 100).toFixed(1)}%`}
+            sub="of unique invoices"
+          />
+          <Stat
+            label="Accessory Invoices"
+            value={
+              data.revenueTypes.find((r) => r.key === "accessory")?.uniqueInvoices ?? 0
+            }
+            sub="unique accessory bills"
+          />
+        </div>
+      </Panel>
     </div>
   );
 }
@@ -645,135 +993,247 @@ export function KpiSection({ data }: { data: DashboardData }) {
 /* Invoice dashboard (Section 5)                                       */
 /* ------------------------------------------------------------------ */
 
-const PERSON_COLORS: Record<string, { bg: string; chip: string; dot: string }> = {
-  SUBHA: {
-    bg: "bg-chart-2/10",
-    chip: "border-chart-2/40 text-chart-2",
-    dot: "bg-chart-2",
-  },
-  DINESH: {
-    bg: "bg-chart-1/10",
-    chip: "border-chart-1/40 text-chart-1",
-    dot: "bg-chart-1",
-  },
-};
-
-export function personColor(key: string) {
-  return PERSON_COLORS[key] ?? { bg: "bg-accent/30", chip: "border-border text-foreground", dot: "bg-muted-foreground" };
-}
-
 export function InvoiceDashboardSection({ data }: { data: DashboardData }) {
-  const { days } = data;
+  const { days, store, revenueTypes } = data;
+  const people = data.salespeople.map((p) => p.key);
+  const targetPerDay = store.total.requiredPerDay;
 
   const totals = days.reduce(
     (acc, d) => ({
       inv: acc.inv + d.uniqueInvoices,
-      svc: acc.svc + d.serviceRevenue,
-      acc: acc.acc + d.accessoryRevenue,
-      rep: acc.rep + d.repairRevenue,
       tot: acc.tot + d.totalRevenue,
       gp: acc.gp + d.grossProfit,
     }),
-    { inv: 0, svc: 0, acc: 0, rep: 0, tot: 0, gp: 0 },
+    { inv: 0, tot: 0, gp: 0 },
+  );
+
+  const personTotals = people.map((p) =>
+    days.reduce(
+      (acc, d) => {
+        const v = d.byPerson[p];
+        return {
+          service: acc.service + (v?.serviceRevenue ?? 0),
+          achieved: acc.achieved + (v?.totalRevenue ?? 0),
+        };
+      },
+      { service: 0, achieved: 0 },
+    ),
   );
 
   return (
-    <Panel>
-      <PanelHead
-        title="Invoice Dashboard — Date-wise Revenue & GP"
-        hint="Per-day achievement with salesperson color split and store per-day requirement"
-        right={
-          <span className="font-mono text-[11px] text-muted-foreground">
-            {totals.inv} invoices · {money(totals.tot)} revenue
-          </span>
-        }
-      />
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[980px] text-sm">
-          <thead>
-            <tr className="border-b border-border/70 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-              <th className="px-3 py-2 text-left font-semibold">Date</th>
-              <th className="px-3 py-2 text-right font-semibold">Invoices</th>
-              <th className="px-3 py-2 text-right font-semibold">Service</th>
-              <th className="px-3 py-2 text-right font-semibold">Accessories</th>
-              <th className="px-3 py-2 text-right font-semibold">Repair</th>
-              <th className="px-3 py-2 text-right font-semibold">Total Revenue</th>
-              <th className="px-3 py-2 text-right font-semibold">GP</th>
-              <th className="px-3 py-2 text-right font-semibold">Store Req/Day</th>
-              <th className="px-3 py-2 text-left font-semibold">Salesperson Split</th>
-            </tr>
-          </thead>
-          <tbody>
-            {days.map((d) => (
-              <tr
-                key={d.day}
-                className="border-b border-border/40 transition-colors last:border-0 hover:bg-accent/20"
-              >
-                <td className="px-3 py-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs font-semibold">{d.dateKey}</span>
-                    {d.holiday ? (
-                      <Badge variant="outline" className="border-warning/40 text-warning">
-                        holiday
-                      </Badge>
-                    ) : null}
-                  </div>
-                  <span className="text-[10px] text-muted-foreground">{d.weekday}</span>
-                </td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums">
-                  {d.uniqueInvoices}
-                </td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums">
-                  {money(d.serviceRevenue)}
-                </td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums">
-                  {money(d.accessoryRevenue)}
-                </td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums">
-                  {money(d.repairRevenue)}
-                </td>
-                <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums">
-                  {money(d.totalRevenue)}
-                </td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums text-positive">
-                  {money(d.grossProfit)}
-                </td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                  {money(data.store.total.requiredPerDay)}
-                </td>
-                <td className="px-3 py-2">
-                  <div className="flex flex-wrap gap-1.5">
-                    {Object.entries(d.byPerson)
-                      .filter(([, v]) => v.totalRevenue > 0 || v.invoices > 0)
-                      .map(([k, v]) => (
-                        <span
-                          key={k}
-                          className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] ${personColor(k).chip} ${personColor(k).bg}`}
-                        >
-                          <span className={`size-1.5 rounded-full ${personColor(k).dot}`} />
-                          {k} · {money(v.totalRevenue)}
-                        </span>
-                      ))}
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr className="border-t border-border/70 bg-accent/20 font-semibold">
-              <td className="px-3 py-2">Total</td>
-              <td className="px-3 py-2 text-right font-mono">{totals.inv}</td>
-              <td className="px-3 py-2 text-right font-mono">{money(totals.svc)}</td>
-              <td className="px-3 py-2 text-right font-mono">{money(totals.acc)}</td>
-              <td className="px-3 py-2 text-right font-mono">{money(totals.rep)}</td>
-              <td className="px-3 py-2 text-right font-mono">{money(totals.tot)}</td>
-              <td className="px-3 py-2 text-right font-mono">{money(totals.gp)}</td>
-              <td className="px-3 py-2" />
-              <td className="px-3 py-2" />
-            </tr>
-          </tfoot>
-        </table>
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <Stat
+          label="Overall Invoices"
+          value={store.totalInvoices}
+          sub="invoice lines"
+        />
+        <Stat
+          label="Unique Invoices"
+          value={store.uniqueInvoices}
+          sub="deduped invoice codes"
+          tone="primary"
+        />
+        {revenueTypes.map((rt) => (
+          <Stat
+            key={rt.key}
+            label={rt.label}
+            value={money(rt.revenue)}
+            sub={`${rt.uniqueInvoices} unique · GP ${money(rt.gp)}`}
+          />
+        ))}
       </div>
-    </Panel>
+
+      <Panel>
+        <PanelHead
+          title="Date-wise Revenue & GP Report"
+          hint="One line per date · salesperson cells colour-coded · target/day taken from the store per-day requirement"
+          right={
+            <span className="font-mono text-[11px] text-muted-foreground">
+              {totals.inv} invoices · {money(totals.tot)} revenue
+            </span>
+          }
+        />
+        <div className="flex flex-wrap items-center gap-3 border-b border-border/50 px-4 py-2">
+          {people.map((p) => (
+            <span
+              key={p}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 font-mono text-[10px]",
+                personColor(p).chip,
+                personColor(p).bg,
+              )}
+            >
+              <span className={cn("size-1.5 rounded-full", personColor(p).dot)} />
+              {p}
+            </span>
+          ))}
+          <span className="font-mono text-[10px] text-muted-foreground">
+            target / day {money(targetPerDay)}
+          </span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1040px] text-sm">
+            <thead>
+              <tr className="border-b border-border/40 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                <th rowSpan={2} className="px-3 py-2 text-left align-bottom font-semibold">
+                  Date
+                </th>
+                <th rowSpan={2} className="px-3 py-2 text-right align-bottom font-semibold">
+                  Invoices
+                </th>
+                {people.map((p) => (
+                  <th
+                    key={p}
+                    colSpan={2}
+                    className={cn(
+                      "border-l border-border/40 px-3 py-2 text-center font-semibold",
+                      personColor(p).text,
+                    )}
+                  >
+                    {p}
+                  </th>
+                ))}
+                <th
+                  rowSpan={2}
+                  className="border-l border-border/40 px-3 py-2 text-right align-bottom font-semibold"
+                >
+                  Target / Day
+                </th>
+                <th rowSpan={2} className="px-3 py-2 text-right align-bottom font-semibold">
+                  Achieved
+                </th>
+                <th rowSpan={2} className="px-3 py-2 text-right align-bottom font-semibold">
+                  GP
+                </th>
+                <th rowSpan={2} className="px-3 py-2 text-right align-bottom font-semibold">
+                  vs Target
+                </th>
+              </tr>
+              <tr className="border-b border-border/70 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                {people.map((p) => (
+                  <Fragment key={p}>
+                    <th className="border-l border-border/40 px-3 py-1.5 text-right font-semibold">
+                      Service Rev
+                    </th>
+                    <th className="px-3 py-1.5 text-right font-semibold">Achieved</th>
+                  </Fragment>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {days.map((d) => {
+                const deltaPct =
+                  targetPerDay > 0
+                    ? ((d.totalRevenue - targetPerDay) / targetPerDay) * 100
+                    : 0;
+                return (
+                  <tr
+                    key={d.day}
+                    className="border-b border-border/40 transition-colors last:border-0 hover:bg-accent/20"
+                  >
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-xs font-semibold">
+                          {d.undated ? "No date" : d.dateKey}
+                        </span>
+                        {d.holiday ? (
+                          <Badge variant="outline" className="border-warning/40 text-warning">
+                            holiday
+                          </Badge>
+                        ) : null}
+                        {d.undated ? (
+                          <Badge variant="outline" className="border-muted-foreground/40 text-muted-foreground">
+                            undated
+                          </Badge>
+                        ) : null}
+                      </div>
+                      <span className="text-[10px] text-muted-foreground">
+                        {d.undated ? "InvoiceDate blank in crm" : d.weekday}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono tabular-nums">
+                      {d.uniqueInvoices}
+                    </td>
+                    {people.map((p) => {
+                      const v = d.byPerson[p];
+                      const c = personColor(p);
+                      return (
+                        <Fragment key={p}>
+                          <td
+                            className={cn(
+                              "border-l border-border/40 px-3 py-2 text-right font-mono tabular-nums",
+                              c.bg,
+                              v && v.serviceRevenue > 0 ? c.text : "text-muted-foreground",
+                            )}
+                          >
+                            {v && v.serviceRevenue > 0 ? money(v.serviceRevenue) : "—"}
+                          </td>
+                          <td
+                            className={cn(
+                              "px-3 py-2 text-right font-mono font-semibold tabular-nums",
+                              c.bg,
+                              v && v.totalRevenue > 0 ? "text-foreground" : "text-muted-foreground",
+                            )}
+                          >
+                            {v && v.totalRevenue > 0 ? money(v.totalRevenue) : "—"}
+                          </td>
+                        </Fragment>
+                      );
+                    })}
+                    <td className="border-l border-border/40 px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                      {money(targetPerDay)}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums">
+                      {money(d.totalRevenue)}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono tabular-nums text-positive">
+                      {money(d.grossProfit)}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono text-[11px] tabular-nums">
+                      {d.undated ? (
+                        <span className="text-muted-foreground">—</span>
+                      ) : (
+                        <span className={deltaPct >= 0 ? "text-positive" : "text-negative"}>
+                          {deltaPct >= 0 ? "+" : ""}
+                          {deltaPct.toFixed(0)}%
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr className="border-t border-border/70 bg-accent/20 font-semibold">
+                <td className="px-3 py-2">Total</td>
+                <td className="px-3 py-2 text-right font-mono">{totals.inv}</td>
+                {people.map((p, i) => (
+                  <Fragment key={p}>
+                    <td
+                      className={cn(
+                        "border-l border-border/40 px-3 py-2 text-right font-mono",
+                        personColor(p).text,
+                      )}
+                    >
+                      {money(personTotals[i].service)}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono">
+                      {money(personTotals[i].achieved)}
+                    </td>
+                  </Fragment>
+                ))}
+                <td className="border-l border-border/40 px-3 py-2 text-right font-mono text-muted-foreground">
+                  {money(targetPerDay)}
+                </td>
+                <td className="px-3 py-2 text-right font-mono">{money(totals.tot)}</td>
+                <td className="px-3 py-2 text-right font-mono">{money(totals.gp)}</td>
+                <td className="px-3 py-2" />
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </Panel>
+    </div>
   );
 }
