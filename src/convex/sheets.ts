@@ -1,5 +1,7 @@
-import { action } from "./_generated/server";
+import { action, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
+import type { Doc, Id } from "./_generated/dataModel";
 import {
   buildSheetsFetchUrls,
   parseCsv,
@@ -13,6 +15,8 @@ import {
   parseCommRows,
   parseCsvLite,
   parseWalkinRows,
+  type ProcessDashboard,
+  type ProductivityDashboard,
 } from "../lib/ops";
 
 /**
@@ -303,73 +307,148 @@ const productivityValidator = v.object({
   tatCaseTotal: v.number(),
 });
 
+const OPS_CACHE_KEY = "ops-aggregates-v1";
+const OPS_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+
+/** Read the cached ops payload (no TTL check — the caller decides freshness). */
+export const readOpsCache = internalQuery({
+  args: { key: v.string() },
+  handler: async (ctx, args): Promise<{ payload: unknown; createdAt: number } | null> => {
+    const row = await ctx.db
+      .query("kvCache")
+      .withIndex("by_key", (q) => q.eq("key", args.key))
+      .unique();
+    return row ? { payload: row.payload, createdAt: row.createdAt } : null;
+  },
+});
+
+/** Replace the cached ops payload, keeping at most one row per key. */
+export const writeOpsCache = internalMutation({
+  args: { key: v.string(), payload: v.any() },
+  handler: async (ctx, args): Promise<void> => {
+    const existing = await ctx.db
+      .query("kvCache")
+      .withIndex("by_key", (q) => q.eq("key", args.key))
+      .unique();
+    if (existing) {
+      await ctx.db.patch(existing._id, { payload: args.payload, createdAt: Date.now() });
+      return;
+    }
+    await ctx.db.insert("kvCache", {
+      key: args.key,
+      payload: args.payload,
+      createdAt: Date.now(),
+    });
+  },
+});
+
 /**
  * Fetches the walkin / aod / comm sheets (plus the CRM lines for invoice
  * revenue) and returns the already-aggregated process + productivity views.
  * Only aggregates cross the wire — the raw AOD sheet is several megabytes.
+ *
+ * The aggregates are shared through the kvCache table for a short TTL, so a
+ * team of viewers hits the expensive Google Sheets export at most once per
+ * TTL window instead of on every page load. `force` skips the cache read but
+ * still refreshes the stored copy for everyone else.
  */
+interface OpsPayload {
+  process: ProcessDashboard;
+  productivity: ProductivityDashboard;
+  fetchedAt: number;
+}
+
+type OpsActionResult = OpsPayload & { cache: "hit" | "miss" };
+
 export const fetchOpsData = action({
-  args: {},
-  handler: async () => {
-    const { walkinUrl, aodUrl, commUrl } = buildOpsFetchUrls();
-    const { crmUrl } = buildSheetsFetchUrls();
-    const [walkinRes, aodRes, commRes, crmRes] = await Promise.all([
-      fetch(walkinUrl, { redirect: "follow", cache: "no-store" }),
-      fetch(aodUrl, { redirect: "follow", cache: "no-store" }),
-      fetch(commUrl, { redirect: "follow", cache: "no-store" }),
-      fetch(crmUrl, { redirect: "follow", cache: "no-store" }),
-    ]);
-    const failed = [
-      ["walkin", walkinRes],
-      ["aod", aodRes],
-      ["comm", commRes],
-      ["crm", crmRes],
-    ].find(([, res]) => !(res as Response).ok);
-    if (failed) {
-      const [name, res] = failed as [string, Response];
-      throw new Error(`${name} sheet fetch failed: ${res.status} ${res.statusText}`);
-    }
-
-    const [walkinCsv, aodCsv, commCsv, crmCsv] = await Promise.all([
-      walkinRes.text(),
-      aodRes.text(),
-      commRes.text(),
-      crmRes.text(),
-    ]);
-
-    const invoiceRevenue = new Map<string, number>();
-    // Latest month present in the CRM lines — the operational views report on
-    // the same month as the business dashboard.
-    let preferredMonth: string | undefined;
-    for (const row of parseCrmRows(parseCsv(crmCsv))) {
-      invoiceRevenue.set(
-        row.invoiceCode,
-        (invoiceRevenue.get(row.invoiceCode) ?? 0) + row.netAmount,
-      );
-      const parts = row.dayKey.split("-");
-      if (parts.length === 3 && /^\d{4}$/.test(parts[2])) {
-        const month = `${parts[2]}-${parts[1]}`;
-        if (preferredMonth === undefined || month > preferredMonth) preferredMonth = month;
+  args: { force: v.optional(v.boolean()) },
+  handler: async (ctx, args): Promise<OpsActionResult> => {
+    const now = Date.now();
+    if (!args.force) {
+      const cached = await ctx.runQuery(internal.sheets.readOpsCache, { key: OPS_CACHE_KEY });
+      if (cached && now - cached.createdAt < OPS_CACHE_TTL_MS) {
+        const payload = cached.payload as {
+          process: ProcessDashboard;
+          productivity: ProductivityDashboard;
+        };
+        return {
+          process: payload.process,
+          productivity: payload.productivity,
+          fetchedAt: cached.createdAt,
+          cache: "hit",
+        };
       }
     }
 
-    const result = computeOps({
-      walkin: parseWalkinRows(parseCsvLite(walkinCsv)),
-      aod: parseAodRows(parseCsvLite(aodCsv)),
-      comm: parseCommRows(parseCsvLite(commCsv)),
-      invoiceRevenue,
-      preferredMonth,
+    const fresh = await fetchOpsFromSheets();
+    await ctx.runMutation(internal.sheets.writeOpsCache, {
+      key: OPS_CACHE_KEY,
+      payload: { process: fresh.process, productivity: fresh.productivity },
     });
-
-    return {
-      process: result.process,
-      productivity: result.productivity,
-      fetchedAt: Date.now(),
-    };
+    return { ...fresh, cache: "miss" };
   },
   returns: v.object({
     process: processValidator,
     productivity: productivityValidator,
     fetchedAt: v.number(),
+    cache: v.union(v.literal("hit"), v.literal("miss")),
   }),
 });
+
+async function fetchOpsFromSheets(): Promise<OpsPayload> {
+  const { walkinUrl, aodUrl, commUrl } = buildOpsFetchUrls();
+  const { crmUrl } = buildSheetsFetchUrls();
+  const [walkinRes, aodRes, commRes, crmRes] = await Promise.all([
+    fetch(walkinUrl, { redirect: "follow", cache: "no-store" }),
+    fetch(aodUrl, { redirect: "follow", cache: "no-store" }),
+    fetch(commUrl, { redirect: "follow", cache: "no-store" }),
+    fetch(crmUrl, { redirect: "follow", cache: "no-store" }),
+  ]);
+  const failed = [
+    ["walkin", walkinRes],
+    ["aod", aodRes],
+    ["comm", commRes],
+    ["crm", crmRes],
+  ].find(([, res]) => !(res as Response).ok);
+  if (failed) {
+    const [name, res] = failed as [string, Response];
+    throw new Error(`${name} sheet fetch failed: ${res.status} ${res.statusText}`);
+  }
+
+  const [walkinCsv, aodCsv, commCsv, crmCsv] = await Promise.all([
+    walkinRes.text(),
+    aodRes.text(),
+    commRes.text(),
+    crmRes.text(),
+  ]);
+
+  const invoiceRevenue = new Map<string, number>();
+  // Latest month present in the CRM lines — the operational views report on
+  // the same month as the business dashboard.
+  let preferredMonth: string | undefined;
+  for (const row of parseCrmRows(parseCsv(crmCsv))) {
+    invoiceRevenue.set(
+      row.invoiceCode,
+      (invoiceRevenue.get(row.invoiceCode) ?? 0) + row.netAmount,
+    );
+    const parts = row.dayKey.split("-");
+    if (parts.length === 3 && /^\d{4}$/.test(parts[2])) {
+      const month = `${parts[2]}-${parts[1]}`;
+      if (preferredMonth === undefined || month > preferredMonth) preferredMonth = month;
+    }
+  }
+
+  const result = computeOps({
+    walkin: parseWalkinRows(parseCsvLite(walkinCsv)),
+    aod: parseAodRows(parseCsvLite(aodCsv)),
+    comm: parseCommRows(parseCsvLite(commCsv)),
+    invoiceRevenue,
+    preferredMonth,
+  });
+
+  return {
+    process: result.process,
+    productivity: result.productivity,
+    fetchedAt: Date.now(),
+  };
+}

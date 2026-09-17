@@ -405,7 +405,7 @@ type SheetResult = {
   crmRowCount: number;
 };
 
-type OpsSheetResult = OpsResult & { fetchedAt: number };
+type OpsSheetResult = OpsResult & { fetchedAt: number; cache: "hit" | "miss" };
 
 export default function Dashboard() {
   const { user, signOut } = useAuth();
@@ -436,11 +436,11 @@ export default function Dashboard() {
     }
   }, [fetchSheets]);
 
-  const loadOps = useCallback(async () => {
+  const loadOps = useCallback(async (force = false) => {
     setOpsLoading(true);
     setOpsError(null);
     try {
-      const res = await fetchOps({});
+      const res = await fetchOps({ force });
       setOpsData(res as OpsSheetResult);
     } catch (err) {
       console.error("Operational sheet fetch failed", err);
@@ -471,7 +471,7 @@ export default function Dashboard() {
     setSyncing(true);
     try {
       await load();
-      if (opsData || opsError) await loadOps();
+      if (opsData || opsError) await loadOps(true);
     } finally {
       setSyncing(false);
     }
@@ -563,6 +563,15 @@ export default function Dashboard() {
                 ? sheetData.fetchedAt
                 : (opsData?.fetchedAt ?? sheetData.fetchedAt),
             ).toLocaleTimeString()}
+            {mode !== "business" && opsData ? (
+              <span
+                className={
+                  opsData.cache === "hit" ? "text-muted-foreground/70" : "text-primary"
+                }
+              >
+                · cache {opsData.cache}
+              </span>
+            ) : null}
           </span>
         </div>
       </main>

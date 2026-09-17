@@ -34,6 +34,14 @@ const schema = defineSchema(
 
     // add other tables here
 
+    // Generic single-object cache used to share expensive sheet aggregates
+    // (see fetchOpsData) across users and sessions for a short TTL.
+    kvCache: defineTable({
+      key: v.string(),
+      payload: v.any(),
+      createdAt: v.number(),
+    }).index("by_key", ["key"]),
+
     // tableName: defineTable({
     //   ...
     //   // table fields
