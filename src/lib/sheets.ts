@@ -183,9 +183,20 @@ export interface SalespersonTarget {
   grossProfit: number;
 }
 
+/**
+ * Upper bound used for open-ended slab ranges. Convex rejects non-finite
+ * numbers in function return values, so "and above" is stored as a sentinel
+ * that is far beyond any realisable achievement percentage.
+ */
+export const OPEN_ENDED = 9999;
+
 export interface IncentiveSlab {
   label: string; // "70% to 80%"
   value: number;
+  /** Lower edge of the achievement % this slab pays for. */
+  minPct: number;
+  /** Upper edge of the achievement % this slab pays for. */
+  maxPct: number;
 }
 
 export interface StoreTargets {
@@ -207,7 +218,7 @@ export interface AmcSlab {
   rate: number; // 200
   fixed: number; // 0 (or 750 etc. for accessory column)
   min: number; // 4
-  max: number; // 6 (Infinity allowed)
+  max: number; // 6 (OPEN_ENDED for the open-ended slab)
   incentive: number; // expected payout if landed in this slab
   /** Accessory-AMC variant (columns J:K) */
   accCount?: number;
@@ -300,7 +311,12 @@ function parsePctSlabs(cells: Array<[string, string]>): IncentiveSlab[] {
     if (/^<\d/.test(label.trim()) && prevMax > 0) {
       range = { min: prevMax + 1, max: Number.POSITIVE_INFINITY };
     }
-    slabs.push({ label, value, ...(range !== null ? { _min: range.min, _max: range.max } : {}) } as IncentiveSlab);
+    slabs.push({
+      label,
+      value,
+      minPct: range.min,
+      maxPct: Math.min(range.max, OPEN_ENDED),
+    });
     prevMax = Math.max(prevMax, range.max === Number.POSITIVE_INFINITY ? prevMax : range.max);
   }
   return slabs;
@@ -308,10 +324,7 @@ function parsePctSlabs(cells: Array<[string, string]>): IncentiveSlab[] {
 
 function slabForPct(slabs: IncentiveSlab[], pct: number): IncentiveSlab | null {
   for (const s of slabs) {
-    const ext = s as IncentiveSlab & { _min?: number; _max?: number };
-    if (ext._min !== undefined && ext._max !== undefined) {
-      if (pct >= ext._min && pct <= ext._max) return s;
-    }
+    if (pct >= s.minPct && pct <= s.maxPct) return s;
   }
   return null;
 }
@@ -536,18 +549,21 @@ export function parseTargetSheet(rows: string[][]): TargetSheet {
         continue;
       }
       const accRateInfo = parseAmcRate(accRateLabel);
-      amcSlabs.push({
+      const slab: AmcSlab = {
         label: rangeLabel || `${min}+`,
         rateLabel,
         rate,
         fixed,
-        min,
-        max,
+        min: Math.min(min, OPEN_ENDED),
+        max: Math.min(Math.max(max, min), OPEN_ENDED),
         incentive: Math.max(rate * min + fixed, 0),
-        accCount: accCount > 0 ? accCount : undefined,
-        accRate: accRateInfo.rate > 0 ? accRateInfo.rate : undefined,
-        accFixed: accRateInfo.fixed > 0 ? accRateInfo.fixed : undefined,
-      });
+      };
+      // Only attach the accessory-AMC variant when the sheet really has one —
+      // Convex return validators reject explicit undefined values.
+      if (accCount > 0) slab.accCount = accCount;
+      if (accRateInfo.rate > 0) slab.accRate = accRateInfo.rate;
+      if (accRateInfo.fixed > 0) slab.accFixed = accRateInfo.fixed;
+      amcSlabs.push(slab);
     }
   }
 

@@ -6,6 +6,14 @@ import {
   parseCrmRows,
   parseTargetSheet,
 } from "../lib/sheets";
+import {
+  buildOpsFetchUrls,
+  computeOps,
+  parseAodRows,
+  parseCommRows,
+  parseCsvLite,
+  parseWalkinRows,
+} from "../lib/ops";
 
 /**
  * Server-side fetch of the two public Google Sheets (crm + target).
@@ -76,8 +84,22 @@ export const fetchDashboardData = action({
         }),
       ),
       serviceIncentive: v.object({
-        service: v.array(v.object({ label: v.string(), value: v.number() })),
-        accessory: v.array(v.object({ label: v.string(), value: v.number() })),
+        service: v.array(
+          v.object({
+            label: v.string(),
+            value: v.number(),
+            minPct: v.number(),
+            maxPct: v.number(),
+          }),
+        ),
+        accessory: v.array(
+          v.object({
+            label: v.string(),
+            value: v.number(),
+            minPct: v.number(),
+            maxPct: v.number(),
+          }),
+        ),
       }),
       amcSlabs: v.array(
         v.object({
@@ -114,5 +136,231 @@ export const fetchDashboardData = action({
     }),
     fetchedAt: v.number(),
     crmRowCount: v.number(),
+  }),
+});
+
+/* ------------------------------------------------------------------ */
+/* Operational sheets (process + productivity)                         */
+/* ------------------------------------------------------------------ */
+
+const repairPerformanceValidator = v.object({
+  available: v.boolean(),
+  currentMonth: v.string(),
+  previousMonths: v.array(v.string()),
+  totalCurrent: v.number(),
+  previousThreeAverage: v.number(),
+  difference: v.number(),
+  percentVsAverage: v.number(),
+  typeSummary: v.array(
+    v.object({
+      repairType: v.string(),
+      current: v.number(),
+      previousThree: v.array(v.number()),
+      previousAverage: v.number(),
+      difference: v.number(),
+      percentVsAverage: v.number(),
+    }),
+  ),
+  detail: v.array(
+    v.object({
+      repairType: v.string(),
+      coverage: v.string(),
+      product: v.string(),
+      current: v.number(),
+      previousAverage: v.number(),
+      difference: v.number(),
+      percentVsAverage: v.number(),
+    }),
+  ),
+});
+
+const processValidator = v.object({
+  available: v.boolean(),
+  month: v.string(),
+  monthKey: v.string(),
+  summary: v.object({
+    total: v.number(),
+    unique: v.number(),
+    jobs: v.number(),
+    invoices: v.number(),
+    communications: v.number(),
+    openJobs: v.number(),
+    unclaimed: v.number(),
+  }),
+  daily: v.array(
+    v.object({
+      date: v.string(),
+      dateKey: v.string(),
+      total: v.number(),
+      cases: v.number(),
+      invoices: v.number(),
+      communications: v.number(),
+    }),
+  ),
+  repair: repairPerformanceValidator,
+  openJobs: v.array(
+    v.object({
+      caseId: v.string(),
+      customer: v.string(),
+      mobile: v.string(),
+      product: v.string(),
+      coverage: v.string(),
+      repairType: v.string(),
+      caseDate: v.string(),
+      caseAge: v.string(),
+      bucket: v.string(),
+      unclaimed: v.boolean(),
+      lastCommunication: v.string(),
+      communicationAging: v.string(),
+    }),
+  ),
+  ageing: v.object({
+    ages: v.array(v.string()),
+    rows: v.array(
+      v.object({
+        bucket: v.string(),
+        cells: v.array(v.number()),
+        total: v.number(),
+      }),
+    ),
+    totals: v.array(v.number()),
+    grandTotal: v.number(),
+  }),
+});
+
+const productivityValidator = v.object({
+  available: v.boolean(),
+  month: v.string(),
+  monthKey: v.string(),
+  summary: v.object({
+    walkins: v.number(),
+    uniqueWalkins: v.number(),
+    jobs: v.number(),
+    invoices: v.number(),
+    revenue: v.number(),
+    averageWalkinsPerDay: v.number(),
+    averageJobsPerDay: v.number(),
+    averageInvoicesPerDay: v.number(),
+    walkinToJob: v.number(),
+    walkinToInvoice: v.number(),
+    handlingMinutes: v.number(),
+    handlingSample: v.number(),
+    repairTatMinutes: v.number(),
+    nRepairTatMinutes: v.number(),
+    totalRepairs: v.number(),
+    carryInRepairs: v.number(),
+    nRepairRepairs: v.number(),
+    tatSample: v.number(),
+  }),
+  daily: v.array(
+    v.object({
+      date: v.string(),
+      dateKey: v.string(),
+      walkins: v.number(),
+      jobs: v.number(),
+      invoices: v.number(),
+      jobConversion: v.number(),
+      invoiceConversion: v.number(),
+    }),
+  ),
+  people: v.array(
+    v.object({
+      name: v.string(),
+      walkins: v.number(),
+      uniqueWalkins: v.number(),
+      jobs: v.number(),
+      invoices: v.number(),
+      walkinToJob: v.number(),
+      walkinToInvoice: v.number(),
+      invoiceRevenue: v.number(),
+    }),
+  ),
+  technicians: v.array(
+    v.object({
+      name: v.string(),
+      total: v.number(),
+      carryIn: v.number(),
+      nRepair: v.number(),
+      carryInTat: v.string(),
+      nRepairTat: v.string(),
+      averageTat: v.string(),
+    }),
+  ),
+  tatCases: v.array(
+    v.object({
+      caseId: v.string(),
+      technician: v.string(),
+      repairType: v.string(),
+      customer: v.string(),
+      mobile: v.string(),
+      assignDate: v.string(),
+      completeDate: v.string(),
+      completeSource: v.string(),
+      tat: v.string(),
+      tatMinutes: v.number(),
+    }),
+  ),
+  tatCaseTotal: v.number(),
+});
+
+/**
+ * Fetches the walkin / aod / comm sheets (plus the CRM lines for invoice
+ * revenue) and returns the already-aggregated process + productivity views.
+ * Only aggregates cross the wire — the raw AOD sheet is several megabytes.
+ */
+export const fetchOpsData = action({
+  args: {},
+  handler: async () => {
+    const { walkinUrl, aodUrl, commUrl } = buildOpsFetchUrls();
+    const { crmUrl } = buildSheetsFetchUrls();
+    const [walkinRes, aodRes, commRes, crmRes] = await Promise.all([
+      fetch(walkinUrl, { redirect: "follow", cache: "no-store" }),
+      fetch(aodUrl, { redirect: "follow", cache: "no-store" }),
+      fetch(commUrl, { redirect: "follow", cache: "no-store" }),
+      fetch(crmUrl, { redirect: "follow", cache: "no-store" }),
+    ]);
+    const failed = [
+      ["walkin", walkinRes],
+      ["aod", aodRes],
+      ["comm", commRes],
+      ["crm", crmRes],
+    ].find(([, res]) => !(res as Response).ok);
+    if (failed) {
+      const [name, res] = failed as [string, Response];
+      throw new Error(`${name} sheet fetch failed: ${res.status} ${res.statusText}`);
+    }
+
+    const [walkinCsv, aodCsv, commCsv, crmCsv] = await Promise.all([
+      walkinRes.text(),
+      aodRes.text(),
+      commRes.text(),
+      crmRes.text(),
+    ]);
+
+    const invoiceRevenue = new Map<string, number>();
+    for (const row of parseCrmRows(parseCsv(crmCsv))) {
+      invoiceRevenue.set(
+        row.invoiceCode,
+        (invoiceRevenue.get(row.invoiceCode) ?? 0) + row.netAmount,
+      );
+    }
+
+    const result = computeOps({
+      walkin: parseWalkinRows(parseCsvLite(walkinCsv)),
+      aod: parseAodRows(parseCsvLite(aodCsv)),
+      comm: parseCommRows(parseCsvLite(commCsv)),
+      invoiceRevenue,
+    });
+
+    return {
+      process: result.process,
+      productivity: result.productivity,
+      fetchedAt: Date.now(),
+    };
+  },
+  returns: v.object({
+    process: processValidator,
+    productivity: productivityValidator,
+    fetchedAt: v.number(),
   }),
 });
