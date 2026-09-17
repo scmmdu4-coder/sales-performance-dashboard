@@ -2,9 +2,11 @@ import { motion } from "framer-motion";
 import {
   ArrowRight,
   Gauge,
+  HeartPulse,
   LineChart,
   Lock,
   ShieldCheck,
+  Timer,
   Target,
   TrendingUp,
   Users,
@@ -42,6 +44,16 @@ const features = [
     icon: TrendingUp,
     title: "Run-rate projections",
     desc: "Balance over remaining working days so managers always know the pace needed to land the month.",
+  },
+  {
+    icon: HeartPulse,
+    title: "Walk-in process",
+    desc: "Daily walk-ins, case creation, invoice creation and communication updates — with open-jobs ageing and repair-type trends.",
+  },
+  {
+    icon: Timer,
+    title: "Technician TAT",
+    desc: "Conversion funnel, technician productivity and case-by-case repair turnaround time, all in one productivity view.",
   },
 ];
 
@@ -184,8 +196,8 @@ export default function Landing() {
               Ready to run the month at a glance?
             </h2>
             <p className="mx-auto mt-3 max-w-xl text-sm text-muted-foreground">
-              Sign in to open the MDU4 performance console — store targets,
-              incentives, KPIs and the invoice dashboard in one place.
+              Sign in to open the MDU4 performance console — Business,
+              Process and Productivity views, all backed by the live sheets.
             </p>
             <Link
               to="/auth"
