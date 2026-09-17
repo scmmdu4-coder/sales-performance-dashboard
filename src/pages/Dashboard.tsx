@@ -84,10 +84,14 @@ function ModeSwitch({
 function Header({
   name,
   mode,
+  syncing,
+  onSync,
   onSignOut,
 }: {
   name?: string;
   mode: DashboardMode;
+  syncing: boolean;
+  onSync: () => void;
   onSignOut: () => void;
 }) {
   return (
@@ -129,6 +133,16 @@ function Header({
               {name}
             </span>
           ) : null}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8 text-muted-foreground hover:text-foreground"
+            onClick={onSync}
+            disabled={syncing}
+            title="Re-read the MDU4 sheets"
+          >
+            <RefreshCw className={cn("size-4", syncing && "animate-spin")} />
+          </Button>
           <Button
             variant="ghost"
             size="icon"
@@ -407,6 +421,7 @@ export default function Dashboard() {
   const [opsData, setOpsData] = useState<OpsSheetResult | null>(null);
   const [opsError, setOpsError] = useState<string | null>(null);
   const [opsLoading, setOpsLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -450,6 +465,18 @@ export default function Dashboard() {
     void loadOps();
   }, [mode, opsData, opsLoading, loadOps]);
 
+  // Header sync: always refresh the business sheets, and the operational ones
+  // when they have already been loaded for this session.
+  const syncAll = useCallback(async () => {
+    setSyncing(true);
+    try {
+      await load();
+      if (opsData || opsError) await loadOps();
+    } finally {
+      setSyncing(false);
+    }
+  }, [load, loadOps, opsData, opsError]);
+
   const handleSignOut = async () => {
     await signOut();
     navigate("/");
@@ -487,6 +514,10 @@ export default function Dashboard() {
       <Header
         name={user?.name ?? undefined}
         mode={mode}
+        syncing={syncing}
+        onSync={() => {
+          void syncAll();
+        }}
         onSignOut={handleSignOut}
       />
 

@@ -338,11 +338,19 @@ export const fetchOpsData = action({
     ]);
 
     const invoiceRevenue = new Map<string, number>();
+    // Latest month present in the CRM lines — the operational views report on
+    // the same month as the business dashboard.
+    let preferredMonth: string | undefined;
     for (const row of parseCrmRows(parseCsv(crmCsv))) {
       invoiceRevenue.set(
         row.invoiceCode,
         (invoiceRevenue.get(row.invoiceCode) ?? 0) + row.netAmount,
       );
+      const parts = row.dayKey.split("-");
+      if (parts.length === 3 && /^\d{4}$/.test(parts[2])) {
+        const month = `${parts[2]}-${parts[1]}`;
+        if (preferredMonth === undefined || month > preferredMonth) preferredMonth = month;
+      }
     }
 
     const result = computeOps({
@@ -350,6 +358,7 @@ export const fetchOpsData = action({
       aod: parseAodRows(parseCsvLite(aodCsv)),
       comm: parseCommRows(parseCsvLite(commCsv)),
       invoiceRevenue,
+      preferredMonth,
     });
 
     return {

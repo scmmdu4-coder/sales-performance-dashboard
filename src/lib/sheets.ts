@@ -507,6 +507,15 @@ export function parseTargetSheet(rows: string[][]): TargetSheet {
   const pctAnchor = findRow(rows, 0, 3, /^(achivement|achievement)$/i);
   const svcCells: Array<[string, string]> = [];
   const accCells: Array<[string, string]> = [];
+  /**
+   * A slab row: a percentage band ("70% to 80%"), a flat band ("<110", which
+   * the service column writes as "<110%") or a Nil payout row. The comparison
+   * bands matter — they carry the top payout tiers.
+   */
+  const isBandRow = (label: string, value: string): boolean =>
+    /%|nil/i.test(label + value) ||
+    /^[<>=]?\s*\d+\s*%?$/.test(label.trim()) ||
+    /\d\s*(?:to|-|–)\s*\d/i.test(label);
   if (pctAnchor >= 0) {
     const limit = Math.min(rows.length - 1, pctAnchor + 12);
     for (let r = pctAnchor + 1; r <= limit; r++) {
@@ -515,8 +524,8 @@ export function parseTargetSheet(rows: string[][]): TargetSheet {
       const aLabel = at(r, 2);
       const aVal = at(r, 3);
       if (!sLabel && !aLabel) break;
-      if (/%|nil/i.test(sLabel + sVal)) svcCells.push([sLabel, sVal]);
-      if (/%|nil/i.test(aLabel + aVal)) accCells.push([aLabel, aVal]);
+      if (isBandRow(sLabel, sVal)) svcCells.push([sLabel, sVal]);
+      if (isBandRow(aLabel, aVal)) accCells.push([aLabel, aVal]);
     }
   }
   const serviceSlabs = parsePctSlabs(svcCells);

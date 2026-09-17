@@ -544,6 +544,11 @@ export interface OpsInput {
   comm: CommRow[];
   /** invoice code → billed value, from the current-month CRM lines. */
   invoiceRevenue: Map<string, number>;
+  /**
+   * Month the business dashboard is reporting on (YYYY-MM). The operational
+   * views follow it so every view always describes the same period.
+   */
+  preferredMonth?: string;
   /** "now" expressed as IST wall-clock epoch ms. */
   nowTs?: number;
 }
@@ -1059,7 +1064,8 @@ export function computeOps(input: OpsInput): OpsResult {
   const nowTs = input.nowTs ?? Date.now() + IST_OFFSET_MS;
 
   // The workbook is updated during the month, so the operational month is the
-  // current one when walk-ins exist for it, otherwise the latest month present.
+  // month the business dashboard reports on when it has walk-ins, otherwise the
+  // current month, otherwise the latest month present in the walk-in register.
   const currentMonth = monthKeyOf(nowTs);
   const months = Array.from(
     new Set(
@@ -1068,11 +1074,10 @@ export function computeOps(input: OpsInput): OpsResult {
         .map((r) => monthKeyOf(r.ts as number)),
     ),
   ).sort();
-  const monthKey = months.includes(currentMonth)
-    ? currentMonth
-    : months.length
-      ? months[months.length - 1]
-      : currentMonth;
+  const candidates = [input.preferredMonth, currentMonth];
+  const monthKey =
+    candidates.find((candidate) => candidate !== undefined && months.includes(candidate)) ??
+    (months.length ? months[months.length - 1] : currentMonth);
 
   return {
     process: computeProcessDashboard(input, monthKey, nowTs),

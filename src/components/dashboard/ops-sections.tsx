@@ -173,6 +173,10 @@ export function ProcessView({
 
   const repair = process.repair;
   const ageing = process.ageing;
+  // Buckets already sitting in the oldest slab — the ones that need chasing.
+  const ageingBreaches = ageing.rows
+    .filter((r) => r.cells[5] > 0)
+    .sort((a, b) => b.cells[5] - a.cells[5]);
 
   return (
     <div className="space-y-8">
@@ -359,6 +363,18 @@ export function ProcessView({
           </span>
         }
       >
+        {ageingBreaches.length ? (
+          <div className="mb-3 flex flex-wrap gap-2">
+            {ageingBreaches.map((b) => (
+              <span
+                key={b.bucket}
+                className="rounded border border-negative/40 bg-negative/10 px-2 py-1 font-mono text-[11px] text-negative"
+              >
+                {b.bucket} · {num(b.cells[5])} beyond 20 days
+              </span>
+            ))}
+          </div>
+        ) : null}
         <Panel>
           <Table
             minWidth={760}
@@ -369,7 +385,13 @@ export function ProcessView({
                 {r.bucket}
               </span>,
               ...r.cells.map((v, i) => (
-                <span key={i} className={v ? AGE_TONES[i] : "text-muted-foreground/50"}>
+                <span
+                  key={i}
+                  className={cn(
+                    v ? AGE_TONES[i] : "text-muted-foreground/50",
+                    v && i === 5 ? "rounded bg-negative/10 px-1.5 py-0.5" : "",
+                  )}
+                >
                   {v ? num(v) : "·"}
                 </span>
               )),
