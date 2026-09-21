@@ -1,11 +1,11 @@
 import {
   incentiveForPct,
+  isSaleRow,
   normalizePerson,
   revenueTypeKey,
   type AmcSlab,
   type BundleSlab,
   type CrmRow,
-  type IncentiveSlab,
   type KpiTarget,
   type TargetSheet,
 } from "./sheets";
@@ -13,6 +13,7 @@ import {
 export const WORKING_DAYS_PER_MONTH = 30;
 export const HOLIDAYS = new Set<number>([1, 15, 28]);
 
+/** Fallback people list used only when the source data has no sale rows yet. */
 export const PEOPLE_KEYS = ["SUBHA", "DINESH"] as const;
 export type PersonKey = (typeof PEOPLE_KEYS)[number];
 
@@ -32,8 +33,25 @@ export interface DayRow {
   /** Per-person achievement for the day */
   byPerson: Record<
     string,
-    { serviceRevenue: number; accessoryRevenue: number; repairRevenue: number; totalRevenue: number; grossProfit: number; invoices: number }
+    {
+      serviceRevenue: number;
+      accessoryRevenue: number;
+      repairRevenue: number;
+      totalRevenue: number;
+      grossProfit: number;
+      invoices: number;
+    }
   >;
+}
+
+export interface Bucket {
+  target: number;
+  achieved: number;
+  pct: number;
+  balance: number;
+  runRate: number;
+  requiredPerDay: number;
+  projected: number;
 }
 
 export interface StoreMetrics {
@@ -42,13 +60,19 @@ export interface StoreMetrics {
   /** Working (non-holiday) days left in the month, including the current day */
   remainingWorkingDays: number;
   monthProgressLabel: string;
+  /** Total working (non-holiday) days in the configured month */
+  totalWorkingDays: number;
+  /** Working days already elapsed (consumed) */
+  consumedWorkingDays: number;
+  /** Working days left in the month (total - consumed) */
+  balanceWorkingDays: number;
   totalInvoices: number;
   uniqueInvoices: number;
-  total: { target: number; achieved: number; pct: number; balance: number; runRate: number; requiredPerDay: number; projected: number };
-  service: { target: number; achieved: number; pct: number; balance: number; runRate: number; requiredPerDay: number; projected: number };
-  accessory: { target: number; achieved: number; pct: number; balance: number; runRate: number; requiredPerDay: number; projected: number };
-  repair: { target: number; achieved: number; pct: number; balance: number; runRate: number; requiredPerDay: number; projected: number };
-  grossProfit: { target: number; achieved: number; pct: number; balance: number; runRate: number; requiredPerDay: number; projected: number };
+  total: Bucket;
+  service: Bucket;
+  accessory: Bucket;
+  repair: Bucket;
+  grossProfit: Bucket;
 }
 
 export interface SalespersonRow {
@@ -121,9 +145,12 @@ export interface KpiIdea {
 export interface RevenueTypeStat {
   key: string;
   label: string;
+  /** Total invoice *lines* (rows) tagged with this revenue type */
+  invoiceLines: number;
+  /** Distinct invoice codes tagged with this revenue type */
+  uniqueInvoices: number;
   revenue: number;
   gp: number;
-  uniqueInvoices: number;
 }
 
 export interface KpiSnapshot {
@@ -145,6 +172,17 @@ export interface BundleOpportunity {
   accessoryCount: number;
 }
 
+/** Invoice-level roll-up used by the "Invoice Valuation" dashboard section. */
+export interface InvoiceValuation {
+  totalInvoiceLines: number;
+  totalUniqueInvoices: number;
+  byType: RevenueTypeStat[];
+  /** Unique invoices carrying a SchemeCode starting with "DISC" (bundle) */
+  bundleUniqueInvoices: number;
+  /** Unique invoices carrying a SubCategory containing "AMC" */
+  amcUniqueInvoices: number;
+}
+
 export interface DashboardData {
   crmRows: CrmRow[];
   target: TargetSheet;
@@ -153,6 +191,7 @@ export interface DashboardData {
   store: StoreMetrics;
   /** Total + unique invoice split per revenue type */
   revenueTypes: RevenueTypeStat[];
+  invoiceValuation: InvoiceValuation;
   salespeople: SalespersonRow[];
   amc: AmcRow[];
   bundle: BundleRow[];
@@ -182,15 +221,28 @@ function safeDiv(a: number, b: number): number {
   return b > 0 ? a / b : 0;
 }
 
+function titleCase(key: string): string {
+  return key
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
+    .join(" ");
+}
+
 // ---------------------------------------------------------------------------
 // Aggregation
 // ---------------------------------------------------------------------------
 
-export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): DashboardData {
+export function computeDashboard(allRows: CrmRow[], target: TargetSheet): DashboardData {
+  // Every calculation on this dashboard is scoped to crm!TranType === "SALES".
+  // Returns / credit-notes / any other transaction type are excluded up front
+  // so no downstream sum has to special-case negative amounts.
+  const rows = allRows.filter(isSaleRow);
+
   // ----- month / day scaffolding -----
   const workingDays: number[] = [];
   for (let d = 1; d <= WORKING_DAYS_PER_MONTH; d++) if (isWorkingDay(d)) workingDays.push(d);
-  const maxDay = crmRows.reduce((m, r) => Math.max(m, r.day), 0);
+  const maxDay = rows.reduce((m, r) => Math.max(m, r.day), 0);
   const daysElapsed = Math.max(1, Math.min(WORKING_DAYS_PER_MONTH, maxDay || 1));
   const daysRemaining = WORKING_DAYS_PER_MONTH - daysElapsed;
   const activeDays = workingDays.filter((d) => d <= daysElapsed).length;
@@ -200,12 +252,30 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
   // working days remaining including today
   const remainingWorkingToday = workingDays.filter((d) => d >= daysElapsed).length;
 
+  const totalWorkingDays = workingDays.length;
+  const consumedWorkingDays = activeDays;
+  const balanceWorkingDays = Math.max(0, totalWorkingDays - consumedWorkingDays);
+
+  // ----- dynamic salesperson roster -----
+  // Every salesperson that appears in the source data, plus anyone the target
+  // sheet has a plan for (so a target with zero achievement still shows up).
+  const peopleKeySet = new Set<string>();
+  for (const r of rows) {
+    const pk = normalizePerson(r.salesPerson);
+    if (pk) peopleKeySet.add(pk);
+  }
+  for (const key of Object.keys(target.salespeople)) {
+    if (key) peopleKeySet.add(key);
+  }
+  const peopleKeys =
+    peopleKeySet.size > 0 ? Array.from(peopleKeySet).sort() : [...PEOPLE_KEYS];
+
   // ----- day rows -----
   const dayMap = new Map<number, DayRow>();
   const ensureDay = (day: number): DayRow => {
     let row = dayMap.get(day);
     if (!row) {
-      const sample = crmRows.find((r) => r.day === day);
+      const sample = rows.find((r) => r.day === day);
       const dateKey = sample?.dayKey ?? String(day).padStart(2, "0");
       const [dd, mm, yy] = dateKey.split("-");
       const weekday = dd && mm && yy ? WD[new Date(Number(yy), Number(mm) - 1, Number(dd)).getDay()] : "";
@@ -235,10 +305,12 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
   const invoiceHasServiceOrRepair = new Set<string>();
   const invoiceAccessoryValue = new Map<string, { net: number; gp: number; count: number }>();
   const invoiceAccessoryFlag = new Set<string>();
-  const invoiceScheme = new Set<string>();
+  const invoiceSchemeAll = new Set<string>(); // bundle: SchemeCode starts with "DISC"
+  const invoiceAmcAll = new Set<string>(); // SubCategory contains "AMC"
   const invoicePersonSet = new Map<string, Set<string>>();
+  const invoiceLinesByType = { service: 0, accessory: 0, repair: 0 };
 
-  for (const r of crmRows) {
+  for (const r of rows) {
     const day = ensureDay(r.day);
     invoiceSet.add(r.invoiceCode);
     invoiceDay.set(r.invoiceCode, r.day);
@@ -248,26 +320,31 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
     invoicePersonSet.get(r.invoiceCode)!.add(pk);
 
     const rt = revenueTypeKey(r.revenueType);
+    if (rt) invoiceLinesByType[rt] += 1;
     if (rt === "service" || rt === "repair") invoiceHasServiceOrRepair.add(r.invoiceCode);
     if (rt === "accessory") {
       invoiceAccessoryFlag.add(r.invoiceCode);
       const prev = invoiceAccessoryValue.get(r.invoiceCode) ?? { net: 0, gp: 0, count: 0 };
       invoiceAccessoryValue.set(r.invoiceCode, {
-        net: prev.net + r.netAmount,
+        net: prev.net + r.taxableAmount,
         gp: prev.gp + r.grossProfit,
         count: prev.count + 1,
       });
     }
     if (r.schemeCode && r.schemeCode.toUpperCase().startsWith("DISC")) {
-      invoiceScheme.add(r.invoiceCode);
+      invoiceSchemeAll.add(r.invoiceCode);
+    }
+    if (r.subCategory && r.subCategory.toUpperCase().includes("AMC")) {
+      invoiceAmcAll.add(r.invoiceCode);
     }
 
-    // row-level day aggregation (positive amounts only)
-    if (r.netAmount >= 0) {
-      day.serviceRevenue += rt === "service" ? r.netAmount : 0;
-      day.accessoryRevenue += rt === "accessory" ? r.netAmount : 0;
-      day.repairRevenue += rt === "repair" ? r.netAmount : 0;
-      day.totalRevenue += r.netAmount;
+    // row-level day aggregation — achieved value is TaxableAmount per spec.
+    const value = r.taxableAmount;
+    if (value >= 0) {
+      day.serviceRevenue += rt === "service" ? value : 0;
+      day.accessoryRevenue += rt === "accessory" ? value : 0;
+      day.repairRevenue += rt === "repair" ? value : 0;
+      day.totalRevenue += value;
       day.grossProfit += r.grossProfit;
       const bp = day.byPerson[pk] ?? {
         serviceRevenue: 0,
@@ -277,29 +354,21 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
         grossProfit: 0,
         invoices: 0,
       };
-      bp.serviceRevenue += rt === "service" ? r.netAmount : 0;
-      bp.accessoryRevenue += rt === "accessory" ? r.netAmount : 0;
-      bp.repairRevenue += rt === "repair" ? r.netAmount : 0;
-      bp.totalRevenue += r.netAmount;
+      bp.serviceRevenue += rt === "service" ? value : 0;
+      bp.accessoryRevenue += rt === "accessory" ? value : 0;
+      bp.repairRevenue += rt === "repair" ? value : 0;
+      bp.totalRevenue += value;
       bp.grossProfit += r.grossProfit;
       day.byPerson[pk] = bp;
     }
   }
 
-  // unique invoices per day & per person-day
+  // unique invoices per day
   const dayUnique = new Map<number, Set<string>>();
   for (const code of invoiceSet) {
     const d = invoiceDay.get(code) ?? 0;
     if (!dayUnique.has(d)) dayUnique.set(d, new Set());
     dayUnique.get(d)!.add(code);
-  }
-  const personDayInvoices = new Map<string, Set<string>>();
-  for (const code of invoiceSet) {
-    const pk = invoicePerson.get(code) ?? "UNASSIGNED";
-    const d = invoiceDay.get(code) ?? 0;
-    const k = `${pk}|${d}`;
-    if (!personDayInvoices.has(k)) personDayInvoices.set(k, new Set());
-    personDayInvoices.get(k)!.add(code);
   }
   for (const [d, set] of dayUnique) {
     ensureDay(d).uniqueInvoices = set.size;
@@ -317,24 +386,19 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
     (a, b) => (a.undated ? 99 : a.day) - (b.undated ? 99 : b.day),
   );
 
-  // ----- store-level revenue rollups -----
+  // ----- store-level revenue rollups (TaxableAmount = achieved value) -----
   const sum = (f: (r: CrmRow) => number, filter?: (r: CrmRow) => boolean) =>
-    crmRows.reduce((acc, r) => (r.netAmount >= 0 && (!filter || filter(r)) ? acc + f(r) : acc), 0);
+    rows.reduce((acc, r) => (r.taxableAmount >= 0 && (!filter || filter(r)) ? acc + f(r) : acc), 0);
 
   const sStore = {
-    service: sum((r) => r.netAmount, (r) => revenueTypeKey(r.revenueType) === "service"),
-    accessory: sum((r) => r.netAmount, (r) => revenueTypeKey(r.revenueType) === "accessory"),
-    repair: sum((r) => r.netAmount, (r) => revenueTypeKey(r.revenueType) === "repair"),
-    total: sum((r) => r.netAmount),
+    service: sum((r) => r.taxableAmount, (r) => revenueTypeKey(r.revenueType) === "service"),
+    accessory: sum((r) => r.taxableAmount, (r) => revenueTypeKey(r.revenueType) === "accessory"),
+    repair: sum((r) => r.taxableAmount, (r) => revenueTypeKey(r.revenueType) === "repair"),
+    total: sum((r) => r.taxableAmount),
     grossProfit: sum((r) => r.grossProfit),
   };
 
-  const bucket = (
-    tgt: number,
-    ach: number,
-    elapsedWorking: number,
-    remAfter: number,
-  ) => {
+  const bucket = (tgt: number, ach: number, elapsedWorking: number, remAfter: number): Bucket => {
     const runRate = safeDiv(ach, elapsedWorking);
     return {
       target: tgt,
@@ -352,7 +416,10 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
     daysRemaining,
     remainingWorkingDays: remainingWorkingToday,
     monthProgressLabel: `${daysElapsed} of ${WORKING_DAYS_PER_MONTH} days`,
-    totalInvoices: crmRows.length,
+    totalWorkingDays,
+    consumedWorkingDays,
+    balanceWorkingDays,
+    totalInvoices: rows.length,
     uniqueInvoices: invoiceSet.size,
     total: bucket(target.store.total, sStore.total, activeDays, remainingWorkingAfter),
     service: bucket(target.store.service, sStore.service, activeDays, remainingWorkingAfter),
@@ -372,24 +439,33 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
     const set = new Set<string>();
     let revenue = 0;
     let gp = 0;
-    for (const r of crmRows) {
-      if (r.netAmount < 0) continue;
+    for (const r of rows) {
+      if (r.taxableAmount < 0) continue;
       if (revenueTypeKey(r.revenueType) !== key) continue;
       set.add(r.invoiceCode);
-      revenue += r.netAmount;
+      revenue += r.taxableAmount;
       gp += r.grossProfit;
     }
     return {
       key,
       label,
+      invoiceLines: invoiceLinesByType[key],
+      uniqueInvoices: set.size,
       revenue: Math.round(revenue),
       gp: Math.round(gp),
-      uniqueInvoices: set.size,
     };
   });
 
+  const invoiceValuation: InvoiceValuation = {
+    totalInvoiceLines: rows.length,
+    totalUniqueInvoices: invoiceSet.size,
+    byType: revenueTypes,
+    bundleUniqueInvoices: invoiceSchemeAll.size,
+    amcUniqueInvoices: invoiceAmcAll.size,
+  };
+
   // ----- salesperson revenue & incentive -----
-  const salespeople: SalespersonRow[] = PEOPLE_KEYS.map((key) => {
+  const salespeople: SalespersonRow[] = peopleKeys.map((key) => {
     const t = target.salespeople[key] ?? {
       service: 0,
       accessory: 0,
@@ -397,14 +473,14 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
       total: 0,
       grossProfit: 0,
     };
-    const mine = crmRows.filter((r) => normalizePerson(r.salesPerson) === key);
+    const mine = rows.filter((r) => normalizePerson(r.salesPerson) === key);
     const mineInvoices = personInvoiceTotals.get(key) ?? new Set<string>();
     const sumMine = (f: (r: CrmRow) => number, filter?: (r: CrmRow) => boolean) =>
-      mine.reduce((acc, r) => (r.netAmount >= 0 && (!filter || filter(r)) ? acc + f(r) : acc), 0);
+      mine.reduce((acc, r) => (r.taxableAmount >= 0 && (!filter || filter(r)) ? acc + f(r) : acc), 0);
     const ach = {
-      service: sumMine((r) => r.netAmount, (r) => revenueTypeKey(r.revenueType) === "service"),
-      accessory: sumMine((r) => r.netAmount, (r) => revenueTypeKey(r.revenueType) === "accessory"),
-      repair: sumMine((r) => r.netAmount, (r) => revenueTypeKey(r.revenueType) === "repair"),
+      service: sumMine((r) => r.taxableAmount, (r) => revenueTypeKey(r.revenueType) === "service"),
+      accessory: sumMine((r) => r.taxableAmount, (r) => revenueTypeKey(r.revenueType) === "accessory"),
+      repair: sumMine((r) => r.taxableAmount, (r) => revenueTypeKey(r.revenueType) === "repair"),
       total: 0,
     };
     ach.total = ach.service + ach.accessory + ach.repair;
@@ -422,7 +498,7 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
 
     return {
       key,
-      name: key.charAt(0) + key.slice(1).toLowerCase(),
+      name: titleCase(key),
       invoiceCount: mineInvoices.size,
       total: mk(t.total, ach.total, svc + acc),
       service: mk(t.service, ach.service, svc),
@@ -433,15 +509,14 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
   });
 
   // ----- AMC & Bundle tracking (per person) -----
-  // AMC KPI rule: crm!SubCategory == "AMC Charge", unique invoice codes.
+  // AMC KPI rule: crm!SubCategory contains "AMC", unique invoice codes.
   // Accessory-AMC variant: AMC invoice with no service/repair line on it.
   const amcByPerson = new Map<string, Set<string>>();
   const accAmcByPerson = new Map<string, Set<string>>();
   const bundleByPerson = new Map<string, Set<string>>();
-  for (const r of crmRows) {
+  for (const r of rows) {
     const pk = normalizePerson(r.salesPerson);
-    const rt = revenueTypeKey(r.revenueType);
-    if (r.subCategory.toUpperCase() === "AMC CHARGE" && r.netAmount >= 0) {
+    if (r.subCategory.toUpperCase().includes("AMC") && r.taxableAmount >= 0) {
       if (!amcByPerson.has(pk)) amcByPerson.set(pk, new Set());
       amcByPerson.get(pk)!.add(r.invoiceCode);
       if (!invoiceHasServiceOrRepair.has(r.invoiceCode)) {
@@ -449,7 +524,7 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
         accAmcByPerson.get(pk)!.add(r.invoiceCode);
       }
     }
-    if (r.schemeCode.toUpperCase().startsWith("DISC") && r.netAmount >= 0) {
+    if (r.schemeCode.toUpperCase().startsWith("DISC") && r.taxableAmount >= 0) {
       if (!bundleByPerson.has(pk)) bundleByPerson.set(pk, new Set());
       bundleByPerson.get(pk)!.add(r.invoiceCode);
     }
@@ -457,20 +532,16 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
 
   // Accessory-AMC tiers are keyed on their accessory count threshold; the
   // best-paying tier the count qualifies for wins.
-  const accTiers = target.amcSlabs.filter(
-    (s) => (s.accCount ?? 0) > 0 && (s.accRate ?? 0) > 0,
-  );
-  const accPayout = (t: AmcSlab, count: number) =>
-    count * (t.accRate ?? 0) + (t.accFixed ?? 0);
+  const accTiers = target.amcSlabs.filter((s) => (s.accCount ?? 0) > 0 && (s.accRate ?? 0) > 0);
+  const accPayout = (t: AmcSlab, count: number) => count * (t.accRate ?? 0) + (t.accFixed ?? 0);
 
-  const amc: AmcRow[] = PEOPLE_KEYS.map((key) => {
+  const amc: AmcRow[] = peopleKeys.map((key) => {
     const amcCount = amcByPerson.get(key)?.size ?? 0;
     const accessoryCount = accAmcByPerson.get(key)?.size ?? 0;
     const slabs = target.amcSlabs;
     const amcSlab = slabs.filter((s) => amcCount >= s.min).slice(-1)[0] ?? null;
     const amcNextSlab =
-      slabs.filter((s) => s.min > amcCount && s.rate > 0).sort((a, b) => a.min - b.min)[0] ??
-      null;
+      slabs.filter((s) => s.min > amcCount && s.rate > 0).sort((a, b) => a.min - b.min)[0] ?? null;
     const amcEligible = amcSlab ? amcCount * amcSlab.rate + amcSlab.fixed : 0;
     const amcRemaining = amcNextSlab ? Math.max(0, amcNextSlab.min - amcCount) : 0;
 
@@ -479,17 +550,14 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
         .filter((t) => accessoryCount >= (t.accCount ?? 0))
         .sort((a, b) => accPayout(b, accessoryCount) - accPayout(a, accessoryCount))[0] ?? null;
     const accNextSlab =
-      accTiers
-        .filter((t) => (t.accCount ?? 0) > accessoryCount)
-        .sort((a, b) => (a.accCount ?? 0) - (b.accCount ?? 0))[0] ?? null;
+      accTiers.filter((t) => (t.accCount ?? 0) > accessoryCount).sort((a, b) => (a.accCount ?? 0) - (b.accCount ?? 0))[0] ??
+      null;
     const accEligible = accSlab ? accPayout(accSlab, accessoryCount) : 0;
-    const accRemaining = accNextSlab
-      ? Math.max(0, (accNextSlab.accCount ?? 0) - accessoryCount)
-      : 0;
+    const accRemaining = accNextSlab ? Math.max(0, (accNextSlab.accCount ?? 0) - accessoryCount) : 0;
 
     return {
       key,
-      name: key.charAt(0) + key.slice(1).toLowerCase(),
+      name: titleCase(key),
       amcCount,
       amcSlab,
       amcNextSlab,
@@ -504,15 +572,14 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
     };
   });
 
-  const bundle: BundleRow[] = PEOPLE_KEYS.map((key) => {
+  const bundle: BundleRow[] = peopleKeys.map((key) => {
     const count = bundleByPerson.get(key)?.size ?? 0;
     const slabs = target.bundleSlabs;
     const slab = slabs.filter((s) => count >= s.min).slice(-1)[0] ?? null;
-    const nextSlab =
-      slabs.filter((s) => s.min > count).sort((a, b) => a.min - b.min)[0] ?? null;
+    const nextSlab = slabs.filter((s) => s.min > count).sort((a, b) => a.min - b.min)[0] ?? null;
     return {
       key,
-      name: key.charAt(0) + key.slice(1).toLowerCase(),
+      name: titleCase(key),
       count,
       slab,
       nextSlab,
@@ -529,7 +596,7 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
     if (!v) continue;
     bundleOpportunities.push({
       invoiceCode: code,
-      dayKey: crmRows.find((r) => r.invoiceCode === code)?.dayKey ?? "",
+      dayKey: rows.find((r) => r.invoiceCode === code)?.dayKey ?? "",
       salesPerson: invoicePerson.get(code) ?? "UNASSIGNED",
       accessoryNet: v.net,
       accessoryGp: v.gp,
@@ -539,15 +606,16 @@ export function computeDashboard(crmRows: CrmRow[], target: TargetSheet): Dashbo
   bundleOpportunities.sort((a, b) => a.dayKey.localeCompare(b.dayKey));
 
   // ----- KPI computations -----
-  const kpi = computeKpis(crmRows, target, invoiceSet, remainingWorkingToday);
+  const kpi = computeKpis(rows, target, invoiceSet, remainingWorkingToday);
 
   return {
-    crmRows,
+    crmRows: rows,
     target,
     days,
     activeDays,
     store,
     revenueTypes,
+    invoiceValuation,
     salespeople,
     amc,
     bundle,
@@ -579,6 +647,10 @@ const KPI_HINTS: Record<string, string> = {
   ARD: "Move complex repairs onto ARD codes",
 };
 
+/**
+ * `crmRows` here is already the SALES-only, filtered row set produced by
+ * computeDashboard — no other TranType should ever reach this function.
+ */
 export function computeKpis(
   crmRows: CrmRow[],
   target: TargetSheet,
@@ -609,8 +681,8 @@ export function computeKpis(
     let achievedValue = 0;
     let achievedGp = 0;
     for (const r of crmRows) {
-      if (r.netAmount >= 0 && invoices.has(r.invoiceCode)) {
-        achievedValue += r.netAmount;
+      if (r.taxableAmount >= 0 && invoices.has(r.invoiceCode)) {
+        achievedValue += r.taxableAmount;
         achievedGp += r.grossProfit;
       }
     }
@@ -639,12 +711,12 @@ export function computeKpis(
   const threePP = new Set<string>();
 
   for (const r of crmRows) {
-    if (r.netAmount < 0) continue;
+    if (r.taxableAmount < 0) continue;
     const pt = r.partType.toUpperCase();
     const rt = revenueTypeKey(r.revenueType);
     if (pt === "ACPLUS") careplus.add(r.invoiceCode);
     if (pt === "PROTECTPLUS") protectplus.add(r.invoiceCode);
-    if (r.subCategory.toUpperCase() === "AMC CHARGE") amcKpi.add(r.invoiceCode);
+    if (r.subCategory.toUpperCase().includes("AMC")) amcKpi.add(r.invoiceCode);
     if (r.schemeCode.toUpperCase().startsWith("DISC")) bundleKpi.add(r.invoiceCode);
     if (rt === "accessory") threePP.add(r.invoiceCode);
   }
@@ -652,29 +724,31 @@ export function computeKpis(
   const invoiceHasSvcRep = new Set<string>();
   for (const r of crmRows) {
     const rt = revenueTypeKey(r.revenueType);
-    if ((rt === "service" || rt === "repair") && r.netAmount >= 0) invoiceHasSvcRep.add(r.invoiceCode);
+    if ((rt === "service" || rt === "repair") && r.taxableAmount >= 0) invoiceHasSvcRep.add(r.invoiceCode);
   }
   const threePPFinal = new Set(Array.from(threePP).filter((c) => invoiceHasSvcRep.has(c)));
 
-  // ---- RR KPIs ----
+  // ---- RR KPIs — crm!ItemDescription rule: category = description contains
+  // both "iphone" AND the part keyword. "Others" is every remaining repair
+  // invoice that doesn't already qualify for Display/Battery/Glass.
   const rrDisplay = new Set<string>();
   const rrBattery = new Set<string>();
   const rrGlass = new Set<string>();
   const rrOthers = new Set<string>();
 
   for (const r of crmRows) {
-    if (r.netAmount < 0) continue;
+    if (r.taxableAmount < 0) continue;
     const rt = revenueTypeKey(r.revenueType);
+    if (rt !== "repair") continue;
     const d = descUp(r);
-    const ic = itemCodeUp(r);
-    const isAcsh = ic.startsWith("ACSH");
     const isIphone = d.includes("IPHONE");
-    if (rt === "repair") {
-      if (isIphone && d.includes("DISPLAY") && !isAcsh) rrDisplay.add(r.invoiceCode);
-      if (isIphone && d.includes("BATTERY")) rrBattery.add(r.invoiceCode);
-      if (isIphone && d.includes("GLASS") && !isAcsh) rrGlass.add(r.invoiceCode);
-      if (!isAcsh) rrOthers.add(r.invoiceCode);
-    }
+    const isDisplay = isIphone && d.includes("DISPLAY");
+    const isBattery = isIphone && d.includes("BATTERY");
+    const isGlass = isIphone && d.includes("GLASS");
+    if (isDisplay) rrDisplay.add(r.invoiceCode);
+    if (isBattery) rrBattery.add(r.invoiceCode);
+    if (isGlass) rrGlass.add(r.invoiceCode);
+    if (!isDisplay && !isBattery && !isGlass) rrOthers.add(r.invoiceCode);
   }
 
   // ---- SR KPIs ----
@@ -682,7 +756,7 @@ export function computeKpis(
   const srShc = new Set<string>();
   const srArd = new Set<string>();
   for (const r of crmRows) {
-    if (r.netAmount < 0) continue;
+    if (r.taxableAmount < 0) continue;
     const ic = itemCodeUp(r);
     if (ic.startsWith("SRD")) srSrd.add(r.invoiceCode);
     if (ic.startsWith("SHC")) srShc.add(r.invoiceCode);
@@ -701,7 +775,7 @@ export function computeKpis(
     ["CON", "Consumables"],
   ];
   for (const r of crmRows) {
-    if (r.netAmount < 0) continue;
+    if (r.taxableAmount < 0) continue;
     const ic = itemCodeUp(r);
     const srCode = ic.startsWith("SRD") ? "SRD" : ic.startsWith("SHC") ? "SHC" : ic.startsWith("ARD") ? "ARD" : null;
     if (!srCode) continue;
@@ -715,7 +789,7 @@ export function computeKpis(
       if (!byProduct.has(label)) byProduct.set(label, { count: new Set(), value: 0, gp: 0 });
       const entry = byProduct.get(label)!;
       entry.count.add(r.invoiceCode);
-      entry.value += r.netAmount;
+      entry.value += r.taxableAmount;
       entry.gp += r.grossProfit;
     }
   }
@@ -732,11 +806,7 @@ export function computeKpis(
     mkRow(getKpi("GLASS"), rrGlass),
     mkRow(getKpi("OTHERS"), rrOthers),
   ];
-  const srBase = [
-    mkRow(getKpi("SRD"), srSrd),
-    mkRow(getKpi("SHC"), srShc),
-    mkRow(getKpi("ARD"), srArd),
-  ];
+  const srBase = [mkRow(getKpi("SRD"), srSrd), mkRow(getKpi("SHC"), srShc), mkRow(getKpi("ARD"), srArd)];
   const sr = srBase.map((row) => ({
     ...row,
     sub: Array.from((productMix.get(row.code) ?? new Map()).entries()).map(([label, v]) => ({

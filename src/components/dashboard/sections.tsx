@@ -406,6 +406,21 @@ export function StorePerformanceSection({ data }: { data: DashboardData }) {
         <Stat label="Run Rate / Day" value={money(s.total.runRate)} />
         <Stat label="Req / Day" value={money(s.total.requiredPerDay)} sub="to close balance" />
       </div>
+      <div className="grid grid-cols-3 gap-2 border-t border-border/70 p-3">
+        <Stat label="Total Working Days" value={s.totalWorkingDays} sub="this month, ex. holidays" />
+        <Stat
+          label="Consumed Working Days"
+          value={s.consumedWorkingDays}
+          tone="primary"
+          sub="elapsed so far"
+        />
+        <Stat
+          label="Balance Working Days"
+          value={s.balanceWorkingDays}
+          tone={s.balanceWorkingDays > 0 ? "warning" : "positive"}
+          sub="left to hit target"
+        />
+      </div>
     </Panel>
   );
 }
@@ -994,9 +1009,14 @@ export function KpiSection({ data }: { data: DashboardData }) {
 /* ------------------------------------------------------------------ */
 
 export function InvoiceDashboardSection({ data }: { data: DashboardData }) {
-  const { days, store, revenueTypes } = data;
+  const { days, store, revenueTypes, invoiceValuation } = data;
   const people = data.salespeople.map((p) => p.key);
   const targetPerDay = store.total.requiredPerDay;
+  // Daily target per revenue type = balance for that type ÷ balance working days.
+  const perTypeDailyTarget = (key: "service" | "accessory" | "repair") => {
+    const bucket = store[key];
+    return store.balanceWorkingDays > 0 ? bucket.balance / store.balanceWorkingDays : 0;
+  };
 
   const totals = days.reduce(
     (acc, d) => ({
@@ -1043,6 +1063,50 @@ export function InvoiceDashboardSection({ data }: { data: DashboardData }) {
           />
         ))}
       </div>
+
+      <Panel>
+        <PanelHead
+          title="Invoice Valuation"
+          hint="Total invoice lines vs unique invoice codes, split by revenue type · bundle/AMC unique counts from crm!SchemeCode & SubCategory"
+        />
+        <MiniTable
+          head={["Revenue Type", "Invoice Lines", "Unique Invoices", "Revenue", "Gross Profit", "Daily Target"]}
+          rows={[
+            ...revenueTypes.map((rt) => [
+              rt.label,
+              rt.invoiceLines,
+              <span className="font-semibold text-primary">{rt.uniqueInvoices}</span>,
+              money(rt.revenue),
+              money(rt.gp),
+              money(
+                perTypeDailyTarget(
+                  rt.key === "service" ? "service" : rt.key === "accessory" ? "accessory" : "repair",
+                ),
+              ),
+            ]),
+          ]}
+          footer={[
+            "Overall",
+            invoiceValuation.totalInvoiceLines,
+            invoiceValuation.totalUniqueInvoices,
+            money(store.total.achieved),
+            money(store.grossProfit.achieved),
+            money(targetPerDay),
+          ]}
+        />
+        <div className="grid grid-cols-2 gap-2 border-t border-border/70 p-3 sm:grid-cols-2">
+          <Stat
+            label="Bundle Unique Invoices"
+            value={invoiceValuation.bundleUniqueInvoices}
+            sub="SchemeCode starts with DISC"
+          />
+          <Stat
+            label="AMC Unique Invoices"
+            value={invoiceValuation.amcUniqueInvoices}
+            sub="SubCategory contains AMC"
+          />
+        </div>
+      </Panel>
 
       <Panel>
         <PanelHead

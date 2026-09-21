@@ -106,11 +106,18 @@ export interface CrmRow {
   netAmount: number;
   taxableAmount: number;
   grossProfit: number;
+  /** crm!TranType — only rows equal to "SALES" count toward every metric. */
+  tranType: string;
 }
 
 function num(s: string): number {
   const v = Number.parseFloat((s ?? "").replace(/,/g, "").trim());
   return Number.isFinite(v) ? v : 0;
+}
+
+/** Row qualifies for every dashboard calculation: crm!TranType must be "SALES". */
+export function isSaleRow(r: Pick<CrmRow, "tranType">): boolean {
+  return (r.tranType ?? "").trim().toUpperCase() === "SALES";
 }
 
 export function parseCrmRows(rows: string[][]): CrmRow[] {
@@ -139,6 +146,7 @@ export function parseCrmRows(rows: string[][]): CrmRow[] {
       netAmount: num(o["NetAmount"] ?? "0"),
       taxableAmount: num(o["TaxableAmount"] ?? "0"),
       grossProfit: num(o["GrossProfit"] ?? "0"),
+      tranType: (o["TranType"] ?? "").trim(),
     });
   }
   return out;

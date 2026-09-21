@@ -67,6 +67,7 @@ export const fetchDashboardData = action({
         netAmount: v.number(),
         taxableAmount: v.number(),
         grossProfit: v.number(),
+        tranType: v.string(),
       }),
     ),
     target: v.object({
