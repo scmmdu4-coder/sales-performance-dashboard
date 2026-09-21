@@ -2,21 +2,39 @@
  * ============================================================================
  *  SALES PERFORMANCE DASHBOARD — Google Apps Script
  * ============================================================================
- *  HOW TO USE
- *  ----------
- *  1. Open your Google Sheet (the one with the "crm" and "target" tabs).
- *  2. Extensions → Apps Script.
- *  3. Delete anything in the editor and paste this entire file in.
- *  4. Click the disk icon to save (name the project anything you like).
- *  5. In the function dropdown at the top, choose "buildDashboard" and
- *     click ▶ Run. The first run will ask you to authorize the script —
- *     accept it (it only touches this spreadsheet).
- *  6. Reload the spreadsheet — you'll see a new "📊 Sales Dashboard" menu.
- *     Use it any time to rebuild the dashboard after the crm/target sheets
- *     change.
+ *  This script gives you TWO ways to see the dashboard — pick either or use
+ *  both:
  *
- *  WHAT IT BUILDS (tab "Dashboard")
- *  ---------------------------------
+ *  MODE A — a tab inside the spreadsheet (no deployment needed)
+ *  --------------------------------------------------------------
+ *   1. Open your Google Sheet (the one with the "crm" and "target" tabs).
+ *   2. Extensions → Apps Script, paste this whole file in, save.
+ *   3. Run the function "buildDashboard" once from the editor (▶) and
+ *      accept the authorization prompt.
+ *   4. Reload the spreadsheet — a "📊 Sales Dashboard" menu appears. Use
+ *      "Build / Refresh Dashboard" any time crm/target data changes.
+ *
+ *  MODE B — a real, standalone web page (a "script page" / Web App)
+ *  --------------------------------------------------------------
+ *   1. Do steps 1–2 from Mode A (paste the script in, save).
+ *   2. Click "Deploy" (top-right) → "New deployment".
+ *   3. Click the gear icon next to "Select type" → choose "Web app".
+ *   4. Fill in:
+ *        Description:      Sales Dashboard
+ *        Execute as:       Me (your account)
+ *        Who has access:   Anyone with the link (or "Anyone within your
+ *                           organization" if you're on Google Workspace)
+ *   5. Click "Deploy" → authorize when prompted.
+ *   6. Copy the "Web app URL" you're given — open it in any browser to see
+ *      a live, colorful, auto-refreshing dashboard page (no login into the
+ *      spreadsheet required for viewers who have the link).
+ *   7. Whenever you edit crm/target data, just reload that URL — it always
+ *      recomputes live from the current sheet contents.
+ *   NOTE: if you edit the script later, repeat Deploy → "Manage deployments"
+ *   → pencil icon → "New version" → Deploy, so the URL picks up the change.
+ *
+ *  WHAT IT COMPUTES (same for both modes)
+ *  ---------------------------------------
  *   1. Store target vs achievement vs balance, per revenue type
  *   2. Working days: total / consumed / balance for the current month
  *   3. Salesperson performance per revenue type (every name found in "crm")
@@ -45,6 +63,11 @@ var CONFIG = {
   CRM_SHEET_NAME: "crm",
   TARGET_SHEET_NAME: "target",
   DASHBOARD_SHEET_NAME: "Dashboard",
+  // Leave blank to always use the spreadsheet this script is bound to.
+  // Only set this if you deploy the Web App from a *different* Apps Script
+  // project than the one bound to your sheet (Extensions → Apps Script
+  // always binds it for you, so you normally don't need to touch this).
+  SPREADSHEET_ID: "",
   // Day-of-month numbers treated as holidays / non-working days this month.
   // Edit this list to match your store's actual holiday calendar.
   HOLIDAYS: [1, 15, 28],
@@ -57,35 +80,39 @@ var CONFIG = {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("📊 Sales Dashboard")
-    .addItem("Build / Refresh Dashboard", "buildDashboard")
+    .addItem("Build / Refresh Dashboard (sheet tab)", "buildDashboard")
+    .addItem("How do I get the Web App page?", "showWebAppHelp_")
     .addToUi();
 }
 
-/**
- * NOT used for normal operation. This script is a container-bound script
- * (it runs against the spreadsheet it's attached to) — you do NOT need to
- * deploy it as a Web App or hit a URL.
- *
- * If you see "Script function not found: doGet", it means the Apps Script
- * editor's function selector (top toolbar dropdown, next to ▶ Run) is set
- * to "doGet" instead of "buildDashboard". To fix:
- *   1. Click that dropdown and choose "buildDashboard".
- *   2. Click ▶ Run again.
- * This stub only exists so an accidental Web App deployment doesn't error.
- */
-function doGet() {
-  return HtmlService.createHtmlOutput(
-    "This script runs inside its bound Google Sheet. Open the sheet and use " +
-      "the \"📊 Sales Dashboard\" menu, or run buildDashboard() from the Apps Script editor.",
-  );
+function showWebAppHelp_() {
+  var html = HtmlService.createHtmlOutput(
+    "<div style='font:14px Arial,sans-serif;line-height:1.5;padding:4px 8px'>" +
+      "<p><b>To open the dashboard as a standalone web page:</b></p>" +
+      "<ol>" +
+      "<li>In the Apps Script editor, click <b>Deploy</b> (top-right) → <b>New deployment</b>.</li>" +
+      "<li>Click the gear icon next to \"Select type\" → choose <b>Web app</b>.</li>" +
+      "<li>Execute as: <b>Me</b>. Who has access: <b>Anyone with the link</b>.</li>" +
+      "<li>Click <b>Deploy</b>, authorize, then copy the Web app URL.</li>" +
+      "<li>Open that URL in any browser — it always shows live data from this sheet.</li>" +
+      "</ol></div>",
+  ).setWidth(420).setHeight(280);
+  SpreadsheetApp.getUi().showModalDialog(html, "Web App Dashboard — Setup");
 }
 
 /* ============================================================================
- * ENTRY POINT
+ * ENTRY POINTS
  * ========================================================================= */
 
-function buildDashboard() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+/** Resolves the spreadsheet regardless of whether we're in a UI context (Mode A) or an HTTP request (Mode B). */
+function getSpreadsheet_() {
+  if (CONFIG.SPREADSHEET_ID) return SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  return SpreadsheetApp.getActiveSpreadsheet();
+}
+
+/** Shared pipeline: read crm + target sheets, parse, and compute the dashboard data object. */
+function loadDashboardData_() {
+  var ss = getSpreadsheet_();
   var crmSheet = ss.getSheetByName(CONFIG.CRM_SHEET_NAME);
   var targetSheet = ss.getSheetByName(CONFIG.TARGET_SHEET_NAME);
 
@@ -97,16 +124,34 @@ function buildDashboard() {
 
   var allRows = parseCrmRows(crmValues);
   var target = parseTargetSheet(targetValues);
-  var data = computeDashboard(allRows, target);
+  return { ss: ss, data: computeDashboard(allRows, target) };
+}
 
-  writeDashboard(ss, data);
+/** MODE A: writes/refreshes the "Dashboard" tab inside the spreadsheet. */
+function buildDashboard() {
+  var loaded = loadDashboardData_();
+  writeDashboard(loaded.ss, loaded.data);
 
   SpreadsheetApp.getActiveSpreadsheet().toast(
-    "Dashboard rebuilt: " + data.store.totalInvoices + " SALES rows, " +
-      data.store.uniqueInvoices + " unique invoices.",
+    "Dashboard rebuilt: " + loaded.data.store.totalInvoices + " SALES rows, " +
+      loaded.data.store.uniqueInvoices + " unique invoices.",
     "Sales Dashboard",
     6,
   );
+}
+
+/**
+ * MODE B: the Web App entry point. Apps Script calls this automatically
+ * whenever someone opens the deployed Web App URL (see the setup steps in
+ * the header comment above — Deploy → New deployment → Web app).
+ */
+function doGet(e) {
+  var loaded = loadDashboardData_();
+  var html = renderDashboardHtml_(loaded.data);
+  return HtmlService.createHtmlOutput(html)
+    .setTitle("Sales Performance Dashboard")
+    .addMetaTag("viewport", "width=device-width, initial-scale=1")
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
 /* ============================================================================
@@ -1110,4 +1155,264 @@ function writeDateWiseSection_(sheet, row, data) {
     row++;
   });
   return row + 1;
+}
+
+/* ============================================================================
+ * WEB APP HTML RENDERER  (Mode B — the standalone "script page")
+ * Pure server-side string templating — no client-side calls back into
+ * Apps Script are needed, so the page works even for anonymous / link
+ * viewers. Reload the URL to recompute from the latest sheet data.
+ * ========================================================================= */
+
+function esc_(s) {
+  return String(s === null || s === undefined ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function pctBadgeHtml_(pctVal) {
+  var cls = pctVal >= 100 ? "good" : pctVal >= 70 ? "info" : pctVal >= 40 ? "warn" : "bad";
+  return '<span class="badge ' + cls + '">' + pctVal.toFixed(1) + "%</span>";
+}
+
+function barHtml_(pctVal) {
+  var clamped = Math.max(0, Math.min(100, pctVal));
+  var cls = pctVal >= 100 ? "good" : pctVal >= 70 ? "info" : pctVal >= 40 ? "warn" : "bad";
+  return '<div class="bar"><div class="bar-fill ' + cls + '" style="width:' + clamped + '%"></div></div>';
+}
+
+function renderDashboardHtml_(data) {
+  var css = getDashboardCss_();
+  var body = "";
+
+  body += renderStoreCards_(data);
+  body += renderStoreTable_(data);
+  body += renderWorkingDaysCard_(data);
+  body += renderSalespersonCards_(data);
+  body += renderIncentiveTable_(data);
+  body += renderKpiSection_(data);
+  body += renderInvoiceValuation_(data);
+  body += renderDateWiseTable_(data);
+
+  var generated = Utilities.formatDate(data.generatedAt, Session.getScriptTimeZone(), "dd MMM yyyy, HH:mm");
+
+  return (
+    "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
+    "<title>Sales Performance Dashboard</title><style>" + css + "</style></head><body>" +
+    '<header class="topbar">' +
+    '<div class="topbar-inner">' +
+    "<h1>📊 Sales Performance Dashboard</h1>" +
+    '<div class="meta">Generated ' + esc_(generated) + " &middot; " + data.store.totalInvoices +
+    " SALES rows &middot; " + data.store.uniqueInvoices + ' unique invoices &middot; ' +
+    '<a href="javascript:location.reload()">refresh</a></div>' +
+    "</div></header>" +
+    '<main class="wrap">' + body + "</main>" +
+    '<footer class="foot">Reload this page any time to recompute from the latest crm / target sheet data.</footer>' +
+    "</body></html>"
+  );
+}
+
+function getDashboardCss_() {
+  return (
+    "* { box-sizing: border-box; }" +
+    "body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;" +
+    " background:#0f172a; color:#0f172a; }" +
+    ".topbar { background:linear-gradient(135deg,#1f2a44,#2563eb); color:#fff; padding:18px 20px; }" +
+    ".topbar-inner { max-width:1180px; margin:0 auto; }" +
+    ".topbar h1 { margin:0 0 4px; font-size:22px; }" +
+    ".topbar .meta { font-size:12px; opacity:.85; }" +
+    ".topbar .meta a { color:#fff; text-decoration:underline; }" +
+    ".wrap { max-width:1180px; margin:0 auto; padding:20px 16px 60px; }" +
+    ".section { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.08); margin-bottom:22px; overflow:hidden; }" +
+    ".section h2 { margin:0; padding:14px 18px; font-size:14px; letter-spacing:.06em; text-transform:uppercase;" +
+    " background:#2563eb; color:#fff; }" +
+    ".section .body { padding:16px 18px; }" +
+    ".cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:22px; }" +
+    ".card { background:#fff; border-radius:12px; padding:14px 16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }" +
+    ".card .label { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:#64748b; font-weight:600; }" +
+    ".card .value { font-size:22px; font-weight:700; margin-top:4px; }" +
+    ".card .sub { font-size:11px; color:#64748b; margin-top:2px; }" +
+    "table { width:100%; border-collapse:collapse; font-size:13px; }" +
+    "th { text-align:right; font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:#64748b;" +
+    " padding:8px 10px; border-bottom:2px solid #e2e8f0; }" +
+    "th:first-child, td:first-child { text-align:left; }" +
+    "td { padding:8px 10px; border-bottom:1px solid #eef2f6; text-align:right; }" +
+    "tr:nth-child(even) td { background:#f8fafc; }" +
+    "tr.holiday td { background:#fef3c7 !important; }" +
+    "tr.total-row td { background:#e2e8f0 !important; font-weight:700; }" +
+    ".badge { display:inline-block; padding:2px 8px; border-radius:999px; font-weight:700; font-size:11px; }" +
+    ".badge.good { background:#dcfce7; color:#15803d; }" +
+    ".badge.info { background:#dbeafe; color:#1d4ed8; }" +
+    ".badge.warn { background:#fef3c7; color:#b45309; }" +
+    ".badge.bad { background:#fee2e2; color:#b91c1c; }" +
+    ".bar { height:6px; border-radius:999px; background:#e2e8f0; overflow:hidden; min-width:80px; }" +
+    ".bar-fill { height:100%; border-radius:999px; }" +
+    ".bar-fill.good { background:#16a34a; } .bar-fill.info { background:#2563eb; }" +
+    ".bar-fill.warn { background:#d97706; } .bar-fill.bad { background:#dc2626; }" +
+    ".person-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:14px; }" +
+    ".person-card { border:1px solid #e2e8f0; border-radius:10px; padding:14px; }" +
+    ".person-card h3 { margin:0 0 8px; font-size:15px; }" +
+    ".row-line { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:6px 0 2px; font-size:12px; }" +
+    ".scroll-x { overflow-x:auto; }" +
+    ".foot { text-align:center; color:#94a3b8; font-size:11px; padding:10px 0 30px; }" +
+    ".pos { color:#16a34a; font-weight:700; } .neg { color:#dc2626; font-weight:700; }" +
+    "@media (max-width:640px){ .topbar h1{font-size:18px;} .card .value{font-size:18px;} }"
+  );
+}
+
+function renderStoreCards_(data) {
+  var s = data.store;
+  function card(label, value, sub) {
+    return '<div class="card"><div class="label">' + esc_(label) + '</div><div class="value">' +
+      esc_(value) + '</div><div class="sub">' + esc_(sub || "") + "</div></div>";
+  }
+  var gr = data.kpi.googleReview;
+  return (
+    '<div class="cards">' +
+    card("Month Progress", s.daysElapsed + " / " + s.daysInMonth + " days", s.daysRemaining + " remaining") +
+    card("Total Invoices", s.totalInvoices, "invoice lines (SALES only)") +
+    card("Unique Invoices", s.uniqueInvoices, "deduped invoice codes") +
+    card("Total Revenue", money_(s.total.achieved), s.total.pct + "% of target") +
+    card("Gross Profit", money_(s.grossProfit.achieved), s.grossProfit.pct + "% of target") +
+    card("Google Reviews", gr.currentMonth, "prev " + gr.previousMonth + " (" + (gr.difference >= 0 ? "+" : "") + gr.difference + ")") +
+    "</div>"
+  );
+}
+
+function renderStoreTable_(data) {
+  var s = data.store;
+  var buckets = [["Total Revenue", s.total], ["Service", s.service], ["Accessories", s.accessory],
+    ["Repair", s.repair], ["Gross Profit", s.grossProfit]];
+  var rows = buckets.map(function (pair) {
+    var label = pair[0], b = pair[1];
+    return "<tr><td>" + esc_(label) + "</td><td>" + money_(b.target) + "</td><td>" + money_(b.achieved) +
+      "</td><td>" + barHtml_(b.pct) + " " + pctBadgeHtml_(b.pct) + "</td><td>" + money_(b.balance) +
+      "</td><td>" + money_(b.requiredPerDay) + "</td></tr>";
+  }).join("");
+  return (
+    '<section class="section"><h2>1 &middot; Store Target vs Achievement</h2><div class="body scroll-x">' +
+    "<table><thead><tr><th>Revenue Type</th><th>Target</th><th>Achieved</th><th>Achieved %</th>" +
+    "<th>Balance</th><th>Req / Day</th></tr></thead><tbody>" + rows + "</tbody></table></div></section>"
+  );
+}
+
+function renderWorkingDaysCard_(data) {
+  var s = data.store;
+  return (
+    '<section class="section"><h2>2 &middot; Working Days (Current Month)</h2><div class="body">' +
+    '<div class="cards" style="margin-bottom:0">' +
+    '<div class="card"><div class="label">Total Working Days</div><div class="value">' + s.totalWorkingDays + "</div></div>" +
+    '<div class="card"><div class="label">Consumed</div><div class="value">' + s.consumedWorkingDays + "</div></div>" +
+    '<div class="card"><div class="label">Balance</div><div class="value" style="color:' +
+    (s.balanceWorkingDays > 0 ? "#d97706" : "#16a34a") + '">' + s.balanceWorkingDays + "</div></div>" +
+    "</div></div></section>"
+  );
+}
+
+function renderSalespersonCards_(data) {
+  var cards = data.salespeople.map(function (p) {
+    var lines = [["Service", p.service], ["Accessory", p.accessory], ["Repair", p.repair]].map(function (pair) {
+      var label = pair[0], b = pair[1];
+      return '<div class="row-line"><span>' + esc_(label) + "</span><span>" + money_(b.achieved) + " / " +
+        money_(b.target) + " " + pctBadgeHtml_(b.pct) + "</span></div>" + barHtml_(b.pct);
+    }).join("");
+    return (
+      '<div class="person-card"><h3>' + esc_(p.name) + "</h3>" +
+      '<div class="row-line"><span>Total Revenue</span><span><b>' + money_(p.total.achieved) + "</b> / " +
+      money_(p.total.target) + " " + pctBadgeHtml_(p.total.pct) + "</span></div>" + barHtml_(p.total.pct) +
+      '<div class="row-line" style="margin-top:8px"><span>Total Incentive</span><span class="pos">' +
+      money_(p.totalIncentive) + "</span></div>" +
+      '<div class="row-line"><span>Invoices</span><span>' + p.invoiceCount + "</span></div>" +
+      '<hr style="border:none;border-top:1px solid #eef2f6;margin:10px 0">' + lines + "</div>"
+    );
+  }).join("");
+  return (
+    '<section class="section"><h2>3 &middot; Salesperson Performance</h2><div class="body">' +
+    '<div class="person-grid">' + cards + "</div></div></section>"
+  );
+}
+
+function renderIncentiveTable_(data) {
+  var bundleByKey = {};
+  data.bundle.forEach(function (b) { bundleByKey[b.key] = b; });
+  var rows = data.amc.map(function (a) {
+    var b = bundleByKey[a.key] || { count: 0, projectedIncentive: 0 };
+    var totalInc = a.projectedIncentive + b.projectedIncentive;
+    return "<tr><td>" + esc_(a.name) + "</td><td>" + a.amcCount + "</td><td>" + money_(a.amcEligible) +
+      "</td><td>" + (a.amcNextSlab ? a.amcRemaining + " more" : "top slab") + "</td><td>" + a.accessoryCount +
+      "</td><td>" + money_(a.accessoryEligible) + "</td><td>" + b.count + "</td><td>" +
+      money_(b.projectedIncentive) + '</td><td class="pos">' + money_(totalInc) + "</td></tr>";
+  }).join("");
+  return (
+    '<section class="section"><h2>4 &middot; Incentive Valuation — AMC &amp; Bundle</h2><div class="body scroll-x">' +
+    "<table><thead><tr><th>Salesperson</th><th>AMC Count</th><th>AMC Eligible</th><th>AMC To Next</th>" +
+    "<th>Acc-AMC Count</th><th>Acc-AMC Eligible</th><th>Bundle Count</th><th>Bundle Eligible</th>" +
+    "<th>Total Incentive</th></tr></thead><tbody>" + rows + "</tbody></table></div></section>"
+  );
+}
+
+function renderKpiSection_(data) {
+  var allKpis = data.kpi.ar.concat(data.kpi.rr, data.kpi.sr);
+  var rows = allKpis.map(function (k) {
+    return "<tr><td>" + esc_(k.label) + "</td><td>" + esc_(k.category) + "</td><td>" + k.target + "</td><td>" +
+      k.achieved + '</td><td class="' + (k.balance === 0 ? "pos" : "neg") + '">' + k.balance + "</td><td>" +
+      money_(k.achievedValue) + "</td><td>" + money_(k.achievedGp) + "</td></tr>";
+  }).join("");
+  var gr = data.kpi.googleReview;
+  return (
+    '<section class="section"><h2>5 &middot; Store KPI Parameters</h2><div class="body scroll-x">' +
+    "<table><thead><tr><th>KPI</th><th>Category</th><th>Target</th><th>Achieved</th><th>Balance</th>" +
+    "<th>Achieved Value</th><th>Achieved GP</th></tr></thead><tbody>" + rows +
+    '<tr class="total-row"><td>Google Review</td><td>AR</td><td>&mdash;</td><td>' + gr.currentMonth +
+    "</td><td>prev " + gr.previousMonth + '</td><td colspan="2">' + (gr.difference >= 0 ? "+" : "") +
+    gr.difference + " vs previous month</td></tr>" +
+    "</tbody></table></div></section>"
+  );
+}
+
+function renderInvoiceValuation_(data) {
+  var rows = data.revenueTypes.map(function (rt) {
+    return "<tr><td>" + esc_(rt.label) + "</td><td>" + rt.invoiceLines + "</td><td>" + rt.uniqueInvoices +
+      "</td><td>" + money_(rt.revenue) + "</td><td>" + money_(rt.gp) + "</td></tr>";
+  }).join("");
+  var totalRow = "<tr class=\"total-row\"><td>Overall</td><td>" + data.invoiceValuation.totalInvoiceLines +
+    "</td><td>" + data.invoiceValuation.totalUniqueInvoices + "</td><td>" + money_(data.store.total.achieved) +
+    "</td><td>" + money_(data.store.grossProfit.achieved) + "</td></tr>";
+  return (
+    '<section class="section"><h2>6 &middot; Invoice Valuation</h2><div class="body scroll-x">' +
+    "<table><thead><tr><th>Revenue Type</th><th>Invoice Lines</th><th>Unique Invoices</th><th>Revenue</th>" +
+    "<th>Gross Profit</th></tr></thead><tbody>" + rows + totalRow + "</tbody></table>" +
+    '<div class="cards" style="margin-top:14px">' +
+    '<div class="card"><div class="label">Bundle Unique Invoices</div><div class="value">' +
+    data.invoiceValuation.bundleUniqueInvoices + '</div><div class="sub">SchemeCode starts with DISC</div></div>' +
+    '<div class="card"><div class="label">AMC Unique Invoices</div><div class="value">' +
+    data.invoiceValuation.amcUniqueInvoices + '</div><div class="sub">SubCategory contains AMC</div></div>' +
+    "</div></div></section>"
+  );
+}
+
+function renderDateWiseTable_(data) {
+  var perTypeDailyTarget = function (key) {
+    var bucket = data.store[key];
+    return data.store.balanceWorkingDays > 0 ? bucket.balance / data.store.balanceWorkingDays : 0;
+  };
+  var rows = data.days.map(function (d) {
+    return '<tr class="' + (d.holiday ? "holiday" : "") + '"><td>' + esc_(d.undated ? "No date" : d.dateKey) +
+      " " + (d.holiday ? "🔶" : "") + "</td><td>" + esc_(d.weekday) + "</td><td>" + d.uniqueInvoices +
+      "</td><td>" + money_(d.serviceRevenue) + "</td><td>" + money_(d.accessoryRevenue) + "</td><td>" +
+      money_(d.repairRevenue) + "</td><td><b>" + money_(d.totalRevenue) + "</b></td><td>" + money_(d.grossProfit) + "</td></tr>";
+  }).join("");
+  return (
+    '<section class="section"><h2>7 &middot; Date-wise Sales Revenue Analysis</h2><div class="body">' +
+    '<div class="cards" style="margin-bottom:14px">' +
+    '<div class="card"><div class="label">Daily Target — Service</div><div class="value">' + money_(perTypeDailyTarget("service")) + "</div></div>" +
+    '<div class="card"><div class="label">Daily Target — Accessory</div><div class="value">' + money_(perTypeDailyTarget("accessory")) + "</div></div>" +
+    '<div class="card"><div class="label">Daily Target — Repair</div><div class="value">' + money_(perTypeDailyTarget("repair")) + "</div></div>" +
+    '<div class="card"><div class="label">Daily Target — Total</div><div class="value">' + money_(data.store.total.requiredPerDay) + "</div></div>" +
+    "</div>" +
+    '<div class="scroll-x"><table><thead><tr><th>Date</th><th>Weekday</th><th>Unique Invoices</th>' +
+    "<th>Service Rev</th><th>Accessory Rev</th><th>Repair Rev</th><th>Total Rev</th><th>Gross Profit</th></tr></thead>" +
+    "<tbody>" + rows + "</tbody></table></div></div></section>"
+  );
 }
