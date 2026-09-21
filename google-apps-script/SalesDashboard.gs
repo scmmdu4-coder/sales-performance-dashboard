@@ -61,6 +61,25 @@ function onOpen() {
     .addToUi();
 }
 
+/**
+ * NOT used for normal operation. This script is a container-bound script
+ * (it runs against the spreadsheet it's attached to) — you do NOT need to
+ * deploy it as a Web App or hit a URL.
+ *
+ * If you see "Script function not found: doGet", it means the Apps Script
+ * editor's function selector (top toolbar dropdown, next to ▶ Run) is set
+ * to "doGet" instead of "buildDashboard". To fix:
+ *   1. Click that dropdown and choose "buildDashboard".
+ *   2. Click ▶ Run again.
+ * This stub only exists so an accidental Web App deployment doesn't error.
+ */
+function doGet() {
+  return HtmlService.createHtmlOutput(
+    "This script runs inside its bound Google Sheet. Open the sheet and use " +
+      "the \"📊 Sales Dashboard\" menu, or run buildDashboard() from the Apps Script editor.",
+  );
+}
+
 /* ============================================================================
  * ENTRY POINT
  * ========================================================================= */
