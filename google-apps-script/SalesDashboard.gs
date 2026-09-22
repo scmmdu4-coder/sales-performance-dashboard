@@ -157,6 +157,10 @@ function buildDashboard() {
  * the on-page Refresh button does) skips the cache and recomputes.
  */
 function doGet(e) {
+  // "?refresh=1" still works if someone opens the URL directly with it, but
+  // the on-page Refresh button no longer navigates — it calls
+  // refreshDashboardSections() over google.script.run and swaps the markup
+  // in place, which is both faster and safe inside the iframe sandbox.
   var wantsFresh = !!(e && e.parameter && e.parameter.refresh);
   var cache = CacheService.getScriptCache();
   var CACHE_KEY = "dashboard_html_v3";
@@ -168,7 +172,7 @@ function doGet(e) {
 
   if (!html) {
     var loaded = loadDashboardData_();
-    html = renderDashboardHtml_(loaded.data);
+    html = buildDashboardPage_(loaded.data);
     // Cache entries are capped at 100 KB; skip caching if the page is bigger.
     if (html.length < 100000) {
       try { cache.put(CACHE_KEY, html, CONFIG.CACHE_SECONDS); } catch (err2) { /* non-fatal */ }
@@ -1435,10 +1439,9 @@ function barHtml_(pctVal) {
   return '<div class="bar"><div class="bar-fill ' + cls + '" style="width:' + clamped + '%"></div></div>';
 }
 
-function renderDashboardHtml_(data) {
-  var css = getDashboardCss_();
+/** Builds just the dashboard sections (used for both first paint and refresh). */
+function renderSectionsHtml_(data) {
   var body = "";
-
   body += renderStoreCards_(data);
   body += renderStoreTable_(data);
   body += renderWorkingDaysCard_(data);
@@ -1447,18 +1450,82 @@ function renderDashboardHtml_(data) {
   body += renderKpiSection_(data);
   body += renderInvoiceValuation_(data);
   body += renderDateWiseTable_(data);
+  return body;
+}
 
+/** The "Updated ... · N rows · N invoices" line under the title. */
+function renderMetaText_(data) {
   var generated = Utilities.formatDate(data.generatedAt, Session.getScriptTimeZone(), "dd MMM yyyy, HH:mm");
+  return "Updated " + generated + " · " + data.store.totalInvoices +
+    " SALES rows · " + data.store.uniqueInvoices + " unique invoices";
+}
 
-  // The Refresh button re-requests the Web App URL with ?refresh=1, which
-  // bypasses the server-side cache and recomputes from the sheet.
-  var refreshScript =
+/**
+ * Server endpoint for the Refresh button.
+ *
+ * Called from the page via google.script.run, which works inside the Apps
+ * Script iframe sandbox. It recomputes from the sheet, refreshes the cached
+ * page, and hands back only the markup that changed — so refreshing swaps
+ * content in place instead of reloading the whole document.
+ *
+ * NOTE: must stay a public (no trailing underscore) top-level function,
+ * otherwise google.script.run cannot see it.
+ */
+function refreshDashboardSections() {
+  var loaded = loadDashboardData_();
+  var data = loaded.data;
+  var sections = renderSectionsHtml_(data);
+
+  // Keep the server-side page cache in step with what we just computed.
+  try {
+    var full = buildDashboardPage_(data);
+    if (full.length < 100000) {
+      CacheService.getScriptCache().put("dashboard_html_v3", full, CONFIG.CACHE_SECONDS);
+    }
+  } catch (err) { /* cache refresh is best-effort */ }
+
+  return JSON.stringify({ html: sections, meta: renderMetaText_(data) });
+}
+
+/** Assembles the complete HTML document. */
+function buildDashboardPage_(data) {
+  var css = getDashboardCss_();
+  var sections = renderSectionsHtml_(data);
+
+  // Refresh runs through google.script.run because the page is served inside
+  // a sandboxed iframe — window.location there points at an internal
+  // userCodeAppPanel URL, so navigating it would blank the page.
+  var clientScript =
     "<script>" +
-    "function doRefresh(btn){" +
+    "function dashRefresh(btn){" +
+    "  if(btn.disabled) return;" +
     "  btn.classList.add('loading'); btn.disabled=true;" +
-    "  btn.querySelector('.txt').textContent='Refreshing...';" +
-    "  var base=(window.location.href.split('?')[0]);" +
-    "  window.location.replace(base+'?refresh=1&t='+Date.now());" +
+    "  var t=btn.querySelector('.txt'); var old=t.textContent; t.textContent='Refreshing...';" +
+    "  var done=function(){ btn.classList.remove('loading'); btn.disabled=false; t.textContent=old; };" +
+    "  if(!(window.google && google.script && google.script.run)){" +
+    "    window.top.location.reload(); return;" +
+    "  }" +
+    "  google.script.run" +
+    "    .withSuccessHandler(function(res){" +
+    "      try{" +
+    "        var d=JSON.parse(res);" +
+    "        document.getElementById('content').innerHTML=d.html;" +
+    "        document.getElementById('meta').textContent=d.meta;" +
+    "        var n=document.getElementById('note');" +
+    "        n.textContent='Updated just now'; n.className='note ok';" +
+    "      }catch(e){" +
+    "        document.getElementById('note').textContent='Refresh failed: '+e;" +
+    "        document.getElementById('note').className='note err';" +
+    "      }" +
+    "      done();" +
+    "    })" +
+    "    .withFailureHandler(function(err){" +
+    "      var n=document.getElementById('note');" +
+    "      n.textContent='Refresh failed: '+(err && err.message ? err.message : err);" +
+    "      n.className='note err';" +
+    "      done();" +
+    "    })" +
+    "    .refreshDashboardSections();" +
     "}" +
     "</script>";
 
@@ -1468,17 +1535,21 @@ function renderDashboardHtml_(data) {
     '<header class="topbar"><div class="topbar-inner">' +
     "<div>" +
     "<h1>📊 Sales Performance Dashboard</h1>" +
-    '<div class="meta">Updated ' + esc_(generated) + " &middot; " + data.store.totalInvoices +
-    " SALES rows &middot; " + data.store.uniqueInvoices + " unique invoices</div>" +
+    '<div class="meta" id="meta">' + esc_(renderMetaText_(data)) + "</div>" +
+    '<div class="note" id="note"></div>' +
     "</div>" +
-    '<button class="refresh-btn" onclick="doRefresh(this)">' +
+    '<button class="refresh-btn" onclick="dashRefresh(this)">' +
     '<span class="spin"></span><span class="txt">↻ Refresh data</span></button>' +
     "</div></header>" +
-    '<main class="wrap">' + body + "</main>" +
+    '<main class="wrap" id="content">' + sections + "</main>" +
     '<footer class="foot">Press “Refresh data” to pull the latest crm / target sheet values.</footer>' +
-    refreshScript +
+    clientScript +
     "</body></html>"
   );
+}
+
+function renderDashboardHtml_(data) {
+  return buildDashboardPage_(data);
 }
 
 function getDashboardCss_() {
@@ -1493,6 +1564,9 @@ function getDashboardCss_() {
     " justify-content:space-between; gap:16px; flex-wrap:wrap; }" +
     ".topbar h1 { margin:0 0 4px; font-size:21px; }" +
     ".topbar .meta { font-size:12px; opacity:.82; }" +
+    ".topbar .note { font-size:11.5px; margin-top:3px; min-height:14px; }" +
+    ".topbar .note.ok { color:#8ef0b4; }" +
+    ".topbar .note.err { color:#ffb4b4; }" +
     ".refresh-btn { background:#4f7cff; color:#fff; border:none; border-radius:8px; padding:10px 18px;" +
     " font-size:13px; font-weight:700; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,.25);" +
     " display:inline-flex; align-items:center; gap:8px; white-space:nowrap; }" +
