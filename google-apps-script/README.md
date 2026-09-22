@@ -63,11 +63,50 @@ that shows these steps again as a quick reminder inside the sheet.
 7. Date-wise sales revenue analysis with per-revenue-type daily target
    (balance ÷ balance working days)
 
+## Where each number is read from (`target` sheet)
+
+| Data | Range | Layout |
+|---|---|---|
+| Store + salesperson targets | `target!A1:D6` | Col A = revenue type, col B = store target, cols C/D = per-person targets (names in C1/D1) |
+| Google reviews | `target!A9:C10` | A10 = previous month qty, B10 = current month count, C10 = difference |
+| KPI targets | `target!B12:L14` | Row 12 = revenue type (AR/RR/SR), row 13 = KPI name, row 14 = target count |
+
+KPI columns are matched by the **name** written in row 13 (Care+, Protect+,
+AMC, Bundle, Display, Battery, Glass, Others, SRD, SHC, ARD), so you can
+reorder or add columns without editing the script.
+
+## Incentive rules
+
+- **Service** and **Accessory** revenue are the only types that *earn*
+  incentive, from the % achievement slabs on the target sheet.
+- **Repair** revenue earns nothing on its own. It is a **gate**: a
+  salesperson only actually receives their earned service + accessory
+  incentive once repair revenue reaches **80 %** of their repair target.
+  Below that, the amount is shown as "earned but withheld".
+- Change the threshold with `CONFIG.REPAIR_INCENTIVE_GATE_PCT`.
+
+## Daily target colouring
+
+In section 7, the daily target is the **store total target ÷ number of
+working days in the month**. Each day's achieved value is shown in
+**green** when it meets or beats that figure and **red** when it falls
+short. Each salesperson also gets their own colour band and left border so
+their block is easy to pick out.
+
+## Refresh button
+
+The page header has a **↻ Refresh data** button. The rendered page is
+cached server-side for 90 seconds so ordinary loads are fast; pressing
+Refresh reloads with `?refresh=1`, which bypasses the cache and recomputes
+straight from the sheet. Tune with `CONFIG.CACHE_SECONDS` (set it to `0` to
+disable caching entirely).
+
 ## Config
 
 Edit the `CONFIG` object at the top of the script if your tab names differ
-from `crm` / `target`, or to update the `HOLIDAYS` list for the current
-month's non-working days.
+from `crm` / `target`, to update the `HOLIDAYS` list for the current
+month's non-working days, to change `REPAIR_INCENTIVE_GATE_PCT`, or to
+adjust `CACHE_SECONDS`.
 
 ## Notes
 
