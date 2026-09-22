@@ -909,6 +909,14 @@ function computeDashboard(allRows, target) {
       service: mk(t.service, ach.service, svcInc),
       accessory: mk(t.accessory, ach.accessory, accInc),
       repair: mk(t.repair, ach.repair, 0),
+      // Per-day target for this person = their monthly target for that
+      // revenue type ÷ the number of working days in the month.
+      dailyTargets: {
+        service: Math.round(safeDiv_(t.service, Math.max(1, totalWorkingDays))),
+        accessory: Math.round(safeDiv_(t.accessory, Math.max(1, totalWorkingDays))),
+        repair: Math.round(safeDiv_(t.repair, Math.max(1, totalWorkingDays))),
+        total: Math.round(safeDiv_(t.total, Math.max(1, totalWorkingDays))),
+      },
       // incentive gate details, surfaced in the UI
       repairGate: {
         requiredPct: gatePct,
@@ -1136,7 +1144,9 @@ function writeDashboard(ss, data) {
   row = writeDateWiseSection_(sheet, row, data);
 
   sheet.setFrozenRows(2);
-  for (var c = 1; c <= 12; c++) sheet.autoResizeColumn(c);
+  // Section 7 is the widest block: Date + Store Total + 3 columns per person.
+  var maxCols = Math.max(12, 2 + data.salespeople.length * 3);
+  for (var c = 1; c <= maxCols; c++) sheet.autoResizeColumn(c);
   sheet.setColumnWidth(1, 190);
   ss.setActiveSheet(sheet);
   sheet.getRange(1, 1).activate();
@@ -1290,54 +1300,113 @@ function writeInvoiceValuationSection_(sheet, row, data) {
 }
 
 function writeDateWiseSection_(sheet, row, data) {
-  row = sectionHeader_(sheet, row, "7 · DATE-WISE SALES REVENUE ANALYSIS (by salesperson)", 8);
+  var people = data.salespeople;
+  var TYPES = [["service", "Service"], ["accessory", "Accessory"], ["repair", "Repair"]];
+  var width = 2 + people.length * TYPES.length;
+
+  row = sectionHeader_(sheet, row, "7 · DATE-WISE SALES REVENUE ANALYSIS (by salesperson)", width);
+
   var dailyTarget = data.store.dailyTarget;
-  sheet.getRange(row, 1, 1, 4).setValues([["Daily Target (store total ÷ working days)", money_(dailyTarget),
-    "Working Days", data.store.totalWorkingDays]]).setFontWeight("bold");
-  row += 2;
-
-  var header = ["Date", "Salesperson", "Revenue Type", "Invoice Count", "Value", "GP", "Person Total", "Person GP"];
-  row = tableHeaderRow_(sheet, row, header);
-
-  // Alternating tints so each salesperson block is easy to distinguish.
-  var personTint = ["#eef3ff", "#fdf1e6", "#e9f7f0", "#f5edfe", "#fdecf4"];
-  var personIdx = {};
-  data.salespeople.forEach(function (p, i) { personIdx[p.key] = i % personTint.length; });
-
-  data.days.forEach(function (d) {
-    // Date summary band
-    sheet.getRange(row, 1, 1, 8).setValues([[d.undated ? "No date" : d.dateKey,
-      d.weekday + (d.holiday ? " (holiday)" : ""), d.uniqueInvoices + " inv", "", money_(d.totalRevenue),
-      money_(d.grossProfit), "daily target", money_(dailyTarget)]]);
-    sheet.getRange(row, 1, 1, 8).setBackground(d.holiday ? "#fdf0d5" : "#e3e9f4").setFontWeight("bold");
-    sheet.getRange(row, 5).setFontColor(d.totalRevenue >= dailyTarget ? COLORS.good : COLORS.bad);
+  sheet.getRange(row, 1, 1, 4).setValues([["Store daily target (total ÷ working days)", money_(dailyTarget),
+    "Working days", data.store.totalWorkingDays]]).setFontWeight("bold");
+  row++;
+  // Per-person daily targets, so the /target figures in the grid are explained.
+  people.forEach(function (p) {
+    sheet.getRange(row, 1, 1, 4).setValues([[p.name + " daily targets",
+      "Service " + money_(p.dailyTargets.service),
+      "Accessory " + money_(p.dailyTargets.accessory),
+      "Repair " + money_(p.dailyTargets.repair)]]);
+    sheet.getRange(row, 1).setFontWeight("bold");
     row++;
+  });
+  row++;
 
-    var people = d.people || [];
-    if (!people.length) {
-      sheet.getRange(row, 1, 1, 8).setValues([["", "No sales recorded", "", "", "", "", "", ""]]);
-      sheet.getRange(row, 1, 1, 8).setFontColor("#94a3b8");
-      row++;
-      return;
-    }
-
-    people.forEach(function (p) {
-      var tint = personTint[personIdx[p.key] === undefined ? 0 : personIdx[p.key]];
-      var types = p.types.length ? p.types : [{ typeLabel: "—", invoiceCount: 0, value: 0, gp: 0 }];
-      types.forEach(function (t, ti) {
-        sheet.getRange(row, 1, 1, 8).setValues([["", ti === 0 ? p.name : "", t.typeLabel, t.invoiceCount,
-          money_(t.value), money_(t.gp), ti === 0 ? money_(p.totalRevenue) : "",
-          ti === 0 ? money_(p.grossProfit) : ""]]);
-        sheet.getRange(row, 1, 1, 8).setBackground(tint);
-        if (ti === 0) sheet.getRange(row, 2).setFontWeight("bold");
-        if (ti === 0) {
-          sheet.getRange(row, 7).setFontWeight("bold")
-            .setFontColor(p.totalRevenue >= dailyTarget ? COLORS.good : COLORS.bad);
-        }
-        row++;
-      });
+  // ---- two-row banded header: salesperson group over revenue types ----
+  var tints = ["#eaf1ff", "#fdefe2", "#e6f6ee", "#f3eafe", "#fce9f2"];
+  var hdr1 = ["Date", "Store Total"];
+  var hdr2 = ["", ""];
+  people.forEach(function (p) {
+    TYPES.forEach(function (pair, ti) {
+      hdr1.push(ti === 0 ? p.name : "");
+      hdr2.push(pair[1]);
     });
   });
+  sheet.getRange(row, 1, 1, width).setValues([hdr1])
+    .setBackground(COLORS.headerBg).setFontColor(COLORS.headerFg)
+    .setFontWeight("bold").setHorizontalAlignment("center");
+  people.forEach(function (p, i) {
+    var c = 3 + i * TYPES.length;
+    sheet.getRange(row, c, 1, TYPES.length).merge()
+      .setBackground(COLORS.headerBg).setFontColor(COLORS.headerFg)
+      .setFontWeight("bold").setHorizontalAlignment("center").setValue(p.name);
+  });
+  row++;
+  sheet.getRange(row, 1, 1, width).setValues([hdr2])
+    .setBackground(COLORS.subHeaderBg).setFontColor(COLORS.subHeaderFg)
+    .setFontWeight("bold").setHorizontalAlignment("center");
+  sheet.getRange(row - 1, 1, 2, 1).merge().setValue("Date")
+    .setBackground(COLORS.headerBg).setFontColor(COLORS.headerFg)
+    .setFontWeight("bold").setVerticalAlignment("middle");
+  sheet.getRange(row - 1, 2, 2, 1).merge().setValue("Store Total")
+    .setBackground(COLORS.headerBg).setFontColor(COLORS.headerFg)
+    .setFontWeight("bold").setVerticalAlignment("middle").setHorizontalAlignment("center");
+  row++;
+
+  // ---- one row per date ----
+  data.days.forEach(function (d) {
+    var byKey = {};
+    (d.people || []).forEach(function (pp) { byKey[pp.key] = pp; });
+
+    var vals = [d.undated ? "No date" : (d.dateKey + (d.weekday ? "  " + d.weekday : "") + (d.holiday ? "  🔶" : "")),
+      money_(d.totalRevenue)];
+    people.forEach(function (p) {
+      var pd = byKey[p.key];
+      var typeMap = {};
+      if (pd) pd.types.forEach(function (t) { typeMap[t.type] = t; });
+      TYPES.forEach(function (pair) {
+        var tk = pair[0];
+        var achieved = typeMap[tk] ? typeMap[tk].value : 0;
+        vals.push(money_(achieved) + " / " + money_(p.dailyTargets[tk] || 0));
+      });
+    });
+    sheet.getRange(row, 1, 1, width).setValues([vals]);
+
+    // Date column keeps the store-total rule.
+    sheet.getRange(row, 1).setFontWeight("bold");
+    sheet.getRange(row, 2).setFontWeight("bold")
+      .setFontColor(d.totalRevenue >= dailyTarget ? COLORS.good : COLORS.bad);
+    if (d.holiday) sheet.getRange(row, 1, 1, 2).setBackground("#fdf0d5");
+
+    // Each person's cells: tinted group + green/red vs their own daily target.
+    people.forEach(function (p, i) {
+      var pd = byKey[p.key];
+      var typeMap = {};
+      if (pd) pd.types.forEach(function (t) { typeMap[t.type] = t; });
+      TYPES.forEach(function (pair, ti) {
+        var tk = pair[0];
+        var achieved = typeMap[tk] ? typeMap[tk].value : 0;
+        var tgt = p.dailyTargets[tk] || 0;
+        var c = 3 + i * TYPES.length + ti;
+        sheet.getRange(row, c).setBackground(tints[i % tints.length]);
+        if (tgt > 0) {
+          sheet.getRange(row, c).setFontColor(achieved >= tgt ? COLORS.good : COLORS.bad).setFontWeight("bold");
+        }
+      });
+    });
+    row++;
+  });
+
+  // ---- month-to-date footer ----
+  var footer = ["Month to date", money_(data.store.total.achieved)];
+  people.forEach(function (p) {
+    TYPES.forEach(function (pair) {
+      footer.push(money_(p[pair[0]].achieved) + " / " + money_(p[pair[0]].target));
+    });
+  });
+  sheet.getRange(row, 1, 1, width).setValues([footer])
+    .setBackground(COLORS.totalBg).setFontWeight("bold");
+  row++;
+
   return row + 1;
 }
 
@@ -1493,6 +1562,26 @@ function getDashboardCss_() {
     "tr.person-band-4 td { background:#fef4f9; } tr.person-band-4:nth-child(even) td { background:#fdecf4; }" +
     "td.val-good { color:#15803d; font-weight:700; }" +
     "td.val-bad { color:#b91c1c; font-weight:700; }" +
+    // ---- section 7 date-by-date matrix ----
+    "table.matrix { font-size:12px; border-collapse:separate; border-spacing:0; }" +
+    "table.matrix th, table.matrix td { white-space:nowrap; padding:7px 9px; }" +
+    "table.matrix thead th { position:sticky; top:0; z-index:3; }" +
+    "table.matrix th.grp { text-align:center; border-left:1px solid #d4dcea; }" +
+    "table.matrix .sticky-col { position:sticky; left:0; z-index:2; background:#eef2f9;" +
+    " text-align:left; border-right:2px solid #d4dcea; }" +
+    "table.matrix tbody tr:nth-child(even) .sticky-col { background:#e8edf6; }" +
+    "table.matrix thead .sticky-col { z-index:4; }" +
+    "table.matrix td .tgt { display:block; font-size:10px; font-weight:400; color:#78849a; margin-top:1px; }" +
+    // tinted column groups, one per salesperson
+    "th.grp-0, td.cell-0 { background:#f4f7ff; } tr:nth-child(even) td.cell-0 { background:#eaf1ff; }" +
+    "th.grp-1, td.cell-1 { background:#fff7f0; } tr:nth-child(even) td.cell-1 { background:#fdefe2; }" +
+    "th.grp-2, td.cell-2 { background:#f1fbf6; } tr:nth-child(even) td.cell-2 { background:#e6f6ee; }" +
+    "th.grp-3, td.cell-3 { background:#faf5ff; } tr:nth-child(even) td.cell-3 { background:#f3eafe; }" +
+    "th.grp-4, td.cell-4 { background:#fef4f9; } tr:nth-child(even) td.cell-4 { background:#fce9f2; }" +
+    "table.matrix tr.holiday .sticky-col { background:#fdf0d5 !important; }" +
+    "table.matrix tr.total-row td { background:#dfe6f2 !important; border-top:2px solid #b9c6dd; }" +
+    ".legend-row { display:flex; flex-wrap:wrap; gap:10px; margin:0 0 12px; }" +
+    ".legend-card { font-size:11.5px; padding:8px 12px; border-radius:8px; border:1px solid #dde3ee; line-height:1.5; }" +
     "@media (max-width:640px){ .topbar h1{font-size:18px;} .card .value{font-size:18px;} }"
   );
 }
@@ -1689,100 +1778,109 @@ function renderInvoiceValuation_(data) {
 }
 
 /**
- * Section 7 — a detailed date-wise report broken down by salesperson and
- * revenue type. Each salesperson is given their own colour band / left
- * border so their block is easy to pick out. Achieved values are green when
- * they meet or beat the daily target (store total target ÷ working days),
- * red when they fall short.
+ * Section 7 — a date-by-date matrix.
+ *
+ * One row per date. Each salesperson owns a group of columns, and within
+ * that group every revenue type (Service / Accessory / Repair) gets its own
+ * cell showing "achieved / day-target". A cell is green when the achieved
+ * value meets or beats that person's daily target for that revenue type,
+ * red when it falls short. Each salesperson's column group is tinted so the
+ * blocks stay visually distinct.
+ *
+ * The date column itself keeps the original rule: the STORE total for that
+ * day, green when it meets or beats the store daily target, red when not.
  */
 function renderDateWiseTable_(data) {
   var dailyTarget = data.store.dailyTarget;
+  var people = data.salespeople;
+  var TYPES = [["service", "Service"], ["accessory", "Accessory"], ["repair", "Repair"]];
 
-  // Stable colour index per salesperson across the whole table.
-  var personIndex = {};
-  data.salespeople.forEach(function (p, i) { personIndex[p.key] = i % 5; });
-  function idxFor(key) {
-    if (personIndex[key] === undefined) personIndex[key] = Object.keys(personIndex).length % 5;
-    return personIndex[key];
-  }
-
-  function valCell(value, target) {
-    var cls = target > 0 ? (value >= target ? "val-good" : "val-bad") : "";
-    return '<td class="' + cls + '">' + money_(value) + "</td>";
-  }
-
-  var body = "";
-  data.days.forEach(function (d) {
-    var people = d.people || [];
-    // How many detail rows this date spans (for the date rowspan).
-    var rowCount = 0;
-    people.forEach(function (p) { rowCount += Math.max(1, p.types.length); });
-    if (rowCount === 0) rowCount = 1;
-
-    // Date summary band
-    var dayCls = d.holiday ? "date-head holiday" : "date-head";
-    body +=
-      '<tr class="' + dayCls + '"><td colspan="3">' + esc_(d.undated ? "No date" : d.dateKey) +
-      (d.weekday ? ' <span class="muted">(' + esc_(d.weekday) + ")</span>" : "") +
-      (d.holiday ? " 🔶 holiday" : "") + "</td>" +
-      "<td>" + d.uniqueInvoices + " inv</td>" +
-      valCell(d.totalRevenue, dailyTarget) +
-      "<td>" + money_(d.grossProfit) + "</td>" +
-      '<td colspan="2" class="muted">daily target ' + money_(dailyTarget) + "</td></tr>";
-
-    if (people.length === 0) {
-      body += '<tr><td colspan="8" class="muted" style="text-align:center">No sales recorded</td></tr>';
-      return;
-    }
-
-    people.forEach(function (p) {
-      var i = idxFor(p.key);
-      var types = p.types.length ? p.types : [{ typeLabel: "—", invoiceCount: 0, value: 0, gp: 0 }];
-      types.forEach(function (t, ti) {
-        body += '<tr class="person-band-' + i + '">';
-        // Date column left blank on detail rows (date shown in the band above)
-        body += '<td class="muted"></td>';
-        if (ti === 0) {
-          body += '<td class="person-cell sp-' + i + '" rowspan="' + types.length + '">' + esc_(p.name) + "</td>";
-        }
-        body += "<td>" + esc_(t.typeLabel) + "</td>";
-        body += "<td>" + t.invoiceCount + "</td>";
-        body += "<td>" + money_(t.value) + "</td>";
-        body += "<td>" + money_(t.gp) + "</td>";
-        if (ti === 0) {
-          body += '<td rowspan="' + types.length + '"><b>' + money_(p.totalRevenue) + "</b></td>";
-          body += '<td rowspan="' + types.length + '">' + money_(p.grossProfit) + "</td>";
-        }
-        body += "</tr>";
-      });
+  // ---- header: two banded rows, one per salesperson group ----
+  var head1 = '<tr><th rowspan="2" class="sticky-col">Date</th>' +
+    '<th rowspan="2">Store Total</th>';
+  var head2 = "<tr>";
+  people.forEach(function (p, i) {
+    head1 += '<th colspan="' + TYPES.length + '" class="grp grp-' + (i % 5) + '">' + esc_(p.name) + "</th>";
+    TYPES.forEach(function (pair) {
+      head2 += '<th class="grp grp-' + (i % 5) + '">' + esc_(pair[1]) + "</th>";
     });
   });
+  head1 += "</tr>";
+  head2 += "</tr>";
 
-  var legend = data.salespeople.map(function (p) {
-    var i = idxFor(p.key);
-    return '<span style="display:inline-flex;align-items:center;gap:6px;margin-right:14px;font-size:12px">' +
-      '<span class="sp-' + i + '" style="width:14px;height:14px;border-radius:3px;border-left-width:14px;' +
-      'border-left-style:solid;display:inline-block"></span>' + esc_(p.name) + "</span>";
+  // ---- body: one row per date ----
+  var body = "";
+  data.days.forEach(function (d) {
+    var byKey = {};
+    (d.people || []).forEach(function (pp) { byKey[pp.key] = pp; });
+
+    var dateCls = d.totalRevenue >= dailyTarget ? "val-good" : "val-bad";
+    var rowCls = d.holiday ? "holiday" : "";
+
+    var tr = '<tr class="' + rowCls + '">';
+    tr += '<td class="sticky-col"><b>' + esc_(d.undated ? "No date" : d.dateKey) + "</b>" +
+      (d.weekday ? ' <span class="muted">' + esc_(d.weekday) + "</span>" : "") +
+      (d.holiday ? ' <span class="muted">🔶</span>' : "") + "</td>";
+    tr += '<td class="' + dateCls + '">' + money_(d.totalRevenue) + "</td>";
+
+    people.forEach(function (p, i) {
+      var pd = byKey[p.key];
+      var typeMap = {};
+      if (pd) pd.types.forEach(function (t) { typeMap[t.type] = t; });
+
+      TYPES.forEach(function (pair) {
+        var tk = pair[0];
+        var achieved = typeMap[tk] ? typeMap[tk].value : 0;
+        var tgt = p.dailyTargets[tk] || 0;
+        var cls = tgt > 0 ? (achieved >= tgt ? "val-good" : "val-bad") : "muted";
+        tr += '<td class="cell-' + (i % 5) + " " + cls + '">' +
+          money_(achieved) +
+          '<span class="tgt">/ ' + money_(tgt) + "</span></td>";
+      });
+    });
+    tr += "</tr>";
+    body += tr;
+  });
+
+  // ---- footer: month-to-date totals per person/type ----
+  var foot = '<tr class="total-row"><td class="sticky-col">Month to date</td>' +
+    '<td>' + money_(data.store.total.achieved) + "</td>";
+  people.forEach(function (p, i) {
+    TYPES.forEach(function (pair) {
+      var tk = pair[0];
+      foot += '<td class="cell-' + (i % 5) + '">' + money_(p[tk].achieved) +
+        '<span class="tgt">/ ' + money_(p[tk].target) + "</span></td>";
+    });
+  });
+  foot += "</tr>";
+
+  // ---- per-person daily target legend ----
+  var legend = people.map(function (p, i) {
+    return '<div class="legend-card cell-' + (i % 5) + '">' +
+      "<b>" + esc_(p.name) + '</b> <span class="muted">daily targets</span><br>' +
+      TYPES.map(function (pair) {
+        return esc_(pair[1]) + " " + money_(p.dailyTargets[pair[0]]);
+      }).join(' <span class="muted">·</span> ') +
+      "</div>";
   }).join("");
 
   return (
     '<section class="section"><h2>7 &middot; Date-wise Sales Revenue Analysis (by salesperson)</h2><div class="body">' +
     '<div class="cards" style="margin-bottom:14px">' +
-    '<div class="card"><div class="label">Daily Target (store)</div><div class="value">' + money_(dailyTarget) +
+    '<div class="card"><div class="label">Store Daily Target</div><div class="value">' + money_(dailyTarget) +
     '</div><div class="sub">total target ÷ ' + data.store.totalWorkingDays + " working days</div></div>" +
     '<div class="card"><div class="label">Working Days</div><div class="value">' + data.store.totalWorkingDays +
     '</div><div class="sub">' + data.store.consumedWorkingDays + " consumed / " + data.store.balanceWorkingDays + " left</div></div>" +
     '<div class="card"><div class="label">Required / Day (balance)</div><div class="value">' +
     money_(data.store.total.requiredPerDay) + '</div><div class="sub">to close the remaining gap</div></div>' +
     "</div>" +
-    '<div style="margin:0 0 10px">' + legend + "</div>" +
-    '<div class="scroll-x"><table class="detail"><thead><tr>' +
-    "<th style=\"width:30px\"></th><th>Salesperson</th><th>Revenue Type</th><th>Invoice Count</th>" +
-    "<th>Value</th><th>GP</th><th>Person Total</th><th>Person GP</th>" +
-    "</tr></thead><tbody>" + body + "</tbody></table></div>" +
+    '<div class="legend-row">' + legend + "</div>" +
+    '<div class="scroll-x"><table class="matrix"><thead>' + head1 + head2 + "</thead><tbody>" +
+    body + foot + "</tbody></table></div>" +
     '<p class="muted" style="font-size:11.5px;margin:12px 0 0">' +
-    "Date rows show the store total for that day — <span class=\"pos\">green</span> when it meets or beats the daily " +
-    "target of " + money_(dailyTarget) + ", <span class=\"neg\">red</span> when it falls short.</p>" +
+    "Each cell shows <b>achieved / that person's daily target</b> for the revenue type — " +
+    '<span class="pos">green</span> when the day meets or beats the target, <span class="neg">red</span> when it falls short. ' +
+    "The <b>Store Total</b> column uses the store daily target of " + money_(dailyTarget) + ".</p>" +
     "</div></section>"
   );
 }
