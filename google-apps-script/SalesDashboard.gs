@@ -71,6 +71,13 @@ var CONFIG = {
   // Day-of-month numbers treated as holidays / non-working days this month.
   // Edit this list to match your store's actual holiday calendar.
   HOLIDAYS: [1, 15, 28],
+  // A salesperson only *receives* their earned service + accessory incentive
+  // once their repair revenue reaches this % of their repair target.
+  // Repair revenue itself never earns incentive — it is purely a gate.
+  REPAIR_INCENTIVE_GATE_PCT: 80,
+  // Seconds the rendered page is cached so normal loads are fast. The
+  // "Refresh" button always bypasses this and recomputes from the sheet.
+  CACHE_SECONDS: 90,
 };
 
 /* ============================================================================
@@ -144,10 +151,30 @@ function buildDashboard() {
  * MODE B: the Web App entry point. Apps Script calls this automatically
  * whenever someone opens the deployed Web App URL (see the setup steps in
  * the header comment above — Deploy → New deployment → Web app).
+ *
+ * Fast path: the fully-rendered HTML is cached for CONFIG.CACHE_SECONDS so
+ * repeat visits are near-instant. Opening the URL with "?refresh=1" (what
+ * the on-page Refresh button does) skips the cache and recomputes.
  */
 function doGet(e) {
-  var loaded = loadDashboardData_();
-  var html = renderDashboardHtml_(loaded.data);
+  var wantsFresh = !!(e && e.parameter && e.parameter.refresh);
+  var cache = CacheService.getScriptCache();
+  var CACHE_KEY = "dashboard_html_v3";
+
+  var html = null;
+  if (!wantsFresh) {
+    try { html = cache.get(CACHE_KEY); } catch (err) { html = null; }
+  }
+
+  if (!html) {
+    var loaded = loadDashboardData_();
+    html = renderDashboardHtml_(loaded.data);
+    // Cache entries are capped at 100 KB; skip caching if the page is bigger.
+    if (html.length < 100000) {
+      try { cache.put(CACHE_KEY, html, CONFIG.CACHE_SECONDS); } catch (err2) { /* non-fatal */ }
+    }
+  }
+
   return HtmlService.createHtmlOutput(html)
     .setTitle("Sales Performance Dashboard")
     .addMetaTag("viewport", "width=device-width, initial-scale=1")
@@ -398,98 +425,133 @@ function findCell_(rows, fromCol, toCol, re) {
   return null;
 }
 
+/**
+ * Google review block — ANCHOR: target!A9:C10.
+ *   Row  9 (A9:C9)  = headers
+ *   Row 10 (A10)    = previous month qty
+ *   Row 10 (B10)    = current month count
+ *   Row 10 (C10)    = difference
+ * 0-indexed that is row 9, columns 0 / 1 / 2.
+ */
 function parseGoogleReview_(rows) {
-  function numbersIn(row) {
-    var out = [];
-    if (!row) return out;
-    for (var c = 5; c <= 12; c++) {
-      var raw = str_(row[c]).replace(/[₹\s]/g, "");
-      if (!/^-?\d+(?:,\d+)*(?:\.\d+)?%?$/.test(raw)) continue;
-      out.push(parseMoney_(raw));
-    }
-    return out;
-  }
-  var lastRow = Math.min(5, rows.length - 1);
-  for (var r = 0; r <= lastRow; r++) {
-    var nums = numbersIn(rows[r]);
-    if (nums.length < 2) continue;
-    var previousMonth = nums[0], currentMonth = nums[1];
-    var difference = nums.length >= 3 && nums[2] !== 0 ? nums[2] : Math.max(0, currentMonth - previousMonth);
-    return { previousMonth: previousMonth, currentMonth: currentMonth, difference: difference };
-  }
-  return { previousMonth: 0, currentMonth: 0, difference: 0 };
+  function at(r, c) { return str_(rows[r] && rows[r][c]); }
+  var previousMonth = parseMoney_(at(9, 0));
+  var currentMonth = parseMoney_(at(9, 1));
+  var diffRaw = at(9, 2);
+  var difference = diffRaw !== "" ? parseMoney_(diffRaw) : currentMonth - previousMonth;
+  return { previousMonth: previousMonth, currentMonth: currentMonth, difference: difference };
 }
 
 function parseTargetSheet(rows) {
   function at(r, c) { return str_(rows[r] && rows[r][c]); }
 
-  // ---- ANCHOR: store target (A1:B5 -> 0-indexed rows 1..5, col B=1) ----
-  var store = {
-    service: parseMoney_(at(1, 1)),
-    accessory: parseMoney_(at(2, 1)),
-    repair: parseMoney_(at(3, 1)),
-    total: parseMoney_(at(4, 1)),
-    grossProfit: parseMoney_(at(5, 1)),
-  };
+  // ---- ANCHOR: store + salesperson targets — target!A1:D6 ----
+  //   A1:A6 = revenue type label   (row 1 = header, rows 2..6 = the types)
+  //   B     = store target
+  //   C, D  = per-salesperson target; C1 / D1 hold the salesperson names.
+  // 0-indexed: header row 0, data rows 1..5, cols A=0 B=1 C=2 D=3.
+  function slotFor_(label) {
+    var l = String(label || "").toLowerCase();
+    if (l.indexOf("service") > -1) return "service";
+    if (l.indexOf("accessor") > -1) return "accessory";
+    if (l.indexOf("repair") > -1) return "repair";
+    if (l.indexOf("gross") > -1 || l.indexOf("gp") === 0) return "grossProfit";
+    if (l.indexOf("total") > -1) return "total";
+    return null;
+  }
 
-  // ---- ANCHOR: salesperson targets (D1:E6 header + rows) ----
+  var store = { service: 0, accessory: 0, repair: 0, total: 0, grossProfit: 0 };
+
+  // Salesperson names live in the header row, columns C and D onward.
   var people = {};
   var personKeys = [];
-  var headerCells = rows[0] || [];
-  for (var c = 3; c < Math.min(headerCells.length, 5); c++) {
-    var name = headerCells[c];
-    if (name) {
-      var key = normalizePerson_(name);
-      if (personKeys.indexOf(key) === -1) personKeys.push(key);
-    }
-  }
-  personKeys.forEach(function (key) {
-    people[key] = { service: 0, accessory: 0, repair: 0, total: 0, grossProfit: 0 };
-  });
   var colIndex = {};
-  personKeys.forEach(function (key, i) { colIndex[key] = 3 + i; });
-  for (var r = 1; r <= 5; r++) {
-    var label = at(r, 2).toLowerCase();
-    var slot = null;
-    if (label.indexOf("service") === 0) slot = "service";
-    else if (label.indexOf("accessor") === 0) slot = "accessory";
-    else if (label.indexOf("repair") === 0) slot = "repair";
-    else if (label.indexOf("total") === 0) slot = "total";
-    else if (label.indexOf("gross") === 0) slot = "grossProfit";
+  var headerCells = rows[0] || [];
+  for (var c = 2; c < Math.min(headerCells.length, 8); c++) {
+    var name = str_(headerCells[c]);
+    if (!name) continue;
+    // skip generic column captions that aren't people
+    if (/^(target|store|amount|value|revenue|type)$/i.test(name)) continue;
+    var key = normalizePerson_(name);
+    if (!key || personKeys.indexOf(key) > -1) continue;
+    personKeys.push(key);
+    colIndex[key] = c;
+    people[key] = { service: 0, accessory: 0, repair: 0, total: 0, grossProfit: 0 };
+  }
+
+  // Data rows 2..6 on the sheet (0-indexed 1..5).
+  for (var r = 1; r <= 5 && r < rows.length; r++) {
+    var slot = slotFor_(at(r, 0));
     if (!slot) continue;
+    store[slot] = parseMoney_(at(r, 1));
     personKeys.forEach(function (key) {
       people[key][slot] = parseMoney_(at(r, colIndex[key]));
     });
   }
 
+  // If the sheet didn't spell out Total / Gross Profit rows, derive Total.
+  if (!store.total) store.total = store.service + store.accessory + store.repair;
+  personKeys.forEach(function (key) {
+    var p = people[key];
+    if (!p.total) p.total = p.service + p.accessory + p.repair;
+  });
+
   // ---- ANCHOR: google review (G1:I3) ----
   var googleReview = parseGoogleReview_(rows);
 
-  // ---- ANCHOR: KPI grid (row 9 target / row 10 value / row 11 approx, 0-indexed rows 8/9/10) ----
-  var kpiLabels = {
-    CAREPLUS: "Care+", PROTECTPLUS: "Protect+", AMC: "AMC", BUNDLE: "Bundle",
-    DISPLAY: "Display", BATTERY: "Battery", GLASS: "Glass", OTHERS: "Others",
-    SRD: "SRD", SHC: "SHC", ARD: "ARD",
-  };
-  var KPI_LAYOUT = [
-    ["CAREPLUS", 1], ["PROTECTPLUS", 2], ["AMC", 3], ["BUNDLE", 4],
-    ["DISPLAY", 6], ["BATTERY", 7], ["GLASS", 8], ["OTHERS", 9],
-    ["SRD", 10], ["SHC", 11], ["ARD", 12],
-  ];
+  // ---- ANCHOR: KPI grid — target!B12:L14 ----
+  //   Row 12 (B12:L12) = revenue type / category the KPI belongs to (AR/RR/SR)
+  //   Row 13 (B13:L13) = KPI name        (Care+, AMC, Display, SRD, ...)
+  //   Row 14 (B14:L14) = target count for that KPI
+  // 0-indexed: rows 11 / 12 / 13, columns B=1 .. L=11.
+  var KPI_FIRST_COL = 1;  // B
+  var KPI_LAST_COL = 11;  // L
+
+  // Maps the KPI name written on the sheet to the internal rule code.
+  function kpiCodeFor_(label) {
+    var l = String(label || "").toUpperCase().replace(/[^A-Z0-9+]/g, "");
+    if (!l) return null;
+    if (l.indexOf("CARE") === 0) return "CAREPLUS";
+    if (l.indexOf("PROTECT") === 0) return "PROTECTPLUS";
+    if (l.indexOf("AMC") > -1) return "AMC";
+    if (l.indexOf("BUNDLE") > -1) return "BUNDLE";
+    if (l.indexOf("DISPLAY") > -1) return "DISPLAY";
+    if (l.indexOf("BATTER") > -1) return "BATTERY";
+    if (l.indexOf("GLASS") > -1) return "GLASS";
+    if (l.indexOf("OTHER") > -1) return "OTHERS";
+    if (l.indexOf("SRD") > -1) return "SRD";
+    if (l.indexOf("SHC") > -1) return "SHC";
+    if (l.indexOf("ARD") > -1) return "ARD";
+    return null;
+  }
+
+  // Normalises the revenue-type row into the AR / RR / SR bucket label.
+  function kpiCategoryFor_(raw, fallback) {
+    var l = String(raw || "").toUpperCase();
+    if (l.indexOf("AR") > -1 || l.indexOf("ACCESSOR") > -1) return "AR";
+    if (l.indexOf("RR") > -1 || l.indexOf("REPAIR") > -1) return "RR";
+    if (l.indexOf("SR") > -1 || l.indexOf("SERVICE") > -1) return "SR";
+    return fallback || "AR";
+  }
+
   var kpis = [];
-  KPI_LAYOUT.forEach(function (pair) {
-    var code = pair[0], colI = pair[1];
-    var targetVal = parseMoney_(at(8, colI));
-    if (targetVal <= 0) return;
+  var lastCategory = "";
+  for (var kc = KPI_FIRST_COL; kc <= KPI_LAST_COL; kc++) {
+    var typeCell = at(11, kc);          // row 12 — revenue type
+    var nameCell = at(12, kc);          // row 13 — KPI name
+    var targetCell = at(13, kc);        // row 14 — target count
+    if (typeCell) lastCategory = typeCell;   // merged cells only fill the first column
+    var code = kpiCodeFor_(nameCell);
+    if (!code) continue;
     kpis.push({
-      category: colI <= 4 ? "AR" : colI <= 9 ? "RR" : "SR",
+      category: kpiCategoryFor_(lastCategory, "AR"),
       code: code,
-      label: kpiLabels[code] || code,
-      target: targetVal,
-      value: parseMoney_(at(9, colI)),
-      approxAmount: parseMoney_(at(10, colI)),
+      label: str_(nameCell) || code,
+      target: parseMoney_(targetCell),
+      value: 0,
+      approxAmount: 0,
     });
-  });
+  }
 
   // ---- ANCHOR: incentive % slabs (service col A/B, accessory col C/D), anchored on "achievement" header ----
   var pctAnchor = findRow_(rows, 0, 3, /^(achivement|achievement)$/i);
@@ -671,12 +733,27 @@ function computeDashboard(allRows, target) {
       day.repairRevenue += rt === "repair" ? value : 0;
       day.totalRevenue += value;
       day.grossProfit += r.grossProfit;
-      var bp = day.byPerson[pk] || { serviceRevenue: 0, accessoryRevenue: 0, repairRevenue: 0, totalRevenue: 0, grossProfit: 0 };
+      var bp = day.byPerson[pk] || {
+        serviceRevenue: 0, accessoryRevenue: 0, repairRevenue: 0, totalRevenue: 0, grossProfit: 0,
+        // per revenue type: { value, gp, invoices:{code:true} }
+        types: {
+          service: { value: 0, gp: 0, invoices: {} },
+          accessory: { value: 0, gp: 0, invoices: {} },
+          repair: { value: 0, gp: 0, invoices: {} },
+        },
+        invoices: {},
+      };
       bp.serviceRevenue += rt === "service" ? value : 0;
       bp.accessoryRevenue += rt === "accessory" ? value : 0;
       bp.repairRevenue += rt === "repair" ? value : 0;
       bp.totalRevenue += value;
       bp.grossProfit += r.grossProfit;
+      bp.invoices[r.invoiceCode] = true;
+      if (rt && bp.types[rt]) {
+        bp.types[rt].value += value;
+        bp.types[rt].gp += r.grossProfit;
+        bp.types[rt].invoices[r.invoiceCode] = true;
+      }
       day.byPerson[pk] = bp;
     }
   });
@@ -701,6 +778,35 @@ function computeDashboard(allRows, target) {
 
   var days = Object.keys(dayMap).map(function (k) { return dayMap[k]; }).sort(function (a, b) {
     return (a.undated ? 99 : a.day) - (b.undated ? 99 : b.day);
+  });
+
+  // Flatten each day's per-person/per-revenue-type detail into rows that the
+  // date-wise report can render directly.
+  var REV_TYPE_ORDER = [["service", "Service"], ["accessory", "Accessory"], ["repair", "Repair"]];
+  days.forEach(function (d) {
+    var entries = [];
+    Object.keys(d.byPerson).sort().forEach(function (pk) {
+      var bp = d.byPerson[pk];
+      var typeRows = [];
+      REV_TYPE_ORDER.forEach(function (pair) {
+        var tk = pair[0], tlabel = pair[1];
+        var t = bp.types[tk];
+        var invCount = Object.keys(t.invoices).length;
+        if (invCount === 0 && t.value === 0) return;
+        typeRows.push({
+          type: tk, typeLabel: tlabel, invoiceCount: invCount,
+          value: Math.round(t.value), gp: Math.round(t.gp),
+        });
+      });
+      entries.push({
+        key: pk, name: titleCase_(pk),
+        invoiceCount: Object.keys(bp.invoices).length,
+        totalRevenue: Math.round(bp.totalRevenue),
+        grossProfit: Math.round(bp.grossProfit),
+        types: typeRows,
+      });
+    });
+    d.people = entries;
   });
 
   // ---- store-level revenue rollups (TaxableAmount = achieved value) ----
@@ -742,6 +848,10 @@ function computeDashboard(allRows, target) {
     grossProfit: bucket(target.store.grossProfit, sStore.grossProfit, remainingWorkingAfter),
   };
 
+  // Daily target = total store target ÷ number of working days in the month.
+  // Used to colour the date-wise achieved values green (>= target) or red.
+  store.dailyTarget = Math.round(safeDiv_(target.store.total, Math.max(1, totalWorkingDays)));
+
   // ---- revenue type totals & unique invoice counts ----
   var revenueTypeDefs = [["service", "Service Revenue"], ["accessory", "Accessories Revenue"], ["repair", "Repair Revenue"]];
   var revenueTypes = revenueTypeDefs.map(function (pair) {
@@ -774,14 +884,42 @@ function computeDashboard(allRows, target) {
       repair: sum(mine, function (r) { return revenueTypeKey_(r.revenueType) === "repair"; }),
     };
     ach.total = ach.service + ach.accessory + ach.repair;
+
+    // Service & accessory are the only revenue types that EARN incentive.
     var svcInc = incentiveForPct_(target.serviceIncentive.service, pct_(ach.service, t.service));
     var accInc = incentiveForPct_(target.serviceIncentive.accessory, pct_(ach.accessory, t.accessory));
-    function mk(tg, a, inc) { return { target: tg, achieved: a, pct: pct_(a, tg), balance: Math.max(0, tg - a), incentive: inc }; }
+    var earnedIncentive = svcInc + accInc;
+
+    // Repair earns nothing itself — it is a GATE. The person only actually
+    // receives the earned service+accessory incentive once repair revenue
+    // reaches CONFIG.REPAIR_INCENTIVE_GATE_PCT of their repair target.
+    var repairPct = pct_(ach.repair, t.repair);
+    var gatePct = CONFIG.REPAIR_INCENTIVE_GATE_PCT;
+    var gateNeeded = Math.round((gatePct / 100) * t.repair);
+    var repairGateMet = t.repair > 0 ? repairPct >= gatePct : false;
+    var payableIncentive = repairGateMet ? earnedIncentive : 0;
+
+    function mk(tg, a, inc) {
+      return { target: tg, achieved: a, pct: pct_(a, tg), balance: Math.max(0, tg - a), incentive: inc || 0 };
+    }
+
     return {
       key: key, name: titleCase_(key), invoiceCount: mineInvoices,
-      total: mk(t.total, ach.total, svcInc + accInc), service: mk(t.service, ach.service, svcInc),
-      accessory: mk(t.accessory, ach.accessory, accInc), repair: mk(t.repair, ach.repair, 0),
-      totalIncentive: svcInc + accInc,
+      total: mk(t.total, ach.total, payableIncentive),
+      service: mk(t.service, ach.service, svcInc),
+      accessory: mk(t.accessory, ach.accessory, accInc),
+      repair: mk(t.repair, ach.repair, 0),
+      // incentive gate details, surfaced in the UI
+      repairGate: {
+        requiredPct: gatePct,
+        achievedPct: repairPct,
+        requiredValue: gateNeeded,
+        shortfall: Math.max(0, gateNeeded - ach.repair),
+        met: repairGateMet,
+      },
+      earnedIncentive: earnedIncentive,
+      payableIncentive: payableIncentive,
+      totalIncentive: payableIncentive,
     };
   });
 
@@ -1040,6 +1178,14 @@ function writeStoreSection_(sheet, row, data) {
     sheet.getRange(row, 1, 1, 6).setBackground(row % 2 === 0 ? COLORS.stripe : "#ffffff");
     row++;
   });
+  // Google review — read from target!A9:C10
+  var gr = data.kpi.googleReview;
+  sheet.getRange(row, 1, 1, 6).setValues([["Google Reviews", "prev month: " + gr.previousMonth,
+    "this month: " + gr.currentMonth, (gr.difference >= 0 ? "+" : "") + gr.difference, "", ""]]);
+  sheet.getRange(row, 1).setFontWeight("bold");
+  sheet.getRange(row, 4).setFontWeight("bold").setFontColor(gr.difference >= 0 ? COLORS.good : COLORS.bad);
+  sheet.getRange(row, 1, 1, 6).setBackground("#eef2f9");
+  row++;
   return row + 1;
 }
 
@@ -1062,8 +1208,12 @@ function writeSalespersonSection_(sheet, row, data) {
     var types = [["Total", p.total], ["Service", p.service], ["Accessory", p.accessory], ["Repair", p.repair]];
     types.forEach(function (pair, ti) {
       var label = pair[0], b = pair[1];
+      var incTxt;
+      if (label === "Repair") incTxt = "— (gate only)";
+      else if (label === "Total") incTxt = money_(p.payableIncentive) + (p.repairGate.met ? "" : " (locked)");
+      else incTxt = b.incentive ? money_(b.incentive) : "—";
       var vals = [ti === 0 ? p.name : "", label, money_(b.target), money_(b.achieved), b.pct + "%",
-        money_(b.balance), b.incentive ? money_(b.incentive) : "—", ti === 0 ? p.invoiceCount : ""];
+        money_(b.balance), incTxt, ti === 0 ? p.invoiceCount : ""];
       sheet.getRange(row, 1, 1, 8).setValues([vals]);
       sheet.getRange(row, 5).setFontColor(pctColor_(b.pct)).setFontWeight("bold");
       sheet.getRange(row, 1, 1, 8).setBackground(idx % 2 === 0 ? COLORS.stripe : "#ffffff");
@@ -1071,6 +1221,16 @@ function writeSalespersonSection_(sheet, row, data) {
       row++;
     });
   });
+  // Repair incentive gate summary
+  var gateLines = data.salespeople.map(function (p) {
+    return p.name + ": repair " + p.repairGate.achievedPct.toFixed(1) + "% of target" +
+      (p.repairGate.met ? " — incentive unlocked (" + money_(p.payableIncentive) + ")"
+        : " — LOCKED, needs " + money_(p.repairGate.shortfall) + " more");
+  }).join("   |   ");
+  sheet.getRange(row, 1, 1, 8).merge()
+    .setValue("Incentive gate (" + CONFIG.REPAIR_INCENTIVE_GATE_PCT + "% repair target): " + gateLines)
+    .setFontSize(9).setFontStyle("italic").setFontColor("#475569").setWrap(true);
+  row++;
   return row + 1;
 }
 
@@ -1095,23 +1255,19 @@ function writeIncentiveSection_(sheet, row, data) {
 }
 
 function writeKpiSection_(sheet, row, data) {
-  row = sectionHeader_(sheet, row, "5 · STORE KPI PARAMETERS (target sheet grid)", 6);
-  row = tableHeaderRow_(sheet, row, ["KPI", "Category", "Target", "Achieved", "Balance", "Achieved Value / GP"]);
+  // Targets come from target!B12:L14. Google Reviews is NOT listed here —
+  // it is reported separately from target!A9:C10.
+  row = sectionHeader_(sheet, row, "5 · STORE KPI PARAMETERS (target!B12:L14)", 6);
+  row = tableHeaderRow_(sheet, row, ["KPI", "Type", "Target", "Achieved", "Balance", "Achieved Value / GP"]);
   var allKpis = data.kpi.ar.concat(data.kpi.rr, data.kpi.sr);
   allKpis.forEach(function (k, idx) {
-    sheet.getRange(row, 1, 1, 6).setValues([[k.label, k.category, k.target, k.achieved, k.balance,
+    sheet.getRange(row, 1, 1, 6).setValues([[k.label, k.category, k.target || "—", k.achieved, k.target > 0 ? k.balance : "—",
       money_(k.achievedValue) + " / " + money_(k.achievedGp)]]);
-    sheet.getRange(row, 5).setFontColor(k.balance === 0 ? COLORS.good : COLORS.warn).setFontWeight("bold");
+    sheet.getRange(row, 5).setFontColor(k.target > 0 && k.balance === 0 ? COLORS.good : COLORS.warn).setFontWeight("bold");
     sheet.getRange(row, 1, 1, 6).setBackground(idx % 2 === 0 ? COLORS.stripe : "#ffffff");
     row++;
   });
-  row++;
-  sheet.getRange(row, 1, 1, 4).setValues([["Google Review", "prev " + data.kpi.googleReview.previousMonth,
-    "current " + data.kpi.googleReview.currentMonth,
-    (data.kpi.googleReview.difference >= 0 ? "+" : "") + data.kpi.googleReview.difference]]);
-  sheet.getRange(row, 1, 1, 4).setFontWeight("bold");
-  row += 2;
-  return row;
+  return row + 1;
 }
 
 function writeInvoiceValuationSection_(sheet, row, data) {
@@ -1134,25 +1290,53 @@ function writeInvoiceValuationSection_(sheet, row, data) {
 }
 
 function writeDateWiseSection_(sheet, row, data) {
-  row = sectionHeader_(sheet, row, "7 · DATE-WISE SALES REVENUE ANALYSIS", 8);
-  var perTypeDailyTarget = function (key) {
-    var bucket = data.store[key];
-    return data.store.balanceWorkingDays > 0 ? bucket.balance / data.store.balanceWorkingDays : 0;
-  };
-  sheet.getRange(row, 1, 1, 4).setValues([["Daily Target — Service", money_(perTypeDailyTarget("service")),
-    "Daily Target — Accessory", money_(perTypeDailyTarget("accessory"))]]).setFontWeight("bold");
-  row++;
-  sheet.getRange(row, 1, 1, 4).setValues([["Daily Target — Repair", money_(perTypeDailyTarget("repair")),
-    "Daily Target — Total", money_(data.store.total.requiredPerDay)]]).setFontWeight("bold");
+  row = sectionHeader_(sheet, row, "7 · DATE-WISE SALES REVENUE ANALYSIS (by salesperson)", 8);
+  var dailyTarget = data.store.dailyTarget;
+  sheet.getRange(row, 1, 1, 4).setValues([["Daily Target (store total ÷ working days)", money_(dailyTarget),
+    "Working Days", data.store.totalWorkingDays]]).setFontWeight("bold");
   row += 2;
 
-  var header = ["Date", "Weekday", "Unique Invoices", "Service Rev", "Accessory Rev", "Repair Rev", "Total Rev", "Gross Profit"];
+  var header = ["Date", "Salesperson", "Revenue Type", "Invoice Count", "Value", "GP", "Person Total", "Person GP"];
   row = tableHeaderRow_(sheet, row, header);
-  data.days.forEach(function (d, idx) {
-    sheet.getRange(row, 1, 1, 8).setValues([[d.undated ? "No date" : d.dateKey, d.weekday, d.uniqueInvoices,
-      money_(d.serviceRevenue), money_(d.accessoryRevenue), money_(d.repairRevenue), money_(d.totalRevenue), money_(d.grossProfit)]]);
-    sheet.getRange(row, 1, 1, 8).setBackground(d.holiday ? "#fef3c7" : (idx % 2 === 0 ? COLORS.stripe : "#ffffff"));
+
+  // Alternating tints so each salesperson block is easy to distinguish.
+  var personTint = ["#eef3ff", "#fdf1e6", "#e9f7f0", "#f5edfe", "#fdecf4"];
+  var personIdx = {};
+  data.salespeople.forEach(function (p, i) { personIdx[p.key] = i % personTint.length; });
+
+  data.days.forEach(function (d) {
+    // Date summary band
+    sheet.getRange(row, 1, 1, 8).setValues([[d.undated ? "No date" : d.dateKey,
+      d.weekday + (d.holiday ? " (holiday)" : ""), d.uniqueInvoices + " inv", "", money_(d.totalRevenue),
+      money_(d.grossProfit), "daily target", money_(dailyTarget)]]);
+    sheet.getRange(row, 1, 1, 8).setBackground(d.holiday ? "#fdf0d5" : "#e3e9f4").setFontWeight("bold");
+    sheet.getRange(row, 5).setFontColor(d.totalRevenue >= dailyTarget ? COLORS.good : COLORS.bad);
     row++;
+
+    var people = d.people || [];
+    if (!people.length) {
+      sheet.getRange(row, 1, 1, 8).setValues([["", "No sales recorded", "", "", "", "", "", ""]]);
+      sheet.getRange(row, 1, 1, 8).setFontColor("#94a3b8");
+      row++;
+      return;
+    }
+
+    people.forEach(function (p) {
+      var tint = personTint[personIdx[p.key] === undefined ? 0 : personIdx[p.key]];
+      var types = p.types.length ? p.types : [{ typeLabel: "—", invoiceCount: 0, value: 0, gp: 0 }];
+      types.forEach(function (t, ti) {
+        sheet.getRange(row, 1, 1, 8).setValues([["", ti === 0 ? p.name : "", t.typeLabel, t.invoiceCount,
+          money_(t.value), money_(t.gp), ti === 0 ? money_(p.totalRevenue) : "",
+          ti === 0 ? money_(p.grossProfit) : ""]]);
+        sheet.getRange(row, 1, 1, 8).setBackground(tint);
+        if (ti === 0) sheet.getRange(row, 2).setFontWeight("bold");
+        if (ti === 0) {
+          sheet.getRange(row, 7).setFontWeight("bold")
+            .setFontColor(p.totalRevenue >= dailyTarget ? COLORS.good : COLORS.bad);
+        }
+        row++;
+      });
+    });
   });
   return row + 1;
 }
@@ -1197,18 +1381,33 @@ function renderDashboardHtml_(data) {
 
   var generated = Utilities.formatDate(data.generatedAt, Session.getScriptTimeZone(), "dd MMM yyyy, HH:mm");
 
+  // The Refresh button re-requests the Web App URL with ?refresh=1, which
+  // bypasses the server-side cache and recomputes from the sheet.
+  var refreshScript =
+    "<script>" +
+    "function doRefresh(btn){" +
+    "  btn.classList.add('loading'); btn.disabled=true;" +
+    "  btn.querySelector('.txt').textContent='Refreshing...';" +
+    "  var base=(window.location.href.split('?')[0]);" +
+    "  window.location.replace(base+'?refresh=1&t='+Date.now());" +
+    "}" +
+    "</script>";
+
   return (
     "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
     "<title>Sales Performance Dashboard</title><style>" + css + "</style></head><body>" +
-    '<header class="topbar">' +
-    '<div class="topbar-inner">' +
+    '<header class="topbar"><div class="topbar-inner">' +
+    "<div>" +
     "<h1>📊 Sales Performance Dashboard</h1>" +
-    '<div class="meta">Generated ' + esc_(generated) + " &middot; " + data.store.totalInvoices +
-    " SALES rows &middot; " + data.store.uniqueInvoices + ' unique invoices &middot; ' +
-    '<a href="javascript:location.reload()">refresh</a></div>' +
+    '<div class="meta">Updated ' + esc_(generated) + " &middot; " + data.store.totalInvoices +
+    " SALES rows &middot; " + data.store.uniqueInvoices + " unique invoices</div>" +
+    "</div>" +
+    '<button class="refresh-btn" onclick="doRefresh(this)">' +
+    '<span class="spin"></span><span class="txt">↻ Refresh data</span></button>' +
     "</div></header>" +
     '<main class="wrap">' + body + "</main>" +
-    '<footer class="foot">Reload this page any time to recompute from the latest crm / target sheet data.</footer>' +
+    '<footer class="foot">Press “Refresh data” to pull the latest crm / target sheet values.</footer>' +
+    refreshScript +
     "</body></html>"
   );
 }
@@ -1216,47 +1415,84 @@ function renderDashboardHtml_(data) {
 function getDashboardCss_() {
   return (
     "* { box-sizing: border-box; }" +
+    // ---- mild dark page background, mild light tiles ----
     "body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;" +
-    " background:#0f172a; color:#0f172a; }" +
-    ".topbar { background:linear-gradient(135deg,#1f2a44,#2563eb); color:#fff; padding:18px 20px; }" +
-    ".topbar-inner { max-width:1180px; margin:0 auto; }" +
-    ".topbar h1 { margin:0 0 4px; font-size:22px; }" +
-    ".topbar .meta { font-size:12px; opacity:.85; }" +
-    ".topbar .meta a { color:#fff; text-decoration:underline; }" +
-    ".wrap { max-width:1180px; margin:0 auto; padding:20px 16px 60px; }" +
-    ".section { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.08); margin-bottom:22px; overflow:hidden; }" +
-    ".section h2 { margin:0; padding:14px 18px; font-size:14px; letter-spacing:.06em; text-transform:uppercase;" +
-    " background:#2563eb; color:#fff; }" +
+    " background:#33405c; color:#1f2937; }" +
+    ".topbar { background:#2b3750; color:#fff; padding:16px 20px; border-bottom:1px solid #46536f;" +
+    " position:sticky; top:0; z-index:20; }" +
+    ".topbar-inner { max-width:1320px; margin:0 auto; display:flex; align-items:center;" +
+    " justify-content:space-between; gap:16px; flex-wrap:wrap; }" +
+    ".topbar h1 { margin:0 0 4px; font-size:21px; }" +
+    ".topbar .meta { font-size:12px; opacity:.82; }" +
+    ".refresh-btn { background:#4f7cff; color:#fff; border:none; border-radius:8px; padding:10px 18px;" +
+    " font-size:13px; font-weight:700; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,.25);" +
+    " display:inline-flex; align-items:center; gap:8px; white-space:nowrap; }" +
+    ".refresh-btn:hover { background:#3d6af0; }" +
+    ".refresh-btn:disabled { opacity:.65; cursor:progress; }" +
+    ".refresh-btn .spin { display:none; width:13px; height:13px; border:2px solid rgba(255,255,255,.4);" +
+    " border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; }" +
+    ".refresh-btn.loading .spin { display:inline-block; }" +
+    "@keyframes spin { to { transform:rotate(360deg); } }" +
+    ".wrap { max-width:1320px; margin:0 auto; padding:20px 16px 50px; }" +
+    // mild light tile surfaces
+    ".section { background:#f5f7fb; border-radius:12px; box-shadow:0 2px 8px rgba(0,0,0,.18);" +
+    " margin-bottom:20px; overflow:hidden; }" +
+    ".section h2 { margin:0; padding:13px 18px; font-size:13px; letter-spacing:.06em; text-transform:uppercase;" +
+    " background:#43587f; color:#fff; }" +
     ".section .body { padding:16px 18px; }" +
-    ".cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:22px; }" +
-    ".card { background:#fff; border-radius:12px; padding:14px 16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }" +
-    ".card .label { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:#64748b; font-weight:600; }" +
-    ".card .value { font-size:22px; font-weight:700; margin-top:4px; }" +
-    ".card .sub { font-size:11px; color:#64748b; margin-top:2px; }" +
-    "table { width:100%; border-collapse:collapse; font-size:13px; }" +
-    "th { text-align:right; font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:#64748b;" +
-    " padding:8px 10px; border-bottom:2px solid #e2e8f0; }" +
+    ".cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:12px; margin-bottom:20px; }" +
+    ".card { background:#f5f7fb; border-radius:12px; padding:14px 16px; box-shadow:0 2px 8px rgba(0,0,0,.18); }" +
+    ".section .card { box-shadow:none; border:1px solid #dde3ee; background:#fbfcfe; }" +
+    ".card .label { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:#5b6880; font-weight:700; }" +
+    ".card .value { font-size:22px; font-weight:700; margin-top:4px; color:#1f2937; }" +
+    ".card .sub { font-size:11px; color:#5b6880; margin-top:2px; }" +
+    "table { width:100%; border-collapse:collapse; font-size:13px; background:#fbfcfe; }" +
+    "th { text-align:right; font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:#4a5a75;" +
+    " padding:8px 10px; border-bottom:2px solid #d9e0ec; background:#eef2f9; }" +
     "th:first-child, td:first-child { text-align:left; }" +
-    "td { padding:8px 10px; border-bottom:1px solid #eef2f6; text-align:right; }" +
-    "tr:nth-child(even) td { background:#f8fafc; }" +
-    "tr.holiday td { background:#fef3c7 !important; }" +
-    "tr.total-row td { background:#e2e8f0 !important; font-weight:700; }" +
+    "td { padding:8px 10px; border-bottom:1px solid #e6ebf3; text-align:right; }" +
+    "tr:nth-child(even) td { background:#f2f5fa; }" +
+    "tr.holiday td { background:#fdf0d5 !important; }" +
+    "tr.total-row td { background:#dfe6f2 !important; font-weight:700; }" +
     ".badge { display:inline-block; padding:2px 8px; border-radius:999px; font-weight:700; font-size:11px; }" +
-    ".badge.good { background:#dcfce7; color:#15803d; }" +
-    ".badge.info { background:#dbeafe; color:#1d4ed8; }" +
-    ".badge.warn { background:#fef3c7; color:#b45309; }" +
-    ".badge.bad { background:#fee2e2; color:#b91c1c; }" +
-    ".bar { height:6px; border-radius:999px; background:#e2e8f0; overflow:hidden; min-width:80px; }" +
+    ".badge.good { background:#d7f5df; color:#15803d; }" +
+    ".badge.info { background:#dae7fd; color:#1d4ed8; }" +
+    ".badge.warn { background:#fdeecb; color:#b45309; }" +
+    ".badge.bad { background:#fcdede; color:#b91c1c; }" +
+    ".bar { height:6px; border-radius:999px; background:#dfe5ef; overflow:hidden; min-width:80px; }" +
     ".bar-fill { height:100%; border-radius:999px; }" +
     ".bar-fill.good { background:#16a34a; } .bar-fill.info { background:#2563eb; }" +
     ".bar-fill.warn { background:#d97706; } .bar-fill.bad { background:#dc2626; }" +
-    ".person-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:14px; }" +
-    ".person-card { border:1px solid #e2e8f0; border-radius:10px; padding:14px; }" +
+    ".person-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px; }" +
+    ".person-card { border:1px solid #dde3ee; border-radius:10px; padding:14px; background:#fbfcfe; }" +
     ".person-card h3 { margin:0 0 8px; font-size:15px; }" +
     ".row-line { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:6px 0 2px; font-size:12px; }" +
     ".scroll-x { overflow-x:auto; }" +
-    ".foot { text-align:center; color:#94a3b8; font-size:11px; padding:10px 0 30px; }" +
-    ".pos { color:#16a34a; font-weight:700; } .neg { color:#dc2626; font-weight:700; }" +
+    ".foot { text-align:center; color:#b9c3d6; font-size:11px; padding:6px 0 28px; }" +
+    ".pos { color:#15803d; font-weight:700; } .neg { color:#b91c1c; font-weight:700; }" +
+    ".muted { color:#6b7688; }" +
+    // incentive gate note inside person cards
+    ".gate { margin-top:10px; padding:8px 10px; border-radius:8px; font-size:11.5px; line-height:1.45; }" +
+    ".gate.met { background:#e6f7ec; border:1px solid #b6e6c6; color:#14663a; }" +
+    ".gate.blocked { background:#fdecec; border:1px solid #f3c3c3; color:#8f2020; }" +
+    ".incentive-line { display:flex; justify-content:space-between; font-size:12px; margin-top:6px; }" +
+    // date-wise per-person grouping
+    "table.detail td, table.detail th { font-size:12.5px; }" +
+    "tr.date-head td { background:#e3e9f4 !important; font-weight:700; color:#26334d;" +
+    " border-top:2px solid #b9c6dd; }" +
+    "td.person-cell { font-weight:700; border-left:4px solid transparent; }" +
+    ".sp-0 { border-left-color:#4f7cff !important; }" +
+    ".sp-1 { border-left-color:#ef8b3c !important; }" +
+    ".sp-2 { border-left-color:#22a06b !important; }" +
+    ".sp-3 { border-left-color:#a855f7 !important; }" +
+    ".sp-4 { border-left-color:#ec4899 !important; }" +
+    "tr.person-band-0 td { background:#f4f7ff; } tr.person-band-0:nth-child(even) td { background:#eef3ff; }" +
+    "tr.person-band-1 td { background:#fff7f0; } tr.person-band-1:nth-child(even) td { background:#fdf1e6; }" +
+    "tr.person-band-2 td { background:#f1fbf6; } tr.person-band-2:nth-child(even) td { background:#e9f7f0; }" +
+    "tr.person-band-3 td { background:#faf5ff; } tr.person-band-3:nth-child(even) td { background:#f5edfe; }" +
+    "tr.person-band-4 td { background:#fef4f9; } tr.person-band-4:nth-child(even) td { background:#fdecf4; }" +
+    "td.val-good { color:#15803d; font-weight:700; }" +
+    "td.val-bad { color:#b91c1c; font-weight:700; }" +
     "@media (max-width:640px){ .topbar h1{font-size:18px;} .card .value{font-size:18px;} }"
   );
 }
@@ -1268,6 +1504,15 @@ function renderStoreCards_(data) {
       esc_(value) + '</div><div class="sub">' + esc_(sub || "") + "</div></div>";
   }
   var gr = data.kpi.googleReview;
+  // Google review tile — values come straight from target!A9:C10
+  var diffCls = gr.difference > 0 ? "pos" : gr.difference < 0 ? "neg" : "muted";
+  var grTile =
+    '<div class="card"><div class="label">Google Reviews</div>' +
+    '<div class="value">' + gr.currentMonth +
+    ' <span class="' + diffCls + '" style="font-size:13px">(' +
+    (gr.difference >= 0 ? "+" : "") + gr.difference + ")</span></div>" +
+    '<div class="sub">this month &middot; previous ' + gr.previousMonth + "</div></div>";
+
   return (
     '<div class="cards">' +
     card("Month Progress", s.daysElapsed + " / " + s.daysInMonth + " days", s.daysRemaining + " remaining") +
@@ -1275,7 +1520,7 @@ function renderStoreCards_(data) {
     card("Unique Invoices", s.uniqueInvoices, "deduped invoice codes") +
     card("Total Revenue", money_(s.total.achieved), s.total.pct + "% of target") +
     card("Gross Profit", money_(s.grossProfit.achieved), s.grossProfit.pct + "% of target") +
-    card("Google Reviews", gr.currentMonth, "prev " + gr.previousMonth + " (" + (gr.difference >= 0 ? "+" : "") + gr.difference + ")") +
+    grTile +
     "</div>"
   );
 }
@@ -1311,25 +1556,69 @@ function renderWorkingDaysCard_(data) {
 }
 
 function renderSalespersonCards_(data) {
+  // Incentive-bearing revenue types show target vs achieved, the balance
+  // still needed in (brackets), and the incentive that type has earned.
+  function incentiveLine_(label, b) {
+    var balTxt = b.balance > 0
+      ? ' <span class="muted">(' + money_(b.balance) + " to go)</span>"
+      : ' <span class="pos">(target met)</span>';
+    return (
+      '<div class="row-line"><span><b>' + esc_(label) + "</b></span>" +
+      "<span>" + money_(b.achieved) + ' <span class="muted">/ ' + money_(b.target) + "</span> " +
+      pctBadgeHtml_(b.pct) + "</span></div>" +
+      barHtml_(b.pct) +
+      '<div class="incentive-line"><span class="muted">Balance to target' + "</span><span>" + balTxt + "</span></div>" +
+      '<div class="incentive-line"><span class="muted">Incentive earned</span><span class="' +
+      (b.incentive > 0 ? "pos" : "muted") + '">' + money_(b.incentive) + "</span></div>"
+    );
+  }
+
   var cards = data.salespeople.map(function (p) {
-    var lines = [["Service", p.service], ["Accessory", p.accessory], ["Repair", p.repair]].map(function (pair) {
-      var label = pair[0], b = pair[1];
-      return '<div class="row-line"><span>' + esc_(label) + "</span><span>" + money_(b.achieved) + " / " +
-        money_(b.target) + " " + pctBadgeHtml_(b.pct) + "</span></div>" + barHtml_(b.pct);
-    }).join("");
+    var gate = p.repairGate;
+
+    // Repair: no incentive of its own — it only unlocks the others.
+    var repairBlock =
+      '<div class="row-line" style="margin-top:12px"><span><b>Repair</b> ' +
+      '<span class="muted">(no incentive — unlock gate)</span></span>' +
+      "<span>" + money_(p.repair.achieved) + ' <span class="muted">/ ' + money_(p.repair.target) +
+      "</span> " + pctBadgeHtml_(p.repair.pct) + "</span></div>" +
+      barHtml_(p.repair.pct);
+
+    var gateBlock = gate.met
+      ? '<div class="gate met">✅ <b>Incentive unlocked.</b> Repair revenue is at ' +
+        gate.achievedPct.toFixed(1) + "% of target (needs " + gate.requiredPct + "%). " +
+        "Payable incentive: <b>" + money_(p.payableIncentive) + "</b>.</div>"
+      : '<div class="gate blocked">🔒 <b>Incentive locked.</b> Repair revenue is at ' +
+        gate.achievedPct.toFixed(1) + "% of target — must reach " + gate.requiredPct + "% (" +
+        money_(gate.requiredValue) + "). Still needed: <b>" + money_(gate.shortfall) + "</b>.<br>" +
+        "Earned but withheld: " + money_(p.earnedIncentive) + ".</div>";
+
     return (
       '<div class="person-card"><h3>' + esc_(p.name) + "</h3>" +
-      '<div class="row-line"><span>Total Revenue</span><span><b>' + money_(p.total.achieved) + "</b> / " +
-      money_(p.total.target) + " " + pctBadgeHtml_(p.total.pct) + "</span></div>" + barHtml_(p.total.pct) +
-      '<div class="row-line" style="margin-top:8px"><span>Total Incentive</span><span class="pos">' +
-      money_(p.totalIncentive) + "</span></div>" +
+      '<div class="row-line"><span>Total Revenue</span><span><b>' + money_(p.total.achieved) + "</b>" +
+      ' <span class="muted">/ ' + money_(p.total.target) + "</span> " + pctBadgeHtml_(p.total.pct) + "</span></div>" +
+      barHtml_(p.total.pct) +
       '<div class="row-line"><span>Invoices</span><span>' + p.invoiceCount + "</span></div>" +
-      '<hr style="border:none;border-top:1px solid #eef2f6;margin:10px 0">' + lines + "</div>"
+      '<div class="row-line"><span><b>Payable Incentive</b></span><span class="' +
+      (p.payableIncentive > 0 ? "pos" : "neg") + '"><b>' + money_(p.payableIncentive) + "</b></span></div>" +
+      '<hr style="border:none;border-top:1px solid #e6ebf3;margin:10px 0">' +
+      incentiveLine_("Service", p.service) +
+      '<div style="height:10px"></div>' +
+      incentiveLine_("Accessory", p.accessory) +
+      repairBlock +
+      gateBlock +
+      "</div>"
     );
   }).join("");
+
   return (
     '<section class="section"><h2>3 &middot; Salesperson Performance</h2><div class="body">' +
-    '<div class="person-grid">' + cards + "</div></div></section>"
+    '<div class="person-grid">' + cards + "</div>" +
+    '<p class="muted" style="font-size:11.5px;margin:14px 0 0">' +
+    "Only <b>Service</b> and <b>Accessory</b> revenue earn incentive. <b>Repair</b> revenue pays nothing on its own — " +
+    "it acts as a gate: the salesperson only receives the earned amount once repair revenue reaches <b>" +
+    CONFIG.REPAIR_INCENTIVE_GATE_PCT + "%</b> of their repair target.</p>" +
+    "</div></section>"
   );
 }
 
@@ -1353,21 +1642,28 @@ function renderIncentiveTable_(data) {
 }
 
 function renderKpiSection_(data) {
+  // Targets come from target!B12:L14 (row 12 = revenue type, row 13 = KPI
+  // name, row 14 = target count). Google Reviews is intentionally NOT a KPI
+  // row — it is shown as its own tile at the top of the page.
   var allKpis = data.kpi.ar.concat(data.kpi.rr, data.kpi.sr);
+
   var rows = allKpis.map(function (k) {
-    return "<tr><td>" + esc_(k.label) + "</td><td>" + esc_(k.category) + "</td><td>" + k.target + "</td><td>" +
-      k.achieved + '</td><td class="' + (k.balance === 0 ? "pos" : "neg") + '">' + k.balance + "</td><td>" +
+    var pctVal = k.target > 0 ? pct_(k.achieved, k.target) : 0;
+    return "<tr><td>" + esc_(k.label) + "</td><td>" + esc_(k.category) + "</td><td>" +
+      (k.target > 0 ? k.target : "&mdash;") + "</td><td>" + k.achieved + "</td><td>" +
+      (k.target > 0 ? pctBadgeHtml_(pctVal) : '<span class="muted">&mdash;</span>') +
+      '</td><td class="' + (k.target > 0 && k.balance === 0 ? "pos" : k.balance > 0 ? "neg" : "muted") + '">' +
+      (k.target > 0 ? k.balance : "&mdash;") + "</td><td>" +
       money_(k.achievedValue) + "</td><td>" + money_(k.achievedGp) + "</td></tr>";
   }).join("");
-  var gr = data.kpi.googleReview;
+
   return (
     '<section class="section"><h2>5 &middot; Store KPI Parameters</h2><div class="body scroll-x">' +
-    "<table><thead><tr><th>KPI</th><th>Category</th><th>Target</th><th>Achieved</th><th>Balance</th>" +
-    "<th>Achieved Value</th><th>Achieved GP</th></tr></thead><tbody>" + rows +
-    '<tr class="total-row"><td>Google Review</td><td>AR</td><td>&mdash;</td><td>' + gr.currentMonth +
-    "</td><td>prev " + gr.previousMonth + '</td><td colspan="2">' + (gr.difference >= 0 ? "+" : "") +
-    gr.difference + " vs previous month</td></tr>" +
-    "</tbody></table></div></section>"
+    "<table><thead><tr><th>KPI</th><th>Type</th><th>Target</th><th>Achieved</th><th>Achieved %</th>" +
+    "<th>Balance</th><th>Achieved Value</th><th>Achieved GP</th></tr></thead><tbody>" + rows +
+    "</tbody></table>" +
+    '<p class="muted" style="font-size:11.5px;margin:12px 0 0">Targets read from <b>target!B12:L14</b>.</p>' +
+    "</div></section>"
   );
 }
 
@@ -1392,27 +1688,101 @@ function renderInvoiceValuation_(data) {
   );
 }
 
+/**
+ * Section 7 — a detailed date-wise report broken down by salesperson and
+ * revenue type. Each salesperson is given their own colour band / left
+ * border so their block is easy to pick out. Achieved values are green when
+ * they meet or beat the daily target (store total target ÷ working days),
+ * red when they fall short.
+ */
 function renderDateWiseTable_(data) {
-  var perTypeDailyTarget = function (key) {
-    var bucket = data.store[key];
-    return data.store.balanceWorkingDays > 0 ? bucket.balance / data.store.balanceWorkingDays : 0;
-  };
-  var rows = data.days.map(function (d) {
-    return '<tr class="' + (d.holiday ? "holiday" : "") + '"><td>' + esc_(d.undated ? "No date" : d.dateKey) +
-      " " + (d.holiday ? "🔶" : "") + "</td><td>" + esc_(d.weekday) + "</td><td>" + d.uniqueInvoices +
-      "</td><td>" + money_(d.serviceRevenue) + "</td><td>" + money_(d.accessoryRevenue) + "</td><td>" +
-      money_(d.repairRevenue) + "</td><td><b>" + money_(d.totalRevenue) + "</b></td><td>" + money_(d.grossProfit) + "</td></tr>";
+  var dailyTarget = data.store.dailyTarget;
+
+  // Stable colour index per salesperson across the whole table.
+  var personIndex = {};
+  data.salespeople.forEach(function (p, i) { personIndex[p.key] = i % 5; });
+  function idxFor(key) {
+    if (personIndex[key] === undefined) personIndex[key] = Object.keys(personIndex).length % 5;
+    return personIndex[key];
+  }
+
+  function valCell(value, target) {
+    var cls = target > 0 ? (value >= target ? "val-good" : "val-bad") : "";
+    return '<td class="' + cls + '">' + money_(value) + "</td>";
+  }
+
+  var body = "";
+  data.days.forEach(function (d) {
+    var people = d.people || [];
+    // How many detail rows this date spans (for the date rowspan).
+    var rowCount = 0;
+    people.forEach(function (p) { rowCount += Math.max(1, p.types.length); });
+    if (rowCount === 0) rowCount = 1;
+
+    // Date summary band
+    var dayCls = d.holiday ? "date-head holiday" : "date-head";
+    body +=
+      '<tr class="' + dayCls + '"><td colspan="3">' + esc_(d.undated ? "No date" : d.dateKey) +
+      (d.weekday ? ' <span class="muted">(' + esc_(d.weekday) + ")</span>" : "") +
+      (d.holiday ? " 🔶 holiday" : "") + "</td>" +
+      "<td>" + d.uniqueInvoices + " inv</td>" +
+      valCell(d.totalRevenue, dailyTarget) +
+      "<td>" + money_(d.grossProfit) + "</td>" +
+      '<td colspan="2" class="muted">daily target ' + money_(dailyTarget) + "</td></tr>";
+
+    if (people.length === 0) {
+      body += '<tr><td colspan="8" class="muted" style="text-align:center">No sales recorded</td></tr>';
+      return;
+    }
+
+    people.forEach(function (p) {
+      var i = idxFor(p.key);
+      var types = p.types.length ? p.types : [{ typeLabel: "—", invoiceCount: 0, value: 0, gp: 0 }];
+      types.forEach(function (t, ti) {
+        body += '<tr class="person-band-' + i + '">';
+        // Date column left blank on detail rows (date shown in the band above)
+        body += '<td class="muted"></td>';
+        if (ti === 0) {
+          body += '<td class="person-cell sp-' + i + '" rowspan="' + types.length + '">' + esc_(p.name) + "</td>";
+        }
+        body += "<td>" + esc_(t.typeLabel) + "</td>";
+        body += "<td>" + t.invoiceCount + "</td>";
+        body += "<td>" + money_(t.value) + "</td>";
+        body += "<td>" + money_(t.gp) + "</td>";
+        if (ti === 0) {
+          body += '<td rowspan="' + types.length + '"><b>' + money_(p.totalRevenue) + "</b></td>";
+          body += '<td rowspan="' + types.length + '">' + money_(p.grossProfit) + "</td>";
+        }
+        body += "</tr>";
+      });
+    });
+  });
+
+  var legend = data.salespeople.map(function (p) {
+    var i = idxFor(p.key);
+    return '<span style="display:inline-flex;align-items:center;gap:6px;margin-right:14px;font-size:12px">' +
+      '<span class="sp-' + i + '" style="width:14px;height:14px;border-radius:3px;border-left-width:14px;' +
+      'border-left-style:solid;display:inline-block"></span>' + esc_(p.name) + "</span>";
   }).join("");
+
   return (
-    '<section class="section"><h2>7 &middot; Date-wise Sales Revenue Analysis</h2><div class="body">' +
+    '<section class="section"><h2>7 &middot; Date-wise Sales Revenue Analysis (by salesperson)</h2><div class="body">' +
     '<div class="cards" style="margin-bottom:14px">' +
-    '<div class="card"><div class="label">Daily Target — Service</div><div class="value">' + money_(perTypeDailyTarget("service")) + "</div></div>" +
-    '<div class="card"><div class="label">Daily Target — Accessory</div><div class="value">' + money_(perTypeDailyTarget("accessory")) + "</div></div>" +
-    '<div class="card"><div class="label">Daily Target — Repair</div><div class="value">' + money_(perTypeDailyTarget("repair")) + "</div></div>" +
-    '<div class="card"><div class="label">Daily Target — Total</div><div class="value">' + money_(data.store.total.requiredPerDay) + "</div></div>" +
+    '<div class="card"><div class="label">Daily Target (store)</div><div class="value">' + money_(dailyTarget) +
+    '</div><div class="sub">total target ÷ ' + data.store.totalWorkingDays + " working days</div></div>" +
+    '<div class="card"><div class="label">Working Days</div><div class="value">' + data.store.totalWorkingDays +
+    '</div><div class="sub">' + data.store.consumedWorkingDays + " consumed / " + data.store.balanceWorkingDays + " left</div></div>" +
+    '<div class="card"><div class="label">Required / Day (balance)</div><div class="value">' +
+    money_(data.store.total.requiredPerDay) + '</div><div class="sub">to close the remaining gap</div></div>' +
     "</div>" +
-    '<div class="scroll-x"><table><thead><tr><th>Date</th><th>Weekday</th><th>Unique Invoices</th>' +
-    "<th>Service Rev</th><th>Accessory Rev</th><th>Repair Rev</th><th>Total Rev</th><th>Gross Profit</th></tr></thead>" +
-    "<tbody>" + rows + "</tbody></table></div></div></section>"
+    '<div style="margin:0 0 10px">' + legend + "</div>" +
+    '<div class="scroll-x"><table class="detail"><thead><tr>' +
+    "<th style=\"width:30px\"></th><th>Salesperson</th><th>Revenue Type</th><th>Invoice Count</th>" +
+    "<th>Value</th><th>GP</th><th>Person Total</th><th>Person GP</th>" +
+    "</tr></thead><tbody>" + body + "</tbody></table></div>" +
+    '<p class="muted" style="font-size:11.5px;margin:12px 0 0">' +
+    "Date rows show the store total for that day — <span class=\"pos\">green</span> when it meets or beats the daily " +
+    "target of " + money_(dailyTarget) + ", <span class=\"neg\">red</span> when it falls short.</p>" +
+    "</div></section>"
   );
 }
