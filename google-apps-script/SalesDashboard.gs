@@ -85,6 +85,17 @@ var CONFIG = {
   // Section 7 starts collapsed showing this many of the most recent dates
   // (current day + the previous two). Expanding reveals every date.
   COLLAPSED_DAYS: 3,
+  // How crm!InvoiceDate is written in your sheet: "DMY" = dd-mm-yyyy hh:mm
+  // (the default), "MDY" = mm-dd-yyyy hh:mm.
+  //
+  // This matters because Google Sheets silently converts some of those
+  // strings into real dates using the SPREADSHEET's locale. With a US locale
+  // "01-09-2026" is read as 9 January, not 1 September — but "14-09-2026"
+  // can't be month-first, so it stays text. That mix is what makes a report
+  // show a stray "09-01-2026" and only run continuously from the 13th on.
+  // The script therefore reads the displayed text and applies this setting,
+  // so the interpretation no longer depends on the sheet's locale.
+  DATE_ORDER: "DMY",
 };
 
 /* ============================================================================
@@ -124,6 +135,33 @@ function getSpreadsheet_() {
   return SpreadsheetApp.getActiveSpreadsheet();
 }
 
+/**
+ * Reads the crm sheet, substituting the *displayed* text for the InvoiceDate
+ * column only.
+ *
+ * Why: if the spreadsheet locale is month-first, Sheets silently converts
+ * "01-09-2026 12:09" into a Date meaning 9 January, while "14-09-2026" stays
+ * text because 14 can't be a month. Reading raw values therefore yields a mix
+ * of correct and shifted dates. The displayed string always matches what you
+ * see in the cell, so re-parsing it with CONFIG.DATE_ORDER gives one
+ * consistent interpretation regardless of locale.
+ */
+function mergeDisplayDates_(crmSheet) {
+  var range = crmSheet.getDataRange();
+  var values = range.getValues();
+  if (!values.length) return values;
+
+  var dateCol = findColumn_(values[0], [/invoice.*date/i]);
+  if (dateCol === -1) return values;
+
+  var display = range.getDisplayValues();
+  for (var r = 1; r < values.length; r++) {
+    var shown = display[r][dateCol];
+    if (shown) values[r][dateCol] = shown;
+  }
+  return values;
+}
+
 /** Shared pipeline: read crm + target sheets, parse, and compute the dashboard data object. */
 function loadDashboardData_() {
   var ss = getSpreadsheet_();
@@ -133,7 +171,12 @@ function loadDashboardData_() {
   if (!crmSheet) throw new Error('Sheet "' + CONFIG.CRM_SHEET_NAME + '" not found.');
   if (!targetSheet) throw new Error('Sheet "' + CONFIG.TARGET_SHEET_NAME + '" not found.');
 
-  var crmValues = crmSheet.getDataRange().getValues();
+  // getDisplayValues() returns what the cell SHOWS, so an InvoiceDate that
+  // Google Sheets auto-converted to a real date under a month-first locale is
+  // read back as text and re-parsed with CONFIG.DATE_ORDER. Values are merged
+  // so only the date column uses display text; everything else keeps its
+  // native type (numbers stay numbers).
+  var crmValues = mergeDisplayDates_(crmSheet);
   var targetValues = targetSheet.getDataRange().getValues();
 
   var allRows = parseCrmRows(crmValues);
@@ -245,24 +288,86 @@ function isSaleRow_(r) {
 }
 
 /** Parse a date cell that may be a real Date object or a "DD-MM-YYYY HH:mm" string. */
+/**
+ * Parses crm!InvoiceDate into { day, dayKey, month, year, minutes }.
+ *
+ * Expected source format: dd-mm-yyyy hh:mm (configurable via
+ * CONFIG.DATE_ORDER). dayKey is always normalised to dd-MM-yyyy.
+ *
+ * Real Date objects are trusted as-is — Apps Script hands back the true
+ * instant, so no re-interpretation is needed or wanted there. Strings are
+ * split on the configured field order instead of being fed to new Date(),
+ * which would otherwise guess month-first and turn 01-09-2026 into 9 Jan.
+ */
 function parseInvoiceDate_(raw) {
   if (raw instanceof Date && !isNaN(raw.getTime())) {
-    return { day: raw.getDate(), dayKey: Utilities.formatDate(raw, Session.getScriptTimeZone(), "dd-MM-yyyy") };
+    return {
+      day: raw.getDate(),
+      month: raw.getMonth() + 1,
+      year: raw.getFullYear(),
+      minutes: raw.getHours() * 60 + raw.getMinutes(),
+      dayKey: Utilities.formatDate(raw, Session.getScriptTimeZone(), "dd-MM-yyyy"),
+    };
   }
+
   var s = str_(raw);
-  if (!s) return { day: 0, dayKey: "" };
-  var datePart = s.split(" ")[0];
+  if (!s) return { day: 0, month: 0, year: 0, minutes: 0, dayKey: "" };
+
+  // Split "dd-mm-yyyy hh:mm" (or with "/" separators) into date and time.
+  var parts = s.split(/[\sT]+/);
+  var datePart = parts[0];
+  var timePart = parts.length > 1 ? parts[1] : "";
+
+  var minutes = 0;
+  var tm = timePart.match(/^(\d{1,2}):(\d{2})/);
+  if (tm) minutes = parseInt(tm[1], 10) * 60 + parseInt(tm[2], 10);
+
+  // ISO yyyy-mm-dd is unambiguous, so handle it before the configured order.
+  var iso = datePart.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})$/);
+  if (iso) {
+    return mkDateParts_(parseInt(iso[3], 10), parseInt(iso[2], 10), parseInt(iso[1], 10), minutes);
+  }
+
   var m = datePart.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{2,4})$/);
   if (m) {
-    var dd = parseInt(m[1], 10);
-    return { day: dd || 0, dayKey: datePart };
+    var first = parseInt(m[1], 10);
+    var second = parseInt(m[2], 10);
+    var year = parseInt(m[3], 10);
+    if (year < 100) year += 2000;
+
+    var dd, mm;
+    if (CONFIG.DATE_ORDER === "MDY") {
+      mm = first; dd = second;
+    } else {
+      dd = first; mm = second;
+    }
+    // If the "month" field can't be a month, the fields must be the other way
+    // round — recover rather than dropping the row.
+    if (mm > 12 && dd <= 12) { var swap = dd; dd = mm; mm = swap; }
+    return mkDateParts_(dd, mm, year, minutes);
   }
-  // Fallback: try native Date parsing (handles ISO-ish strings)
+
+  // Last resort for formats like "9 Sep 2026".
   var d = new Date(s);
   if (!isNaN(d.getTime())) {
-    return { day: d.getDate(), dayKey: Utilities.formatDate(d, Session.getScriptTimeZone(), "dd-MM-yyyy") };
+    return {
+      day: d.getDate(), month: d.getMonth() + 1, year: d.getFullYear(),
+      minutes: d.getHours() * 60 + d.getMinutes(),
+      dayKey: Utilities.formatDate(d, Session.getScriptTimeZone(), "dd-MM-yyyy"),
+    };
   }
-  return { day: 0, dayKey: datePart };
+  return { day: 0, month: 0, year: 0, minutes: 0, dayKey: datePart };
+}
+
+function mkDateParts_(dd, mm, yyyy, minutes) {
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  return {
+    day: dd || 0,
+    month: mm || 0,
+    year: yyyy || 0,
+    minutes: minutes || 0,
+    dayKey: dd && mm && yyyy ? pad(dd) + "-" + pad(mm) + "-" + yyyy : "",
+  };
 }
 
 /** Find the column index (0-based) whose header matches any of the given regexes. Returns -1 if none. */
@@ -329,6 +434,9 @@ function parseCrmRows(values) {
     out.push({
       invoiceCode: invoiceCode,
       day: parsedDate.day,
+      month: parsedDate.month,
+      year: parsedDate.year,
+      minutes: parsedDate.minutes,
       dayKey: parsedDate.dayKey,
       salesPerson: str_(row[col.salesPerson]),
       revenueType: str_(row[col.revenueType]),
@@ -658,8 +766,16 @@ function computeDashboard(allRows, target) {
   var workingDays = [];
   for (var d = 1; d <= daysInMonth; d++) if (isWorkingDay_(d)) workingDays.push(d);
 
-  var maxDay = 0;
-  rows.forEach(function (r) { if (r.day > maxDay) maxDay = r.day; });
+  // "Days elapsed" must come from the newest month present in the data, not
+  // the largest day-of-month across all months — otherwise a single row from
+  // an earlier month could inflate it.
+  var latestStamp = 0;
+  rows.forEach(function (r) {
+    if (!r.year || !r.month || !r.day) return;
+    var stamp = r.year * 10000 + r.month * 100 + r.day;
+    if (stamp > latestStamp) latestStamp = stamp;
+  });
+  var maxDay = latestStamp ? latestStamp % 100 : 0;
   var daysElapsed = Math.max(1, Math.min(daysInMonth, maxDay || 1));
   var daysRemaining = daysInMonth - daysElapsed;
   var activeDays = workingDays.filter(function (dd) { return dd <= daysElapsed; }).length;
@@ -693,32 +809,41 @@ function computeDashboard(allRows, target) {
   var invoiceLinesByType = { service: 0, accessory: 0, repair: 0 };
 
   var dayMap = {};
-  function ensureDay(day) {
-    if (!dayMap[day]) {
-      var sample = null;
-      for (var i = 0; i < rows.length; i++) { if (rows[i].day === day) { sample = rows[i]; break; } }
-      var dateKey = sample ? sample.dayKey : String(day);
+  // Buckets are keyed by the FULL date (dd-MM-yyyy), not just day-of-month,
+  // so the 9th of two different months can never collapse into one row.
+  function dayBucketKey_(r) {
+    return r.dayKey ? r.dayKey : "";
+  }
+  function ensureDay(bucketKey) {
+    if (!dayMap[bucketKey]) {
+      var dateKey = bucketKey;
+      var day = 0, month = 0, year = 0;
       var weekday = "";
       if (dateKey && dateKey.indexOf("-") > -1) {
         var parts = dateKey.split("-");
         if (parts.length === 3) {
-          var jsDate = new Date(Number(parts[2]), Number(parts[1]) - 1, Number(parts[0]));
+          day = Number(parts[0]); month = Number(parts[1]); year = Number(parts[2]);
+          var jsDate = new Date(year, month - 1, day);
           if (!isNaN(jsDate.getTime())) weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][jsDate.getDay()];
         }
       }
-      dayMap[day] = {
-        day: day, dateKey: dateKey, weekday: weekday, holiday: !isWorkingDay_(day), undated: day <= 0,
+      var undated = !dateKey;
+      dayMap[bucketKey] = {
+        day: day, month: month, year: year,
+        dateKey: dateKey, weekday: weekday,
+        holiday: !undated && !isWorkingDay_(day), undated: undated,
+        sortKey: undated ? Infinity : year * 10000 + month * 100 + day,
         uniqueInvoices: 0, serviceRevenue: 0, accessoryRevenue: 0, repairRevenue: 0, totalRevenue: 0,
         grossProfit: 0, byPerson: {},
       };
     }
-    return dayMap[day];
+    return dayMap[bucketKey];
   }
 
   rows.forEach(function (r) {
-    var day = ensureDay(r.day);
+    var day = ensureDay(dayBucketKey_(r));
     invoiceSet[r.invoiceCode] = true;
-    invoiceDay[r.invoiceCode] = r.day;
+    invoiceDay[r.invoiceCode] = dayBucketKey_(r);
     var pk = normalizePerson_(r.salesPerson) || "UNASSIGNED";
     invoicePerson[r.invoiceCode] = pk;
     if (!invoicePersonSet[r.invoiceCode]) invoicePersonSet[r.invoiceCode] = {};
@@ -771,12 +896,12 @@ function computeDashboard(allRows, target) {
 
   var dayUnique = {};
   Object.keys(invoiceSet).forEach(function (code) {
-    var dd = invoiceDay[code] || 0;
+    var dd = invoiceDay[code] === undefined ? "" : invoiceDay[code];
     if (!dayUnique[dd]) dayUnique[dd] = {};
     dayUnique[dd][code] = true;
   });
   Object.keys(dayUnique).forEach(function (dd) {
-    ensureDay(Number(dd)).uniqueInvoices = Object.keys(dayUnique[dd]).length;
+    ensureDay(dd).uniqueInvoices = Object.keys(dayUnique[dd]).length;
   });
 
   var personInvoiceTotals = {};
@@ -788,7 +913,7 @@ function computeDashboard(allRows, target) {
   });
 
   var days = Object.keys(dayMap).map(function (k) { return dayMap[k]; }).sort(function (a, b) {
-    return (a.undated ? 99 : a.day) - (b.undated ? 99 : b.day);
+    return a.sortKey - b.sortKey;
   });
 
   // Flatten each day's per-person/per-revenue-type detail into rows that the
