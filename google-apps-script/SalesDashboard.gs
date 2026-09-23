@@ -78,6 +78,10 @@ var CONFIG = {
   // Seconds the rendered page is cached so normal loads are fast. The
   // "Refresh" button always bypasses this and recomputes from the sheet.
   CACHE_SECONDS: 90,
+  // Background photo for the Web App page, shown at 40% opacity behind the
+  // dashboard. Set to "" to use the plain dark background instead.
+  BACKGROUND_IMAGE_URL:
+    "https://i0.wp.com/mkaion.com/wp-content/uploads/2019/04/business-ideas.jpg?resize=640%2C293&ssl=1",
 };
 
 /* ============================================================================
@@ -1555,9 +1559,17 @@ function renderDashboardHtml_(data) {
 function getDashboardCss_() {
   return (
     "* { box-sizing: border-box; }" +
-    // ---- mild dark page background, mild light tiles ----
+    // ---- mild dark page background, with the background photo at 40% ----
     "body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;" +
-    " background:#33405c; color:#1f2937; }" +
+    " background:#33405c; color:#1f2937; position:relative; min-height:100vh; }" +
+    // The photo sits in a fixed layer behind everything at 40% opacity, so if
+    // the image fails to load the mild dark background still shows through.
+    (CONFIG.BACKGROUND_IMAGE_URL
+      ? "body::before { content:''; position:fixed; inset:0; z-index:-1; opacity:.40;" +
+        " background-image:url('" + CONFIG.BACKGROUND_IMAGE_URL + "');" +
+        " background-size:cover; background-position:center;" +
+        " background-repeat:no-repeat; pointer-events:none; }"
+      : "") +
     ".topbar { background:#2b3750; color:#fff; padding:16px 20px; border-bottom:1px solid #46536f;" +
     " position:sticky; top:0; z-index:20; }" +
     ".topbar-inner { max-width:1320px; margin:0 auto; display:flex; align-items:center;" +
@@ -1586,18 +1598,21 @@ function getDashboardCss_() {
     ".cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:12px; margin-bottom:20px; }" +
     ".card { background:#f5f7fb; border-radius:12px; padding:14px 16px; box-shadow:0 2px 8px rgba(0,0,0,.18); }" +
     ".section .card { box-shadow:none; border:1px solid #dde3ee; background:#fbfcfe; }" +
-    ".card .label { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:#5b6880; font-weight:700; }" +
-    ".card .value { font-size:22px; font-weight:700; margin-top:4px; color:#1f2937; }" +
-    ".card .sub { font-size:11px; color:#5b6880; margin-top:2px; }" +
-    "table { width:100%; border-collapse:collapse; font-size:13px; background:#fbfcfe; }" +
-    "th { text-align:right; font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:#4a5a75;" +
-    " padding:8px 10px; border-bottom:2px solid #d9e0ec; background:#eef2f9; }" +
+    ".card .label { font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:#55637c; font-weight:700; }" +
+    ".card .value { font-size:25px; font-weight:800; margin-top:4px; color:#1f2937;" +
+    " font-variant-numeric:tabular-nums; }" +
+    ".card .sub { font-size:12px; color:#55637c; margin-top:3px; }" +
+    "table { width:100%; border-collapse:collapse; font-size:14.5px; background:#fbfcfe; }" +
+    "th { text-align:right; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#41506b;" +
+    " padding:9px 10px; border-bottom:2px solid #c6d0e2; background:#eef2f9; font-weight:700; }" +
     "th:first-child, td:first-child { text-align:left; }" +
-    "td { padding:8px 10px; border-bottom:1px solid #e6ebf3; text-align:right; }" +
+    "td { padding:9px 10px; text-align:right; font-size:14.5px; font-variant-numeric:tabular-nums;" +
+    " border-bottom:1px solid rgba(90,110,145,.22); }" +
+"tbody tr:last-child td { border-bottom:none; }" +
     "tr:nth-child(even) td { background:#f2f5fa; }" +
     "tr.holiday td { background:#fdf0d5 !important; }" +
     "tr.total-row td { background:#dfe6f2 !important; font-weight:700; }" +
-    ".badge { display:inline-block; padding:2px 8px; border-radius:999px; font-weight:700; font-size:11px; }" +
+    ".badge { display:inline-block; padding:3px 10px; border-radius:999px; font-weight:800; font-size:13px; }" +
     ".badge.good { background:#d7f5df; color:#15803d; }" +
     ".badge.info { background:#dae7fd; color:#1d4ed8; }" +
     ".badge.warn { background:#fdeecb; color:#b45309; }" +
@@ -1609,7 +1624,8 @@ function getDashboardCss_() {
     ".person-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px; }" +
     ".person-card { border:1px solid #dde3ee; border-radius:10px; padding:14px; background:#fbfcfe; }" +
     ".person-card h3 { margin:0 0 8px; font-size:15px; }" +
-    ".row-line { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:6px 0 2px; font-size:12px; }" +
+    ".row-line { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:7px 0 3px;" +
+    " font-size:13.5px; font-variant-numeric:tabular-nums; }" +
     ".scroll-x { overflow-x:auto; }" +
     ".foot { text-align:center; color:#b9c3d6; font-size:11px; padding:6px 0 28px; }" +
     ".pos { color:#15803d; font-weight:700; } .neg { color:#b91c1c; font-weight:700; }" +
@@ -1618,9 +1634,11 @@ function getDashboardCss_() {
     ".gate { margin-top:10px; padding:8px 10px; border-radius:8px; font-size:11.5px; line-height:1.45; }" +
     ".gate.met { background:#e6f7ec; border:1px solid #b6e6c6; color:#14663a; }" +
     ".gate.blocked { background:#fdecec; border:1px solid #f3c3c3; color:#8f2020; }" +
-    ".incentive-line { display:flex; justify-content:space-between; font-size:12px; margin-top:6px; }" +
+    ".incentive-line { display:flex; justify-content:space-between; font-size:12.5px; margin-top:6px;" +
+    " font-variant-numeric:tabular-nums; padding-bottom:5px;" +
+    " border-bottom:1px solid rgba(90,110,145,.16); }" +
     // date-wise per-person grouping
-    "table.detail td, table.detail th { font-size:12.5px; }" +
+    "table.detail td, table.detail th { font-size:14px; }" +
     "tr.date-head td { background:#e3e9f4 !important; font-weight:700; color:#26334d;" +
     " border-top:2px solid #b9c6dd; }" +
     "td.person-cell { font-weight:700; border-left:4px solid transparent; }" +
@@ -1634,18 +1652,19 @@ function getDashboardCss_() {
     "tr.person-band-2 td { background:#f1fbf6; } tr.person-band-2:nth-child(even) td { background:#e9f7f0; }" +
     "tr.person-band-3 td { background:#faf5ff; } tr.person-band-3:nth-child(even) td { background:#f5edfe; }" +
     "tr.person-band-4 td { background:#fef4f9; } tr.person-band-4:nth-child(even) td { background:#fdecf4; }" +
-    "td.val-good { color:#15803d; font-weight:700; }" +
-    "td.val-bad { color:#b91c1c; font-weight:700; }" +
+    "td.val-good { color:#136c34; font-weight:800; }" +
+    "td.val-bad { color:#a81b1b; font-weight:800; }" +
     // ---- section 7 date-by-date matrix ----
-    "table.matrix { font-size:12px; border-collapse:separate; border-spacing:0; }" +
-    "table.matrix th, table.matrix td { white-space:nowrap; padding:7px 9px; }" +
+    "table.matrix { font-size:14px; border-collapse:separate; border-spacing:0; }" +
+    "table.matrix th, table.matrix td { white-space:nowrap; padding:8px 10px; }" +
+"table.matrix tbody td { border-bottom:1px solid rgba(90,110,145,.28); }" +
     "table.matrix thead th { position:sticky; top:0; z-index:3; }" +
     "table.matrix th.grp { text-align:center; border-left:1px solid #d4dcea; }" +
     "table.matrix .sticky-col { position:sticky; left:0; z-index:2; background:#eef2f9;" +
     " text-align:left; border-right:2px solid #d4dcea; }" +
     "table.matrix tbody tr:nth-child(even) .sticky-col { background:#e8edf6; }" +
     "table.matrix thead .sticky-col { z-index:4; }" +
-    "table.matrix td .tgt { display:block; font-size:10px; font-weight:400; color:#78849a; margin-top:1px; }" +
+    "table.matrix td .tgt { display:block; font-size:11.5px; font-weight:500; color:#6b788f; margin-top:2px; }" +
     // tinted column groups, one per salesperson
     "th.grp-0, td.cell-0 { background:#f4f7ff; } tr:nth-child(even) td.cell-0 { background:#eaf1ff; }" +
     "th.grp-1, td.cell-1 { background:#fff7f0; } tr:nth-child(even) td.cell-1 { background:#fdefe2; }" +
