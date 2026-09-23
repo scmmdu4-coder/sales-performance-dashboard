@@ -82,6 +82,9 @@ var CONFIG = {
   // dashboard. Set to "" to use the plain dark background instead.
   BACKGROUND_IMAGE_URL:
     "https://i0.wp.com/mkaion.com/wp-content/uploads/2019/04/business-ideas.jpg?resize=640%2C293&ssl=1",
+  // Section 7 starts collapsed showing this many of the most recent dates
+  // (current day + the previous two). Expanding reveals every date.
+  COLLAPSED_DAYS: 3,
 };
 
 /* ============================================================================
@@ -1501,6 +1504,15 @@ function buildDashboardPage_(data) {
   // userCodeAppPanel URL, so navigating it would blank the page.
   var clientScript =
     "<script>" +
+    // Section 7 collapse/expand. Rows outside the recent-days window carry
+    // .extra-day and are hidden by .collapsed on the table, so toggling is a
+    // pure CSS class flip with no server call.
+    "function dwToggle(btn){" +
+    "  var t=document.getElementById('dwTable'); if(!t) return;" +
+    "  var open=t.classList.toggle('collapsed')===false;" +
+    "  btn.classList.toggle('open', open);" +
+    "  btn.querySelector('.txt').textContent=open?btn.dataset.less:btn.dataset.more;" +
+    "}" +
     "function dashRefresh(btn){" +
     "  if(btn.disabled) return;" +
     "  btn.classList.add('loading'); btn.disabled=true;" +
@@ -1512,9 +1524,18 @@ function buildDashboardPage_(data) {
     "  google.script.run" +
     "    .withSuccessHandler(function(res){" +
     "      try{" +
+    "        var prev=document.getElementById('dwTable');" +
+    "        var wasOpen=prev?!prev.classList.contains('collapsed'):false;" +
     "        var d=JSON.parse(res);" +
     "        document.getElementById('content').innerHTML=d.html;" +
     "        document.getElementById('meta').textContent=d.meta;" +
+    "        if(wasOpen){" +
+    "          var nt=document.getElementById('dwTable');" +
+    "          var nb=document.getElementById('dwToggle');" +
+    "          if(nt) nt.classList.remove('collapsed');" +
+    "          if(nb){ nb.classList.add('open');" +
+    "            nb.querySelector('.txt').textContent=nb.dataset.less; }" +
+    "        }" +
     "        var n=document.getElementById('note');" +
     "        n.textContent='Updated just now'; n.className='note ok';" +
     "      }catch(e){" +
@@ -1675,6 +1696,18 @@ function getDashboardCss_() {
     "table.matrix tr.total-row td { background:#dfe6f2 !important; border-top:2px solid #b9c6dd; }" +
     ".legend-row { display:flex; flex-wrap:wrap; gap:10px; margin:0 0 12px; }" +
     ".legend-card { font-size:11.5px; padding:8px 12px; border-radius:8px; border:1px solid #dde3ee; line-height:1.5; }" +
+    // ---- section 7 collapse / expand ----
+    ".toggle-btn { display:inline-flex; align-items:center; gap:9px; margin:0 0 12px;" +
+    " background:#43587f; color:#fff; border:none; border-radius:8px; padding:9px 16px;" +
+    " font-size:13px; font-weight:700; cursor:pointer; box-shadow:0 1px 3px rgba(0,0,0,.18); }" +
+    ".toggle-btn:hover { background:#374a6c; }" +
+    ".toggle-btn .chev { display:inline-block; font-size:10px; transition:transform .18s ease; }" +
+    ".toggle-btn.open .chev { transform:rotate(180deg); }" +
+    ".toggle-btn .count { background:rgba(255,255,255,.22); border-radius:999px;" +
+    " padding:1px 9px; font-size:11.5px; font-weight:700; }" +
+    ".toggle-btn.open .count { display:none; }" +
+    // Collapsed: hide every row outside the recent-days window.
+    "table.matrix.collapsed tbody tr.extra-day { display:none; }" +
     "@media (max-width:640px){ .topbar h1{font-size:18px;} .card .value{font-size:18px;} }"
   );
 }
@@ -1888,6 +1921,16 @@ function renderDateWiseTable_(data) {
   var people = data.salespeople;
   var TYPES = [["service", "Service"], ["accessory", "Accessory"], ["repair", "Repair"]];
 
+  // Collapsed view shows the most recent CONFIG.COLLAPSED_DAYS dated rows
+  // (current + the previous two by default). Everything else is rendered but
+  // hidden, so expanding is instant and needs no extra server round-trip.
+  var dated = data.days.filter(function (d) { return !d.undated; });
+  var undated = data.days.filter(function (d) { return d.undated; });
+  var keepFrom = Math.max(0, dated.length - CONFIG.COLLAPSED_DAYS);
+  var visibleKeys = {};
+  dated.slice(keepFrom).forEach(function (d) { visibleKeys[d.day] = true; });
+  var hiddenCount = data.days.length - dated.slice(keepFrom).length;
+
   // ---- header: two banded rows, one per salesperson group ----
   var head1 = '<tr><th rowspan="2" class="sticky-col">Date</th>' +
     '<th rowspan="2">Store Total</th>';
@@ -1902,15 +1945,17 @@ function renderDateWiseTable_(data) {
   head2 += "</tr>";
 
   // ---- body: one row per date ----
-  var body = "";
-  data.days.forEach(function (d) {
+  function dayRow(d) {
     var byKey = {};
     (d.people || []).forEach(function (pp) { byKey[pp.key] = pp; });
 
     var dateCls = d.totalRevenue >= dailyTarget ? "val-good" : "val-bad";
-    var rowCls = d.holiday ? "holiday" : "";
+    var classes = [];
+    if (d.holiday) classes.push("holiday");
+    // Rows outside the collapsed window are tagged so the toggle can show them.
+    if (!(d.undated ? false : visibleKeys[d.day])) classes.push("extra-day");
 
-    var tr = '<tr class="' + rowCls + '">';
+    var tr = '<tr class="' + classes.join(" ") + '">';
     tr += '<td class="sticky-col"><b>' + esc_(d.undated ? "No date" : d.dateKey) + "</b>" +
       (d.weekday ? ' <span class="muted">' + esc_(d.weekday) + "</span>" : "") +
       (d.holiday ? ' <span class="muted">🔶</span>' : "") + "</td>";
@@ -1932,10 +1977,14 @@ function renderDateWiseTable_(data) {
       });
     });
     tr += "</tr>";
-    body += tr;
-  });
+    return tr;
+  }
 
-  // ---- footer: month-to-date totals per person/type ----
+  var body = "";
+  dated.forEach(function (d) { body += dayRow(d); });
+  undated.forEach(function (d) { body += dayRow(d); });
+
+  // ---- footer: month-to-date totals per person/type (always visible) ----
   var foot = '<tr class="total-row"><td class="sticky-col">Month to date</td>' +
     '<td>' + money_(data.store.total.achieved) + "</td>";
   people.forEach(function (p, i) {
@@ -1957,8 +2006,16 @@ function renderDateWiseTable_(data) {
       "</div>";
   }).join("");
 
+  var toggle = hiddenCount > 0
+    ? '<button class="toggle-btn" id="dwToggle" onclick="dwToggle(this)" ' +
+      'data-more="Show all ' + data.days.length + ' dates" ' +
+      'data-less="Show only last ' + CONFIG.COLLAPSED_DAYS + ' days">' +
+      '<span class="chev">▼</span><span class="txt">Show all ' + data.days.length + ' dates</span>' +
+      '<span class="count">+' + hiddenCount + ' hidden</span></button>'
+    : "";
+
   return (
-    '<section class="section"><h2>7 &middot; Date-wise Sales Revenue Analysis (by salesperson)</h2><div class="body">' +
+    '<section class="section" id="datewise"><h2>7 &middot; Date-wise Sales Revenue Analysis (by salesperson)</h2><div class="body">' +
     '<div class="cards" style="margin-bottom:14px">' +
     '<div class="card"><div class="label">Store Daily Target</div><div class="value">' + money_(dailyTarget) +
     '</div><div class="sub">total target ÷ ' + data.store.totalWorkingDays + " working days</div></div>" +
@@ -1968,12 +2025,14 @@ function renderDateWiseTable_(data) {
     money_(data.store.total.requiredPerDay) + '</div><div class="sub">to close the remaining gap</div></div>' +
     "</div>" +
     '<div class="legend-row">' + legend + "</div>" +
-    '<div class="scroll-x"><table class="matrix"><thead>' + head1 + head2 + "</thead><tbody>" +
+    toggle +
+    '<div class="scroll-x"><table class="matrix collapsed" id="dwTable"><thead>' + head1 + head2 + "</thead><tbody>" +
     body + foot + "</tbody></table></div>" +
     '<p class="muted" style="font-size:11.5px;margin:12px 0 0">' +
     "Each cell shows <b>achieved / that person's daily target</b> for the revenue type — " +
     '<span class="pos">green</span> when the day meets or beats the target, <span class="neg">red</span> when it falls short. ' +
-    "The <b>Store Total</b> column uses the store daily target of " + money_(dailyTarget) + ".</p>" +
+    "The <b>Store Total</b> column uses the store daily target of " + money_(dailyTarget) + ". " +
+    "Collapsed view shows the latest " + CONFIG.COLLAPSED_DAYS + " days; expand for every date.</p>" +
     "</div></section>"
   );
 }
