@@ -100,6 +100,9 @@ var CONFIG = {
   // A job is flagged red in the Job Age column once it reaches this many days.
   JOB_AGE_WARN_DAYS: 7,
   JOB_AGE_CRITICAL_DAYS: 15,
+  // If this text appears in the GSX or CRM repair status, the job is an
+  // unclaimed device and gets a special highlight in the open-jobs table.
+  UNCLAIMED_KEYWORD: "unclaim",
   // How crm!InvoiceDate is written in your sheet: "DMY" = dd-mm-yyyy hh:mm
   // (the default), "MDY" = mm-dd-yyyy hh:mm.
   //
@@ -1554,6 +1557,9 @@ var SERVICE_SPEC = {
   jobAge: [/job.*age/i, /^age$/i, /aging/i],
   status: [/job.*status/i, /case.*status/i, /^status$/i, /state/i],
   deliveredDate: [/deliver.*date/i, /closed.*date/i, /collect.*date/i],
+  // Two extra repair-status columns: GSX's own status and the CRM repair status.
+  gsxStatus: [/gsx.*repair.*status/i, /gsx.*status/i, /^gsx/i],
+  crmRepairStatus: [/part.*used.*desc/i, /crm.*repair.*status/i, /crm.*status/i, /part.*used/i],
 };
 
 var ADVANCE_SPEC = {
@@ -1649,6 +1655,13 @@ function computeJobManagement_(ss) {
     var advance = advanceByMobile[mobileKey_(mobile)] || 0;
     var comm = commByCase[caseId] || null;
 
+    // GSX and CRM repair statuses; "Unclaimed Device" in either triggers the
+    // special highlight.
+    var gsxStatus = str_(r.gsxStatus);
+    var crmRepairStatus = str_(r.crmRepairStatus);
+    var isUnclaimed = (gsxStatus + " " + crmRepairStatus).toLowerCase()
+      .indexOf(CONFIG.UNCLAIMED_KEYWORD.toLowerCase()) > -1;
+
     var name = str_(r.firstName);
     if (str_(r.lastName)) name = (name + " " + str_(r.lastName)).trim();
 
@@ -1668,6 +1681,9 @@ function computeJobManagement_(ss) {
       communicated: !!comm,
       commDate: comm ? comm.dayKey : "—",
       commTs: comm ? comm.ts : 0,
+      gsxStatus: gsxStatus || "—",
+      crmRepairStatus: crmRepairStatus || "—",
+      isUnclaimed: isUnclaimed,
     });
   });
 
@@ -1683,6 +1699,7 @@ function computeJobManagement_(ss) {
     advanceTotal: jobs.reduce(function (a, j) { return a + j.advance; }, 0),
     withAdvance: jobs.filter(function (j) { return j.advance > 0; }).length,
     aged: jobs.filter(function (j) { return j.jobAge >= CONFIG.JOB_AGE_CRITICAL_DAYS; }).length,
+    unclaimed: jobs.filter(function (j) { return j.isUnclaimed; }).length,
     avgAge: jobs.length ? Math.round(jobs.reduce(function (a, j) { return a + j.jobAge; }, 0) / jobs.length) : 0,
   };
   totals.commRate = pct_(totals.communicated, totals.openJobs);
@@ -2321,6 +2338,11 @@ function renderJobManagement_(jm) {
     '<div class="cards">' +
     card("Open Jobs", t.openJobs, t.closedExcluded + " closed excluded") +
     card("Ready for Pickup", t.readyForPickup, "awaiting customer collection") +
+    (t.unclaimed > 0
+      ? '<div class="card card-unclaimed"><div class="label">⚠ Unclaimed Devices</div>' +
+        '<div class="value neg">' + t.unclaimed + '</div>' +
+        '<div class="sub">repair status says “Unclaimed Device” — chase these customers</div></div>'
+      : "") +
     card("Communicated", t.communicated, t.commRate + "% of open jobs", "pos") +
     card("Not Communicated", t.notCommunicated, "no comm record found", "neg") +
     card("Avg Job Age", t.avgAge + " d", t.aged + " job(s) " + CONFIG.JOB_AGE_CRITICAL_DAYS + "+ days old", "neg") +
@@ -2341,6 +2363,17 @@ function renderJobManagement_(jm) {
     return '<td class="' + cls + ' num">' + label + "</td>";
   }
 
+  // A repair-status cell: the status that reads "Unclaimed Device" gets a
+  // strong badge so it stands out from normal statuses.
+  function repairStatusCell(txt) {
+    var s = str_(txt);
+    if (!s || s === "—") return '<td class="muted">—</td>';
+    if (s.toLowerCase().indexOf(CONFIG.UNCLAIMED_KEYWORD.toLowerCase()) > -1) {
+      return '<td><span class="badge-unclaimed">' + esc_(s) + "</span></td>";
+    }
+    return "<td>" + esc_(s) + "</td>";
+  }
+
   var rows = jm.jobs.map(function (j) {
     var comm = j.communicated
       ? '<span class="comm-yes">Yes</span>'
@@ -2348,11 +2381,16 @@ function renderJobManagement_(jm) {
     var commDate = j.communicated
       ? '<td>' + esc_(j.commDate) + "</td>"
       : '<td class="muted">—</td>';
-    return "<tr" + (j.isReady ? ' class="ready-row"' : "") + ">" +
-      '<td class="sticky-col"><b>' + esc_(j.caseId) + "</b></td>" +
+    // Unclaimed takes priority over the ready-for-pickup highlight.
+    var rowCls = j.isUnclaimed ? "unclaimed-row" : (j.isReady ? "ready-row" : "");
+    return "<tr" + (rowCls ? ' class="' + rowCls + '"' : "") + ">" +
+      '<td class="sticky-col"><b>' + esc_(j.caseId) + "</b>" +
+        (j.isUnclaimed ? ' <span class="badge-unclaimed sm">⚠ Unclaimed</span>' : "") + "</td>" +
       "<td>" + esc_(j.name) + "</td>" +
       "<td>" + esc_(j.mobile) + "</td>" +
       "<td>" + esc_(j.product) + "</td>" +
+      repairStatusCell(j.gsxStatus) +
+      repairStatusCell(j.crmRepairStatus) +
       "<td>" + esc_(j.createdDate) + "</td>" +
       "<td>" + esc_(j.repairDate) + "</td>" +
       (j.isReady ? '<td class="comm-yes"><b>' + esc_(j.readyDate) + "</b></td>" : "<td>" + esc_(j.readyDate) + "</td>") +
@@ -2367,6 +2405,7 @@ function renderJobManagement_(jm) {
     '<div class="scroll-x"><table class="ptable jobtable">' +
     '<thead><tr>' +
     "<th>Case ID</th><th>Customer</th><th>Mobile</th><th>Product</th>" +
+    "<th>GSX repair status</th><th>CRM repair status</th>" +
     "<th>Job created</th><th>Repair created</th><th>Ready for pickup</th>" +
     "<th>Job age</th><th>Advance paid</th><th>Communicated</th><th>Comm. updated</th>" +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>";
@@ -2393,7 +2432,7 @@ function renderPerformanceHtml_(pd) {
   var secJobs =
     '<section class="sec"><div class="sec-head">' +
     '<h2>🔧 Job Management — Open Jobs</h2>' +
-    '<p class="sec-sub">source: ' + esc_(jm.sheetName) + '. Open jobs only — rows whose status (or a delivered-date) says they are closed are excluded. Advance is matched on the customer mobile; communication on the case id.</p>' +
+    '<p class="sec-sub">source: ' + esc_(jm.sheetName) + '. Open jobs only — rows whose status (or a delivered-date) says they are closed are excluded. Advance is matched on the customer mobile; communication on the case id. Jobs whose GSX or CRM repair status reads “Unclaimed Device” stay in the list and are highlighted in amber.</p>' +
     "</div>" + renderJobManagement_(jm) + "</section>";
 
   return secWalkin + secToken + secJobs;
@@ -2569,6 +2608,16 @@ function getDashboardCss_() {
     ".comm-no { color:#c2410c; font-weight:600; }" +
     ".ready-row { background:#ecfdf5; }" +
     ".ready-row:hover { background:#dcfce7; }" +
+    // Unclaimed devices: warm amber row, amber accent bar on the case-id cell,
+    // and a solid amber badge — clearly distinct from the green ready rows.
+    ".unclaimed-row { background:#fff7e0 !important; }" +
+    ".unclaimed-row:hover { background:#fef0c0 !important; }" +
+    ".unclaimed-row .sticky-col { box-shadow:inset 4px 0 0 #eab308; }" +
+    ".badge-unclaimed { display:inline-block; background:#b45309; color:#fff; font-weight:700;" +
+    " font-size:11.5px; padding:2px 9px; border-radius:999px; white-space:nowrap; }" +
+    ".badge-unclaimed.sm { font-size:10.5px; padding:1px 6px; background:#eab308; color:#451a03; }" +
+    ".card-unclaimed { background:#fff7e0; border-color:#eab308; }" +
+    ".card-unclaimed .value.neg { color:#b45309; }" +
     ".undated-row { background:#fefce8; }" +
     ".age-warn { color:#b45309; font-weight:600; }" +
     ".age-crit { color:#b91c1c; font-weight:700; }" +

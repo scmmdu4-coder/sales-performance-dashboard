@@ -159,6 +159,16 @@ One row per case. **Duplicate case ids are de-duplicated; every listed job is "o
 | `Status` *(optional)* | any value containing deliver/closed/cancel/complete/collected is treated as **closed** and excluded. Otherwise the job is open. |
 | `DeliveredDate` *(optional, used when there is no `Status`)* | a date here marks the job closed |
 
+
+### Job Management — GSX / CRM repair status & unclaimed devices
+- `GSXRepairStatusDescription` — shown as **GSX repair status**.
+- `PartUsedDescription` — shown as **CRM repair status**.
+- If either status contains **"Unclaimed Device"** (matched case-insensitively
+  via `CONFIG.UNCLAIMED_KEYWORD`, default `"unclaim"`), the job stays in the
+  open-jobs list but the whole row is highlighted in amber, the matching status
+  cell becomes a solid badge, a "⚠ Unclaimed" tag appears next to the case id,
+  and a count card appears at the top of the section.
+
 ### Job management — `advance` and `comm` tabs
 - `advance`: `MobileNo` + `AvailableBalance` (typos like the tab name `advace` are accepted). Balances for the same mobile are **summed**.
 - `comm`: `CaseId` + `CreatedDate` (+ optional `Remark`/`Message`). The job is **Communicated = Yes** when any matching case is found, and the **latest** `CreatedDate` is shown.
