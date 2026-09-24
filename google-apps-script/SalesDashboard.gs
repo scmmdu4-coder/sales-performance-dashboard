@@ -637,7 +637,6 @@ function parseTargetSheet(rows) {
     if (l.indexOf("DISPLAY") > -1) return "DISPLAY";
     if (l.indexOf("BATTER") > -1) return "BATTERY";
     if (l.indexOf("GLASS") > -1) return "GLASS";
-    if (l.indexOf("OTHER") > -1) return "OTHERS";
     if (l.indexOf("SRD") > -1) return "SRD";
     if (l.indexOf("SHC") > -1) return "SHC";
     if (l.indexOf("ARD") > -1) return "ARD";
@@ -988,6 +987,12 @@ function computeDashboard(allRows, target) {
   // Used to colour the date-wise achieved values green (>= target) or red.
   store.dailyTarget = Math.round(safeDiv_(target.store.total, Math.max(1, totalWorkingDays)));
 
+  // Average invoice value = total revenue ÷ unique invoices (i.e. what a
+  // typical bill is worth). Uses unique invoice codes rather than line
+  // count, so a multi-line bill isn't counted several times.
+  store.avgInvoiceValue = Math.round(safeDiv_(sStore.total, Math.max(1, Object.keys(invoiceSet).length)));
+  store.avgInvoiceLineValue = Math.round(safeDiv_(sStore.total, Math.max(1, rows.length)));
+
   // ---- revenue type totals & unique invoice counts ----
   var revenueTypeDefs = [["service", "Service Revenue"], ["accessory", "Accessories Revenue"], ["repair", "Repair Revenue"]];
   var revenueTypes = revenueTypeDefs.map(function (pair) {
@@ -1004,9 +1009,57 @@ function computeDashboard(allRows, target) {
     };
   });
 
+  // ---- AR attachment ----
+  // An invoice counts as an AR attachment when it carries accessory revenue
+  // ALONGSIDE service or repair revenue. An invoice with only accessory lines
+  // is a standalone accessory sale, not an attachment, so it is excluded.
+  // Value/GP reported here are the ACCESSORY portion of those invoices —
+  // that is the revenue the attachment actually generated.
+  var arAttachCodes = {};
+  var arAttachValue = 0, arAttachGp = 0, arAttachLines = 0;
+  var accessoryOnlyCodes = {};
+  var accessoryOnlyValue = 0;
+
+  Object.keys(invoiceAccessoryFlag).forEach(function (code) {
+    var acc = invoiceAccessoryValue[code] || { net: 0, gp: 0, count: 0 };
+    if (invoiceHasServiceOrRepair[code]) {
+      arAttachCodes[code] = true;
+      arAttachValue += acc.net;
+      arAttachGp += acc.gp;
+      arAttachLines += acc.count;
+    } else {
+      accessoryOnlyCodes[code] = true;
+      accessoryOnlyValue += acc.net;
+    }
+  });
+
+  var totalUnique = Object.keys(invoiceSet).length;
+  var arAttachCount = Object.keys(arAttachCodes).length;
+  // Invoices that had service/repair and COULD have carried an accessory —
+  // the realistic denominator for an attachment rate.
+  var attachableCount = Object.keys(invoiceHasServiceOrRepair).length;
+
+  var arAttachment = {
+    totalUniqueInvoices: totalUnique,
+    attachedInvoices: arAttachCount,
+    attachableInvoices: attachableCount,
+    missedInvoices: Math.max(0, attachableCount - arAttachCount),
+    accessoryOnlyInvoices: Object.keys(accessoryOnlyCodes).length,
+    accessoryOnlyValue: Math.round(accessoryOnlyValue),
+    attachedLines: arAttachLines,
+    value: Math.round(arAttachValue),
+    grossProfit: Math.round(arAttachGp),
+    // % of all invoices that are AR attachments
+    pctOfTotal: pct_(arAttachCount, totalUnique),
+    // % of service/repair invoices that also carried an accessory
+    attachRate: pct_(arAttachCount, attachableCount),
+    avgValue: arAttachCount > 0 ? Math.round(arAttachValue / arAttachCount) : 0,
+  };
+
   var invoiceValuation = {
-    totalInvoiceLines: rows.length, totalUniqueInvoices: Object.keys(invoiceSet).length, byType: revenueTypes,
+    totalInvoiceLines: rows.length, totalUniqueInvoices: totalUnique, byType: revenueTypes,
     bundleUniqueInvoices: Object.keys(invoiceSchemeAll).length, amcUniqueInvoices: Object.keys(invoiceAmcAll).length,
+    arAttachment: arAttachment,
   };
 
   // ---- salesperson revenue & incentive ----
@@ -1188,7 +1241,7 @@ function computeKpis(crmRows, target, remainingWorkingDays) {
   });
 
   // ---- RR KPIs — ItemDescription rule: "iphone" AND the part keyword, on repair rows ----
-  var rrDisplay = {}, rrBattery = {}, rrGlass = {}, rrOthers = {};
+  var rrDisplay = {}, rrBattery = {}, rrGlass = {};
   crmRows.forEach(function (r) {
     if (r.taxableAmount < 0) return;
     if (revenueTypeKey_(r.revenueType) !== "repair") return;
@@ -1200,7 +1253,6 @@ function computeKpis(crmRows, target, remainingWorkingDays) {
     if (isDisplay) rrDisplay[r.invoiceCode] = true;
     if (isBattery) rrBattery[r.invoiceCode] = true;
     if (isGlass) rrGlass[r.invoiceCode] = true;
-    if (!isDisplay && !isBattery && !isGlass) rrOthers[r.invoiceCode] = true;
   });
 
   // ---- SR KPIs (ItemCode prefix SRD/SHC/ARD, if that column exists) ----
@@ -1216,8 +1268,10 @@ function computeKpis(crmRows, target, remainingWorkingDays) {
 
   var ar = [mkRow(getKpi("CAREPLUS"), careplus), mkRow(getKpi("PROTECTPLUS"), protectplus),
     mkRow(getKpi("AMC"), amcKpi), mkRow(getKpi("BUNDLE"), bundleKpi)];
+  // "Others" is deliberately excluded from the KPI table — it is a catch-all
+  // bucket rather than a tracked target.
   var rr = [mkRow(getKpi("DISPLAY"), rrDisplay), mkRow(getKpi("BATTERY"), rrBattery),
-    mkRow(getKpi("GLASS"), rrGlass), mkRow(getKpi("OTHERS"), rrOthers)];
+    mkRow(getKpi("GLASS"), rrGlass)];
   var sr = [mkRow(getKpi("SRD"), srSrd), mkRow(getKpi("SHC"), srShc), mkRow(getKpi("ARD"), srArd)];
 
   var workingDays = Math.max(1, remainingWorkingDays);
@@ -1488,8 +1542,9 @@ function writeDateWiseSection_(sheet, row, data) {
     .setFontWeight("bold").setVerticalAlignment("middle").setHorizontalAlignment("center");
   row++;
 
-  // ---- one row per date ----
-  data.days.forEach(function (d) {
+  // ---- one row per date, newest first ----
+  var orderedDays = data.days.slice().sort(function (a, b) { return b.sortKey - a.sortKey; });
+  orderedDays.forEach(function (d) {
     var byKey = {};
     (d.people || []).forEach(function (pp) { byKey[pp.key] = pp; });
 
@@ -1819,6 +1874,12 @@ function getDashboardCss_() {
     "th.grp-4, td.cell-4 { background:#fef4f9; } tr:nth-child(even) td.cell-4 { background:#fce9f2; }" +
     "table.matrix tr.holiday .sticky-col { background:#fdf0d5 !important; }" +
     "table.matrix tr.total-row td { background:#dfe6f2 !important; border-top:2px solid #b9c6dd; }" +
+    // ---- AR attachment sub-panel inside section 6 ----
+    ".subpanel { margin-top:18px; padding:14px 16px; border-radius:10px;" +
+    " border:1px solid #d5dded; background:#eef3fb; }" +
+    ".subpanel-head { font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.06em;" +
+    " color:#33456b; margin:0 0 12px; }" +
+    ".subpanel .card { background:#ffffff; border:1px solid #dde4f0; }" +
     ".legend-row { display:flex; flex-wrap:wrap; gap:10px; margin:0 0 12px; }" +
     ".legend-card { font-size:11.5px; padding:8px 12px; border-radius:8px; border:1px solid #dde3ee; line-height:1.5; }" +
     // ---- section 7 collapse / expand ----
@@ -1860,6 +1921,7 @@ function renderStoreCards_(data) {
     card("Unique Invoices", s.uniqueInvoices, "deduped invoice codes") +
     card("Total Revenue", money_(s.total.achieved), s.total.pct + "% of target") +
     card("Gross Profit", money_(s.grossProfit.achieved), s.grossProfit.pct + "% of target") +
+    card("Avg Invoice Value", money_(s.avgInvoiceValue), "revenue ÷ " + s.uniqueInvoices + " unique invoices") +
     grTile +
     "</div>"
   );
@@ -2024,7 +2086,55 @@ function renderInvoiceValuation_(data) {
     data.invoiceValuation.bundleUniqueInvoices + '</div><div class="sub">SchemeCode starts with DISC</div></div>' +
     '<div class="card"><div class="label">AMC Unique Invoices</div><div class="value">' +
     data.invoiceValuation.amcUniqueInvoices + '</div><div class="sub">SubCategory contains AMC</div></div>' +
-    "</div></div></section>"
+    "</div>" +
+    renderArAttachment_(data) +
+    "</div></section>"
+  );
+}
+
+/**
+ * AR attachment sub-dashboard (inside section 6).
+ *
+ * An invoice is an AR attachment when accessory revenue appears on the SAME
+ * invoice code as service or repair revenue. Accessory-only invoices are
+ * standalone sales and are excluded. The value and GP shown are the
+ * accessory portion of those invoices — the revenue the attachment earned.
+ */
+function renderArAttachment_(data) {
+  var a = data.invoiceValuation.arAttachment;
+
+  var rateCls = a.attachRate >= 100 ? "good" : a.attachRate >= 70 ? "info" : a.attachRate >= 40 ? "warn" : "bad";
+
+  return (
+    '<div class="subpanel">' +
+    '<div class="subpanel-head">AR Attachment' +
+    '<span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0"> — accessory sold together with service or repair</span>' +
+    "</div>" +
+    '<div class="cards" style="margin-bottom:0">' +
+    '<div class="card"><div class="label">Total Invoices</div><div class="value">' + a.totalUniqueInvoices +
+    '</div><div class="sub">all unique invoice codes</div></div>' +
+    '<div class="card"><div class="label">AR Attachment Invoices</div><div class="value pos">' + a.attachedInvoices +
+    '</div><div class="sub">' + a.pctOfTotal.toFixed(1) + "% of all invoices</div></div>" +
+    '<div class="card"><div class="label">AR Attachment Value</div><div class="value">' + money_(a.value) +
+    '</div><div class="sub">accessory portion only</div></div>' +
+    '<div class="card"><div class="label">Gross Profit Gained</div><div class="value pos">' + money_(a.grossProfit) +
+    '</div><div class="sub">from attached accessories</div></div>' +
+    "</div>" +
+    '<div class="cards" style="margin:12px 0 0">' +
+    '<div class="card"><div class="label">Attach Rate</div><div class="value">' +
+    '<span class="badge ' + rateCls + '" style="font-size:18px;padding:3px 12px">' + a.attachRate.toFixed(1) + "%</span>" +
+    '</div><div class="sub">' + a.attachedInvoices + " of " + a.attachableInvoices + " service/repair invoices</div></div>" +
+    '<div class="card"><div class="label">Missed Opportunities</div><div class="value neg">' + a.missedInvoices +
+    '</div><div class="sub">service/repair with no accessory</div></div>' +
+    '<div class="card"><div class="label">Avg Attachment Value</div><div class="value">' + money_(a.avgValue) +
+    '</div><div class="sub">per attached invoice</div></div>' +
+    '<div class="card"><div class="label">Accessory-only Invoices</div><div class="value muted">' +
+    a.accessoryOnlyInvoices + '</div><div class="sub">excluded &middot; ' + money_(a.accessoryOnlyValue) + "</div></div>" +
+    "</div>" +
+    '<p class="muted" style="font-size:11.5px;margin:12px 0 0">' +
+    "An invoice counts as an AR attachment only when accessory revenue shares the invoice code with service or repair " +
+    "revenue. Invoices carrying accessory lines alone are treated as non-attachment and excluded from the value and GP above.</p>" +
+    "</div>"
   );
 }
 
@@ -2046,15 +2156,18 @@ function renderDateWiseTable_(data) {
   var people = data.salespeople;
   var TYPES = [["service", "Service"], ["accessory", "Accessory"], ["repair", "Repair"]];
 
-  // Collapsed view shows the most recent CONFIG.COLLAPSED_DAYS dated rows
-  // (current + the previous two by default). Everything else is rendered but
-  // hidden, so expanding is instant and needs no extra server round-trip.
-  var dated = data.days.filter(function (d) { return !d.undated; });
+  // Newest date first, so the current day and the two before it sit at the
+  // top of the table — exactly what the collapsed view shows.
+  var dated = data.days.filter(function (d) { return !d.undated; })
+    .slice().sort(function (a, b) { return b.sortKey - a.sortKey; });
   var undated = data.days.filter(function (d) { return d.undated; });
-  var keepFrom = Math.max(0, dated.length - CONFIG.COLLAPSED_DAYS);
+
+  // Collapsed view keeps the first CONFIG.COLLAPSED_DAYS rows (the most
+  // recent dates). Everything else is rendered but hidden, so expanding is
+  // instant and needs no extra server round-trip.
   var visibleKeys = {};
-  dated.slice(keepFrom).forEach(function (d) { visibleKeys[d.day] = true; });
-  var hiddenCount = data.days.length - dated.slice(keepFrom).length;
+  dated.slice(0, CONFIG.COLLAPSED_DAYS).forEach(function (d) { visibleKeys[d.dateKey] = true; });
+  var hiddenCount = data.days.length - Math.min(dated.length, CONFIG.COLLAPSED_DAYS);
 
   // ---- header: two banded rows, one per salesperson group ----
   var head1 = '<tr><th rowspan="2" class="sticky-col">Date</th>' +
@@ -2078,7 +2191,7 @@ function renderDateWiseTable_(data) {
     var classes = [];
     if (d.holiday) classes.push("holiday");
     // Rows outside the collapsed window are tagged so the toggle can show them.
-    if (!(d.undated ? false : visibleKeys[d.day])) classes.push("extra-day");
+    if (!(d.undated ? false : visibleKeys[d.dateKey])) classes.push("extra-day");
 
     var tr = '<tr class="' + classes.join(" ") + '">';
     tr += '<td class="sticky-col"><b>' + esc_(d.undated ? "No date" : d.dateKey) + "</b>" +
