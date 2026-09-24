@@ -138,11 +138,15 @@ simply shows guidance instead of breaking.
 | --- | --- |
 | `MobileNo` | every row = **one walk-in** (the visitor's mobile is the count) |
 | `TokenDate` | the visit date (`yyyy-mm-dd hh:mm:ss`) — drives the date-wise table, newest first |
-| `VisitPurposeDesc` | visit purpose, shown as per-day chips and a purpose summary |
-| `CaseId` | a row with a case id counts as a **case created** |
-| `InvoiceCode` | a row with an invoice code counts as an **invoice created** |
+| `VisitPurposeDesc` | visit purpose, bucketed into fixed columns: **Collection** (contains "collect"), **General/Sales Enquiry** (contains "enqu/sales/general"), **Repair Submission** (contains "repair"); anything else lands in **Other** |
+| `CaseId` | a row with a case id counts as a **case created** (+ case conversion %) |
+| `InvoiceCode` | a row with an invoice code counts as an **invoice created** (+ invoice conversion %) |
 | `**Remark` / `Remark` | a row with a remark text counts toward "remarks updated" |
-| `TokenCreatedBy` *(optional)* | who generated the token → the **Token Creation** panel (count + % share). Also auto-detects `UserName` / `Staff` / `CreatedBy`. If absent, the panel explains how to add it. |
+| `TokenCreatedBy` *(optional)* | who generated the token → the **Token Creation** panel: total tokens generated vs each user ID's count and % share. Auto-detects `TokenCreatedBy` / `UserId` / `UserName` / `Staff` / `CreatedBy`. If absent, the panel explains how to add it. |
+
+**Dead leads** — a walk-in with no CaseId, no InvoiceCode **and** no Remark
+(never converted). Shown per day and as a total with dead-leads %, plus a
+summary card.
 
 ### Job Management (open jobs only) — `service` tab
 One row per case. **Duplicate case ids are de-duplicated; every listed job is "open".**
@@ -162,7 +166,7 @@ One row per case. **Duplicate case ids are de-duplicated; every listed job is "o
 
 ### Job Management — GSX / CRM repair status & unclaimed devices
 - `GSXRepairStatusDescription` — shown as **GSX repair status**.
-- `PartUsedDescription` — shown as **CRM repair status**.
+- `CRM_JobStatusDesc` — shown as **CRM repair status**.
 - If either status contains **"Unclaimed Device"** (matched case-insensitively
   via `CONFIG.UNCLAIMED_KEYWORD`, default `"unclaim"`), the job stays in the
   open-jobs list but the whole row is highlighted in amber, the matching status
@@ -171,8 +175,9 @@ One row per case. **Duplicate case ids are de-duplicated; every listed job is "o
 
 ### Job management — `advance` and `comm` tabs
 - `advance`: `MobileNo` + `AvailableBalance` (typos like the tab name `advace` are accepted). Balances for the same mobile are **summed**.
-- `comm`: `CaseId` + `CreatedDate` (+ optional `Remark`/`Message`). The job is **Communicated = Yes** when any matching case is found, and the **latest** `CreatedDate` is shown.
+- `comm`: `CaseId` + `CreatedDate` (+ optional `Remark`/`Message`). The job is **Communicated = Yes** when any matching case is found, and the **latest** `CreatedDate` is shown (otherwise **Not updated**). If the latest update is `COMM_STALE_DAYS` (default 2) old or more — or there is no update at all — the whole job row is highlighted red and a **Needs Follow-up** card counts it. Priority: unclaimed (amber) > stale communication (red) > ready for pickup (green).
 
 ### Tunables (CONFIG)
 - `JOB_CLOSED_KEYWORDS` — words that mark a job closed.
 - `JOB_AGE_WARN_DAYS` (7) / `JOB_AGE_CRITICAL_DAYS` (15) — job-age colour thresholds.
+- `COMM_STALE_DAYS` (2) — how old the latest communication may be before a job row is highlighted as needing follow-up.
