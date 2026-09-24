@@ -2274,3 +2274,20 @@ function renderDateWiseTable_(data) {
     "</div></section>"
   );
 }
+
+/* ============================================================================
+ *  ✅  END OF FILE — SalesDashboard.gs
+ * ----------------------------------------------------------------------------
+ *  PASTE CHECK: this banner must be the LAST thing in your Apps Script editor.
+ *  If you cannot see it, your copy was cut short and the script will fail with
+ *  "SyntaxError: Unexpected end of input".
+ *
+ *  Expected length: 2293 lines.
+ *  In the Apps Script editor, press Ctrl/Cmd + End to jump to the bottom and
+ *  confirm both this banner and the line number.
+ *
+ *  Reliable way to copy the whole file (a scrolling preview pane often copies
+ *  only the part it has rendered):
+ *    GitHub → open SalesDashboard.gs → click the "Copy raw file" icon
+ *    (top-right of the file view), or "Download raw file".
+ * ========================================================================= */
