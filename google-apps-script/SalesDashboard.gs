@@ -103,6 +103,9 @@ var CONFIG = {
   // If this text appears in the GSX or CRM repair status, the job is an
   // unclaimed device and gets a special highlight in the open-jobs table.
   UNCLAIMED_KEYWORD: "unclaim",
+  // A job whose latest communication is this many days old or older — or which
+  // was never communicated — gets its whole row highlighted as "follow up".
+  COMM_STALE_DAYS: 2,
   // How crm!InvoiceDate is written in your sheet: "DMY" = dd-mm-yyyy hh:mm
   // (the default), "MDY" = mm-dd-yyyy hh:mm.
   //
@@ -1454,8 +1457,17 @@ var WALKIN_SPEC = {
   invoiceCode: [/invoice.*code/i, /invoice.*no/i, /^invoice$/i],
   remark: [/remark/i, /comment/i, /note/i],
   // Who generated the token. Optional — auto-detected from common spellings.
-  createdBy: [/token.*creat.*by/i, /creat.*by/i, /token.*user/i, /^user.*name$/i, /staff/i, /employee/i],
+  createdBy: [/token.*creat.*by/i, /creat.*by/i, /token.*user/i, /user.*id/i, /^user.*name$/i, /staff/i, /employee/i],
 };
+
+/** Maps a free-text visit purpose to one of the three fixed buckets. */
+function walkinPurposeBucket_(purpose) {
+  var l = (purpose || "").toLowerCase();
+  if (/collect/.test(l)) return "collection";
+  if (/enqu|enquiry|sales|general/.test(l)) return "enquiry";
+  if (/repair/.test(l)) return "repair";
+  return "other";
+}
 
 function computeWalkinAnalysis_(ss) {
   var sheet = getSheetByNames_(ss, CONFIG.WALKIN_SHEET_NAMES);
@@ -1469,9 +1481,9 @@ function computeWalkinAnalysis_(ss) {
   var hasCreator = read.col && read.col.createdBy !== -1;
 
   var dayMap = {};
-  var purposeTotals = {};
   var creatorTotals = {};
-  var totals = { walkins: 0, cases: 0, invoices: 0, remarks: 0 };
+  var totals = { walkins: 0, cases: 0, invoices: 0, remarks: 0, deadLeads: 0,
+    collection: 0, enquiry: 0, repair: 0, other: 0 };
 
   rows.forEach(function (r) {
     var d = parseAnyDate_(r.tokenDate);
@@ -1481,7 +1493,8 @@ function computeWalkinAnalysis_(ss) {
         dateKey: key, undated: !d.valid,
         sortKey: d.valid ? d.year * 10000 + d.month * 100 + d.day : -1,
         weekday: d.valid ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(d.year, d.month - 1, d.day).getDay()] : "",
-        walkins: 0, cases: 0, invoices: 0, remarks: 0, purposes: {}, creators: {},
+        walkins: 0, cases: 0, invoices: 0, remarks: 0, deadLeads: 0,
+        collection: 0, enquiry: 0, repair: 0, other: 0, creators: {},
       };
     }
     var bucket = dayMap[key];
@@ -1490,13 +1503,23 @@ function computeWalkinAnalysis_(ss) {
     bucket.walkins += 1;
     totals.walkins += 1;
 
-    if (str_(r.caseId)) { bucket.cases += 1; totals.cases += 1; }
-    if (str_(r.invoiceCode)) { bucket.invoices += 1; totals.invoices += 1; }
-    if (str_(r.remark)) { bucket.remarks += 1; totals.remarks += 1; }
+    var hasCase = !!str_(r.caseId);
+    var hasInvoice = !!str_(r.invoiceCode);
+    var hasRemark = !!str_(r.remark);
 
-    var purpose = str_(r.visitPurpose) || "Not specified";
-    bucket.purposes[purpose] = (bucket.purposes[purpose] || 0) + 1;
-    purposeTotals[purpose] = (purposeTotals[purpose] || 0) + 1;
+    if (hasCase) { bucket.cases += 1; totals.cases += 1; }
+    if (hasInvoice) { bucket.invoices += 1; totals.invoices += 1; }
+    if (hasRemark) { bucket.remarks += 1; totals.remarks += 1; }
+
+    // Dead lead: a walk-in with no case, no invoice AND no remark — never converted.
+    if (!hasCase && !hasInvoice && !hasRemark) {
+      bucket.deadLeads += 1; totals.deadLeads += 1;
+    }
+
+    // Visit purpose into the fixed buckets (Collection / Enquiry / Repair / Other).
+    var pb = walkinPurposeBucket_(str_(r.visitPurpose));
+    bucket[pb] += 1;
+    totals[pb] += 1;
 
     if (hasCreator) {
       var by = str_(r.createdBy) || "Unassigned";
@@ -1514,10 +1537,9 @@ function computeWalkinAnalysis_(ss) {
     .sort(function (a, b) { return b.sortKey - a.sortKey; }); // newest first
 
   days.forEach(function (d) {
-    d.purposeList = toSortedList(d.purposes);
-    d.creatorList = toSortedList(d.creators);
     d.caseRate = pct_(d.cases, d.walkins);
     d.invoiceRate = pct_(d.invoices, d.walkins);
+    d.deadRate = pct_(d.deadLeads, d.walkins);
   });
 
   var creators = toSortedList(creatorTotals).map(function (c) {
@@ -1528,14 +1550,15 @@ function computeWalkinAnalysis_(ss) {
   return {
     available: true, sheetName: sheet.getName(), hasCreator: hasCreator,
     days: days,
-    purposes: toSortedList(purposeTotals).map(function (p) {
-      p.share = pct_(p.count, totals.walkins); return p;
-    }),
     creators: creators,
     totals: {
-      walkins: totals.walkins, cases: totals.cases, invoices: totals.invoices, remarks: totals.remarks,
+      walkins: totals.walkins, cases: totals.cases, invoices: totals.invoices,
+      remarks: totals.remarks, deadLeads: totals.deadLeads,
+      collection: totals.collection, enquiry: totals.enquiry,
+      repair: totals.repair, other: totals.other,
       caseRate: pct_(totals.cases, totals.walkins),
       invoiceRate: pct_(totals.invoices, totals.walkins),
+      deadRate: pct_(totals.deadLeads, totals.walkins),
       activeDays: days.filter(function (d) { return !d.undated; }).length,
     },
   };
@@ -1559,7 +1582,7 @@ var SERVICE_SPEC = {
   deliveredDate: [/deliver.*date/i, /closed.*date/i, /collect.*date/i],
   // Two extra repair-status columns: GSX's own status and the CRM repair status.
   gsxStatus: [/gsx.*repair.*status/i, /gsx.*status/i, /^gsx/i],
-  crmRepairStatus: [/part.*used.*desc/i, /crm.*repair.*status/i, /crm.*status/i, /part.*used/i],
+  crmRepairStatus: [/crm.*job.*status/i, /crm.*repair.*status/i, /^crm_?job/i, /job.*status.*desc/i, /part.*used.*desc/i, /part.*used/i],
 };
 
 var ADVANCE_SPEC = {
@@ -1592,7 +1615,9 @@ function computeJobManagement_(ss) {
 
   var read = readSheetRows_(serviceSheet, SERVICE_SPEC,
     ["caseDate", "repairCreatedDate", "readyForPickup", "deliveredDate"]);
-  var hasStatus = read.col && read.col.status !== -1;
+  // The generic job-status regexes would also match CRM_JobStatusDesc — never
+  // let the same column drive both fields; the dedicated CRM column wins.
+  var hasStatus = read.col && read.col.status !== -1 && read.col.status !== read.col.crmRepairStatus;
 
   // ---- advance balances, keyed by mobile ----
   var advanceByMobile = {};
@@ -1684,6 +1709,10 @@ function computeJobManagement_(ss) {
       gsxStatus: gsxStatus || "—",
       crmRepairStatus: crmRepairStatus || "—",
       isUnclaimed: isUnclaimed,
+      // Communication freshness: days since the latest comm for this case.
+      commAgeDays: comm ? Math.floor((Date.now() - comm.ts) / 86400000) : -1,
+      // Stale = the latest update is COMM_STALE_DAYS old or more, or no update at all.
+      staleComm: comm ? Math.floor((Date.now() - comm.ts) / 86400000) >= CONFIG.COMM_STALE_DAYS : true,
     });
   });
 
@@ -1700,6 +1729,7 @@ function computeJobManagement_(ss) {
     withAdvance: jobs.filter(function (j) { return j.advance > 0; }).length,
     aged: jobs.filter(function (j) { return j.jobAge >= CONFIG.JOB_AGE_CRITICAL_DAYS; }).length,
     unclaimed: jobs.filter(function (j) { return j.isUnclaimed; }).length,
+    staleComm: jobs.filter(function (j) { return j.staleComm; }).length,
     avgAge: jobs.length ? Math.round(jobs.reduce(function (a, j) { return a + j.jobAge; }, 0) / jobs.length) : 0,
   };
   totals.commRate = pct_(totals.communicated, totals.openJobs);
@@ -2255,45 +2285,74 @@ function renderWalkinAnalysis_(wl) {
       "Add a tab named `" + CONFIG.WALKIN_SHEET_NAMES[0] + "` with columns MobileNo, TokenDate, VisitPurposeDesc, CaseId, InvoiceCode and **Remark.");
   }
   var t = wl.totals;
-  function card(label, value, sub) {
-    return '<div class="card"><div class="label">' + esc_(label) + '</div><div class="value">' +
-      esc_(value) + '</div><div class="sub">' + esc_(sub || "") + "</div></div>";
+  function card(label, value, sub, cls) {
+    return '<div class="card"><div class="label">' + esc_(label) + '</div><div class="value' +
+      (cls ? " " + cls : "") + '">' + esc_(value) + '</div><div class="sub">' + esc_(sub || "") + "</div></div>";
   }
   var head =
     '<div class="cards">' +
     card("Total Walk-ins", t.walkins, t.activeDays + " active days") +
-    card("Cases Created", t.cases, t.caseRate + "% of walk-ins") +
-    card("Invoices Created", t.invoices, t.invoiceRate + "% of walk-ins") +
+    card("Cases Created", t.cases, t.caseRate + "% case conversion") +
+    card("Invoices Created", t.invoices, t.invoiceRate + "% invoice conversion") +
     card("Remarks Updated", t.remarks, "rows carrying a remark") +
+    card("Dead Leads", t.deadLeads, t.deadRate + "% — no case, no invoice, no remark", t.deadLeads > 0 ? "neg" : "") +
     "</div>";
 
+  function c0(n) { return n ? ('<td class="num">' + n + "</td>") : '<td class="num muted">—</td>'; }
+
   var rows = wl.days.map(function (d) {
-    var purposes = d.purposeList.length
-      ? d.purposeList.map(function (p) {
-          return '<span class="chip">' + esc_(p.name) + ' <b>' + p.count + "</b></span>";
-        }).join(" ")
-      : '<span class="muted">—</span>';
-    var remarks = d.remarks
-      ? '<span class="comm-yes">' + d.remarks + " ✓</span>"
-      : '<span class="muted">—</span>';
+    var dead = d.deadLeads
+      ? '<td class="num dead">' + d.deadLeads + "</td>"
+      : '<td class="num muted">—</td>';
+    var deadPct = d.deadLeads
+      ? '<td class="num dead">' + d.deadRate + "%</td>"
+      : '<td class="num muted">—</td>';
+    var remark = d.remarks
+      ? '<td class="num">' + d.remarks + "</td>"
+      : '<td class="num muted">—</td>';
     return "<tr" + (d.undated ? ' class="undated-row"' : "") + ">" +
       '<td class="daycell"><b>' + esc_(d.undated ? "No date" : d.dateKey) + "</b>" +
         (d.weekday ? ' <span class="muted">' + d.weekday + "</span>" : "") + "</td>" +
-      '<td class="num">' + d.walkins + "</td>" +
-      "<td>" + purposes + "</td>" +
+      '<td class="num"><b>' + d.walkins + "</b></td>" +
+      c0(d.collection) + c0(d.enquiry) + c0(d.repair) + c0(d.other) +
       '<td class="num">' + d.cases + "</td>" +
-      '<td class="comm-no num">' + d.invoiceRate + "%</td>" +
+      '<td class="num conv">' + d.caseRate + "%</td>" +
       '<td class="num">' + d.invoices + "</td>" +
-      "<td>" + remarks + "</td>" +
+      '<td class="num conv">' + d.invoiceRate + "%</td>" +
+      remark +
+      dead +
+      deadPct +
       "</tr>";
   }).join("");
 
+  // totals footer
+  var foot =
+    '<tr class="totrow">' +
+    "<td><b>Total</b></td>" +
+    '<td class="num"><b>' + t.walkins + "</b></td>" +
+    '<td class="num">' + (t.collection || "—") + "</td>" +
+    '<td class="num">' + (t.enquiry || "—") + "</td>" +
+    '<td class="num">' + (t.repair || "—") + "</td>" +
+    '<td class="num">' + (t.other || "—") + "</td>" +
+    '<td class="num">' + t.cases + "</td>" +
+    '<td class="num">' + t.caseRate + "%</td>" +
+    '<td class="num">' + t.invoices + "</td>" +
+    '<td class="num">' + t.invoiceRate + "%</td>" +
+    '<td class="num">' + t.remarks + "</td>" +
+    '<td class="num dead">' + t.deadLeads + "</td>" +
+    '<td class="num dead">' + t.deadRate + "%</td>" +
+    "</tr>";
+
   var table =
-    '<div class="scroll-x"><table class="ptable">' +
-    '<thead><tr>' +
-    "<th>Date</th><th>Walk-ins</th><th>Visit purpose</th>" +
-    "<th>Cases</th><th>Case conv.</th><th>Invoices</th><th>Remark</th>" +
-    "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+    '<div class="scroll-x"><table class="ptable walkintable">' +
+    "<thead>" +
+    '<tr><th rowspan="2">Date</th><th rowspan="2">Walk-ins</th>' +
+    '<th colspan="4" class="grp">Visit purpose</th>' +
+    '<th rowspan="2">Cases</th><th rowspan="2">Case conv.</th>' +
+    '<th rowspan="2">Invoices</th><th rowspan="2">Invoice conv.</th>' +
+    '<th rowspan="2">Remark</th><th rowspan="2">Dead leads</th><th rowspan="2">Dead leads %</th></tr>' +
+    '<tr><th>Collection</th><th>General/Sales Enquiry</th><th>Repair Submission</th><th>Other</th></tr>' +
+    "</thead><tbody>" + rows + foot + "</tbody></table></div>";
 
   return head + table;
 }
@@ -2305,20 +2364,21 @@ function renderTokenCreation_(wl) {
       "<b>" + esc_(wl.sheetName) + "</b> sheet, so token creation by person can’t be split yet. " +
       "Add a column such as <b>TokenCreatedBy</b> (or UserName / Staff) and it will appear automatically here.</div>";
   }
+  var t = wl.totals;
   var max = wl.creators.length ? wl.creators[0].count : 1;
   var rows = wl.creators.map(function (c) {
     var w = Math.round(100 * c.count / max);
     return '<div class="creat-row">' +
       '<div class="creat-name">' + esc_(c.name) +
-        ' <span class="muted">(' + c.count + " token" + (c.count === 1 ? "" : "s") + ")</span></div>" +
+        ' <span class="muted">generated</span> <b>' + c.count + "</b>" +
+        ' <span class="muted">token' + (c.count === 1 ? "" : "s") + "</span></div>" +
       '<div class="creat-bar"><div class="creat-fill" style="width:' + w + '%"></div></div>' +
       '<div class="creat-share">' + c.share + "%</div>" +
       "</div>";
   }).join("");
   return (
-    '<div class="creat-sum muted">' + wl.creators.length +
-      (wl.creators.length === 1 ? " person generated tokens" : " people generated tokens") +
-      " — shown as each person’s share of the " + wl.totals.walkins + " walk-ins.</div>" +
+    '<div class="creat-total">🥇 <b>Total tokens generated: ' + t.walkins + "</b> — " +
+      "split by user ID below, with each user’s share of the total.</div>" +
     rows
   );
 }
@@ -2345,6 +2405,7 @@ function renderJobManagement_(jm) {
       : "") +
     card("Communicated", t.communicated, t.commRate + "% of open jobs", "pos") +
     card("Not Communicated", t.notCommunicated, "no comm record found", "neg") +
+    card("Needs Follow-up", t.staleComm, "no communication in " + CONFIG.COMM_STALE_DAYS + "+ days — rows highlighted", t.staleComm > 0 ? "neg" : "") +
     card("Avg Job Age", t.avgAge + " d", t.aged + " job(s) " + CONFIG.JOB_AGE_CRITICAL_DAYS + "+ days old", "neg") +
     card("Advance Paid", money_(t.advanceTotal), t.withAdvance + " job(s) carry an advance") +
     "</div>";
@@ -2378,11 +2439,18 @@ function renderJobManagement_(jm) {
     var comm = j.communicated
       ? '<span class="comm-yes">Yes</span>'
       : '<span class="comm-no">No</span>';
-    var commDate = j.communicated
-      ? '<td>' + esc_(j.commDate) + "</td>"
-      : '<td class="muted">—</td>';
-    // Unclaimed takes priority over the ready-for-pickup highlight.
-    var rowCls = j.isUnclaimed ? "unclaimed-row" : (j.isReady ? "ready-row" : "");
+    // Comm-date cell: "Not updated" when nothing is on record; red + ⚠ when the
+    // last update is stale (COMM_STALE_DAYS or older).
+    var commDate;
+    if (!j.communicated) {
+      commDate = '<td class="comm-no">Not updated</td>';
+    } else {
+      commDate = j.staleComm
+        ? '<td class="stale-text">' + esc_(j.commDate) + " ⚠</td>"
+        : "<td>" + esc_(j.commDate) + "</td>";
+    }
+    // Row priority: unclaimed (amber) > stale communication (red) > ready (green).
+    var rowCls = j.isUnclaimed ? "unclaimed-row" : (j.staleComm ? "stale-row" : (j.isReady ? "ready-row" : ""));
     return "<tr" + (rowCls ? ' class="' + rowCls + '"' : "") + ">" +
       '<td class="sticky-col"><b>' + esc_(j.caseId) + "</b>" +
         (j.isUnclaimed ? ' <span class="badge-unclaimed sm">⚠ Unclaimed</span>' : "") + "</td>" +
@@ -2432,7 +2500,7 @@ function renderPerformanceHtml_(pd) {
   var secJobs =
     '<section class="sec"><div class="sec-head">' +
     '<h2>🔧 Job Management — Open Jobs</h2>' +
-    '<p class="sec-sub">source: ' + esc_(jm.sheetName) + '. Open jobs only — rows whose status (or a delivered-date) says they are closed are excluded. Advance is matched on the customer mobile; communication on the case id. Jobs whose GSX or CRM repair status reads “Unclaimed Device” stay in the list and are highlighted in amber.</p>' +
+    '<p class="sec-sub">source: ' + esc_(jm.sheetName) + '. Open jobs only — rows whose status (or a delivered-date) says they are closed are excluded. Advance is matched on the customer mobile; communication on the case id (latest shown, “Not updated” when none). Jobs last updated ' + CONFIG.COMM_STALE_DAYS + '+ days ago — or never — are highlighted red; those whose GSX or CRM repair status reads “Unclaimed Device” are highlighted amber.</p>' +
     "</div>" + renderJobManagement_(jm) + "</section>";
 
   return secWalkin + secToken + secJobs;
@@ -2619,6 +2687,19 @@ function getDashboardCss_() {
     ".card-unclaimed { background:#fff7e0; border-color:#eab308; }" +
     ".card-unclaimed .value.neg { color:#b45309; }" +
     ".undated-row { background:#fefce8; }" +
+    // Stale communication: pale red row + red accent bar — a "follow up now" signal.
+    ".stale-row { background:#ffeded; }" +
+    ".stale-row:hover { background:#ffdfdf; }" +
+    ".stale-row .sticky-col { box-shadow:inset 4px 0 0 #ef4444; }" +
+    ".stale-text { color:#b91c1c; font-weight:700; }" +
+    // Walk-in analysis: grouped purpose header + dead-lead figures.
+    ".walkintable thead th.grp { background:#dfe8f6; text-align:center; }" +
+    ".walkintable thead th { text-align:center; }" +
+    ".walkintable th:first-child, .walkintable td.daycell { text-align:left; }" +
+    ".walkintable .totrow td { background:#eef2f9; border-top:2px solid #b9c6dd; }" +
+    ".walkintable td.dead { color:#b91c1c; font-weight:700; }" +
+    ".walkintable td.conv { color:#31408a; font-weight:600; }" +
+    ".creat-total { font-size:14.5px; color:#22304a; margin:2px 0 12px; }" +
     ".age-warn { color:#b45309; font-weight:600; }" +
     ".age-crit { color:#b91c1c; font-weight:700; }" +
     // token-creation bars
