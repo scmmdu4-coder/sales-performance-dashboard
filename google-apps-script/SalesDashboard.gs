@@ -63,6 +63,13 @@ var CONFIG = {
   CRM_SHEET_NAME: "crm",
   TARGET_SHEET_NAME: "target",
   DASHBOARD_SHEET_NAME: "Dashboard",
+  // ---- Performance page source sheets ----
+  // Each entry lists acceptable tab names (first match wins, case-insensitive),
+  // so common spellings work without editing anything.
+  WALKIN_SHEET_NAMES: ["walkin", "walk-in", "walk in"],
+  SERVICE_SHEET_NAMES: ["service", "services"],
+  ADVANCE_SHEET_NAMES: ["advance", "advace", "advanced"],
+  COMM_SHEET_NAMES: ["comm", "communication", "communications"],
   // Leave blank to always use the spreadsheet this script is bound to.
   // Only set this if you deploy the Web App from a *different* Apps Script
   // project than the one bound to your sheet (Extensions → Apps Script
@@ -85,6 +92,14 @@ var CONFIG = {
   // Section 7 starts collapsed showing this many of the most recent dates
   // (current day + the previous two). Expanding reveals every date.
   COLLAPSED_DAYS: 3,
+  // Job management lists OPEN jobs only. If the service sheet has a status
+  // column, any status containing one of these words is treated as CLOSED and
+  // excluded. If there is no status column, a job counts as closed once it has
+  // a delivered/closed date, otherwise it stays open.
+  JOB_CLOSED_KEYWORDS: ["deliver", "closed", "close", "cancel", "complete", "collected", "returned"],
+  // A job is flagged red in the Job Age column once it reaches this many days.
+  JOB_AGE_WARN_DAYS: 7,
+  JOB_AGE_CRITICAL_DAYS: 15,
   // How crm!InvoiceDate is written in your sheet: "DMY" = dd-mm-yyyy hh:mm
   // (the default), "MDY" = mm-dd-yyyy hh:mm.
   //
@@ -160,6 +175,140 @@ function mergeDisplayDates_(crmSheet) {
     if (shown) values[r][dateCol] = shown;
   }
   return values;
+}
+
+/* ============================================================================
+ * PERFORMANCE PAGE — shared sheet helpers
+ * ========================================================================= */
+
+/** Finds a sheet by any of several acceptable names (case-insensitive). */
+function getSheetByNames_(ss, names) {
+  var all = ss.getSheets();
+  var lookup = {};
+  all.forEach(function (sh) { lookup[sh.getName().trim().toLowerCase()] = sh; });
+  for (var i = 0; i < names.length; i++) {
+    var hit = lookup[String(names[i]).trim().toLowerCase()];
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
+ * Reads a sheet into objects keyed by our internal field names.
+ *
+ * `spec` maps fieldName -> array of header regexes. Date-ish columns are read
+ * from getDisplayValues() so a locale-shifted Date cell is re-parsed from the
+ * text actually shown (same defence used for crm!InvoiceDate).
+ */
+function readSheetRows_(sheet, spec, dateFields) {
+  var range = sheet.getDataRange();
+  var values = range.getValues();
+  if (!values || values.length < 2) return { rows: [], missing: [], header: values[0] || [] };
+
+  var header = values[0];
+  var col = {};
+  var missing = [];
+  Object.keys(spec).forEach(function (field) {
+    col[field] = findColumn_(header, spec[field]);
+    if (col[field] === -1) missing.push(field);
+  });
+
+  // Swap in displayed text for date columns only.
+  var display = null;
+  (dateFields || []).forEach(function (f) {
+    if (col[f] === -1) return;
+    if (!display) display = range.getDisplayValues();
+    for (var r = 1; r < values.length; r++) {
+      var shown = display[r][col[f]];
+      if (shown) values[r][col[f]] = shown;
+    }
+  });
+
+  var out = [];
+  for (var r = 1; r < values.length; r++) {
+    var src = values[r];
+    var blank = true;
+    for (var c = 0; c < src.length; c++) { if (str_(src[c])) { blank = false; break; } }
+    if (blank) continue;
+
+    var obj = { _row: r + 1 };
+    Object.keys(spec).forEach(function (field) {
+      obj[field] = col[field] === -1 ? "" : src[col[field]];
+    });
+    out.push(obj);
+  }
+  return { rows: out, missing: missing, header: header, col: col };
+}
+
+/**
+ * Parses any of the date shapes these sheets use — real Date objects,
+ * "yyyy-mm-dd hh:mm:ss" (walkin/service/comm) and dd-mm-yyyy hh:mm — into a
+ * sortable timestamp plus a normalised dd-MM-yyyy day key.
+ */
+function parseAnyDate_(raw) {
+  var empty = { valid: false, ts: 0, dayKey: "", day: 0, month: 0, year: 0, minutes: 0 };
+  if (raw === null || raw === undefined || raw === "") return empty;
+
+  if (raw instanceof Date && !isNaN(raw.getTime())) {
+    return {
+      valid: true,
+      ts: raw.getTime(),
+      dayKey: Utilities.formatDate(raw, Session.getScriptTimeZone(), "dd-MM-yyyy"),
+      day: raw.getDate(), month: raw.getMonth() + 1, year: raw.getFullYear(),
+      minutes: raw.getHours() * 60 + raw.getMinutes(),
+    };
+  }
+
+  var s = str_(raw);
+  if (!s) return empty;
+
+  var parts = s.split(/[\sT]+/);
+  var datePart = parts[0];
+  var timePart = parts.length > 1 ? parts[1] : "";
+  var hh = 0, mi = 0, ss2 = 0;
+  var tm = timePart.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (tm) { hh = +tm[1]; mi = +tm[2]; ss2 = tm[3] ? +tm[3] : 0; }
+
+  var dd, mm, yyyy;
+  var iso = datePart.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})$/);
+  if (iso) {
+    yyyy = +iso[1]; mm = +iso[2]; dd = +iso[3];
+  } else {
+    var m = datePart.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{2,4})$/);
+    if (!m) {
+      var nat = new Date(s);
+      if (!isNaN(nat.getTime())) {
+        return {
+          valid: true, ts: nat.getTime(),
+          dayKey: Utilities.formatDate(nat, Session.getScriptTimeZone(), "dd-MM-yyyy"),
+          day: nat.getDate(), month: nat.getMonth() + 1, year: nat.getFullYear(),
+          minutes: nat.getHours() * 60 + nat.getMinutes(),
+        };
+      }
+      return empty;
+    }
+    var first = +m[1], second = +m[2];
+    yyyy = +m[3];
+    if (yyyy < 100) yyyy += 2000;
+    if (CONFIG.DATE_ORDER === "MDY") { mm = first; dd = second; } else { dd = first; mm = second; }
+    if (mm > 12 && dd <= 12) { var sw = dd; dd = mm; mm = sw; }
+  }
+
+  if (!dd || !mm || !yyyy) return empty;
+  var js = new Date(yyyy, mm - 1, dd, hh, mi, ss2);
+  if (isNaN(js.getTime())) return empty;
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  return {
+    valid: true, ts: js.getTime(), dayKey: pad(dd) + "-" + pad(mm) + "-" + yyyy,
+    day: dd, month: mm, year: yyyy, minutes: hh * 60 + mi,
+  };
+}
+
+/** Digits-only mobile key so "+91 98765 43210" and "9876543210" match. */
+function mobileKey_(v) {
+  var digits = str_(v).replace(/\D/g, "");
+  if (digits.length > 10) digits = digits.slice(-10); // drop country code
+  return digits;
 }
 
 /** Shared pipeline: read crm + target sheets, parse, and compute the dashboard data object. */
@@ -1291,6 +1440,274 @@ function computeKpis(crmRows, target, remainingWorkingDays) {
 }
 
 /* ============================================================================
+ * PERFORMANCE PAGE — WALK-IN ANALYSIS
+ * ========================================================================= */
+
+var WALKIN_SPEC = {
+  mobile: [/mobile.*no/i, /^mobile$/i, /phone/i],
+  tokenDate: [/token.*date/i, /^date$/i],
+  visitPurpose: [/visit.*purpose.*desc/i, /visit.*purpose/i, /purpose/i],
+  caseId: [/case.*id/i, /^case$/i],
+  invoiceCode: [/invoice.*code/i, /invoice.*no/i, /^invoice$/i],
+  remark: [/remark/i, /comment/i, /note/i],
+  // Who generated the token. Optional — auto-detected from common spellings.
+  createdBy: [/token.*creat.*by/i, /creat.*by/i, /token.*user/i, /^user.*name$/i, /staff/i, /employee/i],
+};
+
+function computeWalkinAnalysis_(ss) {
+  var sheet = getSheetByNames_(ss, CONFIG.WALKIN_SHEET_NAMES);
+  if (!sheet) {
+    return { available: false, sheetName: CONFIG.WALKIN_SHEET_NAMES[0], days: [], purposes: [],
+      creators: [], totals: {}, hasCreator: false };
+  }
+
+  var read = readSheetRows_(sheet, WALKIN_SPEC, ["tokenDate"]);
+  var rows = read.rows;
+  var hasCreator = read.col && read.col.createdBy !== -1;
+
+  var dayMap = {};
+  var purposeTotals = {};
+  var creatorTotals = {};
+  var totals = { walkins: 0, cases: 0, invoices: 0, remarks: 0 };
+
+  rows.forEach(function (r) {
+    var d = parseAnyDate_(r.tokenDate);
+    var key = d.valid ? d.dayKey : "";
+    if (!dayMap[key]) {
+      dayMap[key] = {
+        dateKey: key, undated: !d.valid,
+        sortKey: d.valid ? d.year * 10000 + d.month * 100 + d.day : -1,
+        weekday: d.valid ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(d.year, d.month - 1, d.day).getDay()] : "",
+        walkins: 0, cases: 0, invoices: 0, remarks: 0, purposes: {}, creators: {},
+      };
+    }
+    var bucket = dayMap[key];
+
+    // Every walk-in row is one visitor; MobileNo is the identity of that visit.
+    bucket.walkins += 1;
+    totals.walkins += 1;
+
+    if (str_(r.caseId)) { bucket.cases += 1; totals.cases += 1; }
+    if (str_(r.invoiceCode)) { bucket.invoices += 1; totals.invoices += 1; }
+    if (str_(r.remark)) { bucket.remarks += 1; totals.remarks += 1; }
+
+    var purpose = str_(r.visitPurpose) || "Not specified";
+    bucket.purposes[purpose] = (bucket.purposes[purpose] || 0) + 1;
+    purposeTotals[purpose] = (purposeTotals[purpose] || 0) + 1;
+
+    if (hasCreator) {
+      var by = str_(r.createdBy) || "Unassigned";
+      bucket.creators[by] = (bucket.creators[by] || 0) + 1;
+      creatorTotals[by] = (creatorTotals[by] || 0) + 1;
+    }
+  });
+
+  function toSortedList(obj) {
+    return Object.keys(obj).map(function (k) { return { name: k, count: obj[k] }; })
+      .sort(function (a, b) { return b.count - a.count; });
+  }
+
+  var days = Object.keys(dayMap).map(function (k) { return dayMap[k]; })
+    .sort(function (a, b) { return b.sortKey - a.sortKey; }); // newest first
+
+  days.forEach(function (d) {
+    d.purposeList = toSortedList(d.purposes);
+    d.creatorList = toSortedList(d.creators);
+    d.caseRate = pct_(d.cases, d.walkins);
+    d.invoiceRate = pct_(d.invoices, d.walkins);
+  });
+
+  var creators = toSortedList(creatorTotals).map(function (c) {
+    c.share = pct_(c.count, totals.walkins);
+    return c;
+  });
+
+  return {
+    available: true, sheetName: sheet.getName(), hasCreator: hasCreator,
+    days: days,
+    purposes: toSortedList(purposeTotals).map(function (p) {
+      p.share = pct_(p.count, totals.walkins); return p;
+    }),
+    creators: creators,
+    totals: {
+      walkins: totals.walkins, cases: totals.cases, invoices: totals.invoices, remarks: totals.remarks,
+      caseRate: pct_(totals.cases, totals.walkins),
+      invoiceRate: pct_(totals.invoices, totals.walkins),
+      activeDays: days.filter(function (d) { return !d.undated; }).length,
+    },
+  };
+}
+
+/* ============================================================================
+ * PERFORMANCE PAGE — JOB MANAGEMENT (open jobs)
+ * ========================================================================= */
+
+var SERVICE_SPEC = {
+  caseId: [/case.*id/i, /^case$/i],
+  firstName: [/first.*name/i, /customer.*name/i, /^name$/i],
+  lastName: [/last.*name/i, /surname/i],
+  mobile: [/mobile.*no/i, /^mobile$/i, /phone/i],
+  product: [/product.*desc/i, /^product$/i, /item.*desc/i],
+  caseDate: [/case.*date/i, /job.*creat.*date/i, /creat.*date/i],
+  repairCreatedDate: [/repair.*creat.*date/i, /repair.*date/i],
+  readyForPickup: [/ready.*pickup/i, /ready.*for.*collect/i],
+  jobAge: [/job.*age/i, /^age$/i, /aging/i],
+  status: [/job.*status/i, /case.*status/i, /^status$/i, /state/i],
+  deliveredDate: [/deliver.*date/i, /closed.*date/i, /collect.*date/i],
+};
+
+var ADVANCE_SPEC = {
+  mobile: [/mobile.*no/i, /^mobile$/i, /phone/i, /contact/i],
+  availableBalance: [/available.*balance/i, /^balance$/i, /advance.*amount/i, /^advance$/i],
+  caseId: [/case.*id/i],
+};
+
+var COMM_SPEC = {
+  caseId: [/case.*id/i, /^case$/i],
+  createdDate: [/creat.*date/i, /^date$/i, /comm.*date/i],
+  remark: [/remark/i, /message/i, /note/i, /comment/i],
+};
+
+/** True when a status string means the job is finished. */
+function isClosedStatus_(status) {
+  var l = str_(status).toLowerCase();
+  if (!l) return false;
+  for (var i = 0; i < CONFIG.JOB_CLOSED_KEYWORDS.length; i++) {
+    if (l.indexOf(CONFIG.JOB_CLOSED_KEYWORDS[i]) > -1) return true;
+  }
+  return false;
+}
+
+function computeJobManagement_(ss) {
+  var serviceSheet = getSheetByNames_(ss, CONFIG.SERVICE_SHEET_NAMES);
+  if (!serviceSheet) {
+    return { available: false, sheetName: CONFIG.SERVICE_SHEET_NAMES[0], jobs: [], totals: {} };
+  }
+
+  var read = readSheetRows_(serviceSheet, SERVICE_SPEC,
+    ["caseDate", "repairCreatedDate", "readyForPickup", "deliveredDate"]);
+  var hasStatus = read.col && read.col.status !== -1;
+
+  // ---- advance balances, keyed by mobile ----
+  var advanceByMobile = {};
+  var advanceSheet = getSheetByNames_(ss, CONFIG.ADVANCE_SHEET_NAMES);
+  if (advanceSheet) {
+    var adv = readSheetRows_(advanceSheet, ADVANCE_SPEC, []);
+    adv.rows.forEach(function (a) {
+      var key = mobileKey_(a.mobile);
+      if (!key) return;
+      // Same customer can appear more than once — keep the running total.
+      advanceByMobile[key] = (advanceByMobile[key] || 0) + num_(a.availableBalance);
+    });
+  }
+
+  // ---- latest communication date, keyed by case id ----
+  var commByCase = {};
+  var commSheet = getSheetByNames_(ss, CONFIG.COMM_SHEET_NAMES);
+  if (commSheet) {
+    var cm = readSheetRows_(commSheet, COMM_SPEC, ["createdDate"]);
+    cm.rows.forEach(function (c) {
+      var cid = str_(c.caseId);
+      if (!cid) return;
+      var d = parseAnyDate_(c.createdDate);
+      if (!d.valid) return;
+      var prev = commByCase[cid];
+      if (!prev || d.ts > prev.ts) {
+        commByCase[cid] = { ts: d.ts, dayKey: d.dayKey, remark: str_(c.remark) };
+      }
+    });
+  }
+
+  var today = new Date();
+  var todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+
+  var seen = {};
+  var jobs = [];
+  var closedCount = 0;
+
+  read.rows.forEach(function (r) {
+    var caseId = str_(r.caseId);
+    if (!caseId) return;
+    if (seen[caseId]) return;   // unique case id
+    seen[caseId] = true;
+
+    var delivered = parseAnyDate_(r.deliveredDate);
+    var isClosed = hasStatus ? isClosedStatus_(r.status) : delivered.valid;
+    if (isClosed) { closedCount++; return; }       // OPEN jobs only
+
+    var created = parseAnyDate_(r.caseDate);
+    var repair = parseAnyDate_(r.repairCreatedDate);
+    var ready = parseAnyDate_(r.readyForPickup);
+
+    // Prefer the sheet's own JobAge; fall back to days since the case date.
+    var age = num_(r.jobAge);
+    if (!age && created.valid) {
+      age = Math.max(0, Math.round((todayMid - created.ts) / 86400000));
+    }
+
+    var mobile = str_(r.mobile);
+    var advance = advanceByMobile[mobileKey_(mobile)] || 0;
+    var comm = commByCase[caseId] || null;
+
+    var name = str_(r.firstName);
+    if (str_(r.lastName)) name = (name + " " + str_(r.lastName)).trim();
+
+    jobs.push({
+      caseId: caseId,
+      name: name || "—",
+      mobile: mobile || "—",
+      product: str_(r.product) || "—",
+      status: str_(r.status),
+      createdDate: created.valid ? created.dayKey : "—",
+      createdTs: created.valid ? created.ts : 0,
+      repairDate: repair.valid ? repair.dayKey : "—",
+      readyDate: ready.valid ? ready.dayKey : "—",
+      isReady: ready.valid,
+      jobAge: age,
+      advance: advance,
+      communicated: !!comm,
+      commDate: comm ? comm.dayKey : "—",
+      commTs: comm ? comm.ts : 0,
+    });
+  });
+
+  // Oldest jobs first — they are the ones that need chasing.
+  jobs.sort(function (a, b) { return b.jobAge - a.jobAge; });
+
+  var totals = {
+    openJobs: jobs.length,
+    closedExcluded: closedCount,
+    readyForPickup: jobs.filter(function (j) { return j.isReady; }).length,
+    communicated: jobs.filter(function (j) { return j.communicated; }).length,
+    notCommunicated: jobs.filter(function (j) { return !j.communicated; }).length,
+    advanceTotal: jobs.reduce(function (a, j) { return a + j.advance; }, 0),
+    withAdvance: jobs.filter(function (j) { return j.advance > 0; }).length,
+    aged: jobs.filter(function (j) { return j.jobAge >= CONFIG.JOB_AGE_CRITICAL_DAYS; }).length,
+    avgAge: jobs.length ? Math.round(jobs.reduce(function (a, j) { return a + j.jobAge; }, 0) / jobs.length) : 0,
+  };
+  totals.commRate = pct_(totals.communicated, totals.openJobs);
+
+  return {
+    available: true, sheetName: serviceSheet.getName(),
+    hasStatus: hasStatus,
+    hasAdvance: !!advanceSheet, hasComm: !!commSheet,
+    advanceSheetName: advanceSheet ? advanceSheet.getName() : null,
+    commSheetName: commSheet ? commSheet.getName() : null,
+    jobs: jobs, totals: totals,
+  };
+}
+
+/** Loads everything the Performance page needs. */
+function loadPerformanceData_() {
+  var ss = getSpreadsheet_();
+  return {
+    walkin: computeWalkinAnalysis_(ss),
+    jobs: computeJobManagement_(ss),
+    generatedAt: new Date(),
+  };
+}
+
+/* ============================================================================
  * DASHBOARD SHEET WRITER  (colorful, formatted output)
  * ========================================================================= */
 
@@ -1663,6 +2080,10 @@ function refreshDashboardSections() {
   var data = loaded.data;
   var sections = renderSectionsHtml_(data);
 
+  var perfData = loadPerformanceData_();
+  var perfHtml = renderPerformanceHtml_(perfData);
+  var perfMeta = perfMeta_(perfData);
+
   // Keep the server-side page cache in step with what we just computed.
   try {
     var full = buildDashboardPage_(data);
@@ -1671,13 +2092,21 @@ function refreshDashboardSections() {
     }
   } catch (err) { /* cache refresh is best-effort */ }
 
-  return JSON.stringify({ html: sections, meta: renderMetaText_(data) });
+  return JSON.stringify({
+    html: sections, meta: renderMetaText_(data),
+    perfHtml: perfHtml, perfMeta: perfMeta,
+  });
 }
 
 /** Assembles the complete HTML document. */
 function buildDashboardPage_(data) {
   var css = getDashboardCss_();
   var sections = renderSectionsHtml_(data);
+
+  // ---- second tab: Performance (walk-ins + tokens + open jobs) ----
+  var perfData = loadPerformanceData_();
+  var perfHtml = renderPerformanceHtml_(perfData);
+  var perfMeta = perfMeta_(perfData);
 
   // Refresh runs through google.script.run because the page is served inside
   // a sandboxed iframe — window.location there points at an internal
@@ -1693,6 +2122,20 @@ function buildDashboardPage_(data) {
     "  btn.classList.toggle('open', open);" +
     "  btn.querySelector('.txt').textContent=open?btn.dataset.less:btn.dataset.more;" +
     "}" +
+    // Page slider: flip the active tab, show the matching <main>, and swap the
+    // subtitle from that container's data-meta attribute.
+    "function currentPage(){var a=document.querySelector('.tab-btn.active');return a?a.dataset.page:'business';}" +
+    "function switchPage(btn){" +
+    "  var tabs=document.querySelectorAll('.tab-btn');" +
+    "  for(var i=0;i<tabs.length;i++){tabs[i].classList.toggle('active', tabs[i]===btn);}" +
+    "  var page=btn.dataset.page;" +
+    "  var biz=document.getElementById('content');" +
+    "  var perf=document.getElementById('perfContent');" +
+    "  biz.style.display=(page==='business')?'block':'none';" +
+    "  perf.style.display=(page==='performance')?'block':'none';" +
+    "  var active=(page==='performance')?perf:biz;" +
+    "  document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';" +
+    "}" +
     "function dashRefresh(btn){" +
     "  if(btn.disabled) return;" +
     "  btn.classList.add('loading'); btn.disabled=true;" +
@@ -1707,8 +2150,13 @@ function buildDashboardPage_(data) {
     "        var prev=document.getElementById('dwTable');" +
     "        var wasOpen=prev?!prev.classList.contains('collapsed'):false;" +
     "        var d=JSON.parse(res);" +
-    "        document.getElementById('content').innerHTML=d.html;" +
-    "        document.getElementById('meta').textContent=d.meta;" +
+    "        var biz=document.getElementById('content');" +
+    "        var perf=document.getElementById('perfContent');" +
+    "        biz.innerHTML=d.html;" +
+    "        biz.setAttribute('data-meta', d.meta);" +
+    "        if(d.perfHtml){ perf.innerHTML=d.perfHtml; perf.setAttribute('data-meta', d.perfMeta); }" +
+    "        var active=currentPage()==='performance'?perf:biz;" +
+    "        document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';" +
     "        if(wasOpen){" +
     "          var nt=document.getElementById('dwTable');" +
     "          var nb=document.getElementById('dwToggle');" +
@@ -1734,20 +2182,28 @@ function buildDashboardPage_(data) {
     "}" +
     "</script>";
 
+  var bizMeta = renderMetaText_(data);
+
   return (
     "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
     "<title>Sales Performance Dashboard</title><style>" + css + "</style></head><body>" +
     '<header class="topbar"><div class="topbar-inner">' +
-    "<div>" +
-    "<h1>📊 Sales Performance Dashboard</h1>" +
-    '<div class="meta" id="meta">' + esc_(renderMetaText_(data)) + "</div>" +
+    "<div class=\"topbar-left\">" +
+    '<div class="brand">📊 Sales Performance Dashboard</div>' +
+    // ---- page slider: Business (this page) / Performance (new page) ----
+    '<div class="tabs" role="tablist">' +
+    '<button class="tab-btn active" data-page="business" onclick="switchPage(this)">💼 Business</button>' +
+    '<button class="tab-btn" data-page="performance" onclick="switchPage(this)">📈 Performance</button>' +
+    "</div>" +
+    '<div class="meta" id="meta">' + esc_(bizMeta) + "</div>" +
     '<div class="note" id="note"></div>' +
     "</div>" +
     '<button class="refresh-btn" onclick="dashRefresh(this)">' +
     '<span class="spin"></span><span class="txt">↻ Refresh data</span></button>' +
     "</div></header>" +
-    '<main class="wrap" id="content">' + sections + "</main>" +
-    '<footer class="foot">Press “Refresh data” to pull the latest crm / target sheet values.</footer>' +
+    '<main class="wrap" id="content" data-meta="' + esc_(bizMeta) + '">' + sections + "</main>" +
+    '<main class="wrap" id="perfContent" data-meta="' + esc_(perfMeta) + '" style="display:none;">' + perfHtml + "</main>" +
+    '<footer class="foot">Business uses the crm / target sheets · Performance uses the walkin / service / advance / comm sheets. Press “Refresh data” to pull the latest values.</footer>' +
     clientScript +
     "</body></html>"
   );
@@ -1755,6 +2211,192 @@ function buildDashboardPage_(data) {
 
 function renderDashboardHtml_(data) {
   return buildDashboardPage_(data);
+}
+
+/* ============================================================================
+ * PERFORMANCE PAGE — HTML RENDERERS
+ * ========================================================================= */
+
+function perfMeta_(pd) {
+  var bits = [];
+  if (pd.walkin.available) bits.push(pd.walkin.totals.walkins + " walk-ins");
+  if (pd.jobs.available) bits.push(pd.jobs.totals.openJobs + " open jobs");
+  return bits.length
+    ? bits.join(" · ") + " · updated " + Utilities.formatDate(pd.generatedAt, Session.getScriptTimeZone(), "dd-MM-yyyy HH:mm")
+    : "No performance source sheets found · updated " +
+        Utilities.formatDate(pd.generatedAt, Session.getScriptTimeZone(), "dd-MM-yyyy HH:mm");
+}
+
+function emptyPerf_(sheetName, msg) {
+  return '<div class="empty-perf">📁 No <b>' + esc_(sheetName) + '</b> sheet was found in this spreadsheet.<br>' +
+    '<span class="muted">' + esc_(msg) + "</span></div>";
+}
+
+function renderWalkinAnalysis_(wl) {
+  if (!wl.available) {
+    return emptyPerf_(CONFIG.WALKIN_SHEET_NAMES[0],
+      "Add a tab named `" + CONFIG.WALKIN_SHEET_NAMES[0] + "` with columns MobileNo, TokenDate, VisitPurposeDesc, CaseId, InvoiceCode and **Remark.");
+  }
+  var t = wl.totals;
+  function card(label, value, sub) {
+    return '<div class="card"><div class="label">' + esc_(label) + '</div><div class="value">' +
+      esc_(value) + '</div><div class="sub">' + esc_(sub || "") + "</div></div>";
+  }
+  var head =
+    '<div class="cards">' +
+    card("Total Walk-ins", t.walkins, t.activeDays + " active days") +
+    card("Cases Created", t.cases, t.caseRate + "% of walk-ins") +
+    card("Invoices Created", t.invoices, t.invoiceRate + "% of walk-ins") +
+    card("Remarks Updated", t.remarks, "rows carrying a remark") +
+    "</div>";
+
+  var rows = wl.days.map(function (d) {
+    var purposes = d.purposeList.length
+      ? d.purposeList.map(function (p) {
+          return '<span class="chip">' + esc_(p.name) + ' <b>' + p.count + "</b></span>";
+        }).join(" ")
+      : '<span class="muted">—</span>';
+    var remarks = d.remarks
+      ? '<span class="comm-yes">' + d.remarks + " ✓</span>"
+      : '<span class="muted">—</span>';
+    return "<tr" + (d.undated ? ' class="undated-row"' : "") + ">" +
+      '<td class="daycell"><b>' + esc_(d.undated ? "No date" : d.dateKey) + "</b>" +
+        (d.weekday ? ' <span class="muted">' + d.weekday + "</span>" : "") + "</td>" +
+      '<td class="num">' + d.walkins + "</td>" +
+      "<td>" + purposes + "</td>" +
+      '<td class="num">' + d.cases + "</td>" +
+      '<td class="comm-no num">' + d.invoiceRate + "%</td>" +
+      '<td class="num">' + d.invoices + "</td>" +
+      "<td>" + remarks + "</td>" +
+      "</tr>";
+  }).join("");
+
+  var table =
+    '<div class="scroll-x"><table class="ptable">' +
+    '<thead><tr>' +
+    "<th>Date</th><th>Walk-ins</th><th>Visit purpose</th>" +
+    "<th>Cases</th><th>Case conv.</th><th>Invoices</th><th>Remark</th>" +
+    "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+
+  return head + table;
+}
+
+function renderTokenCreation_(wl) {
+  if (!wl.available) return "";
+  if (!wl.hasCreator) {
+    return '<div class="subnote">No “created by / token user” column was detected in the ' +
+      "<b>" + esc_(wl.sheetName) + "</b> sheet, so token creation by person can’t be split yet. " +
+      "Add a column such as <b>TokenCreatedBy</b> (or UserName / Staff) and it will appear automatically here.</div>";
+  }
+  var max = wl.creators.length ? wl.creators[0].count : 1;
+  var rows = wl.creators.map(function (c) {
+    var w = Math.round(100 * c.count / max);
+    return '<div class="creat-row">' +
+      '<div class="creat-name">' + esc_(c.name) +
+        ' <span class="muted">(' + c.count + " token" + (c.count === 1 ? "" : "s") + ")</span></div>" +
+      '<div class="creat-bar"><div class="creat-fill" style="width:' + w + '%"></div></div>' +
+      '<div class="creat-share">' + c.share + "%</div>" +
+      "</div>";
+  }).join("");
+  return (
+    '<div class="creat-sum muted">' + wl.creators.length +
+      (wl.creators.length === 1 ? " person generated tokens" : " people generated tokens") +
+      " — shown as each person’s share of the " + wl.totals.walkins + " walk-ins.</div>" +
+    rows
+  );
+}
+
+function renderJobManagement_(jm) {
+  if (!jm.available) {
+    return emptyPerf_(CONFIG.SERVICE_SHEET_NAMES[0],
+      "Add a tab named `" + CONFIG.SERVICE_SHEET_NAMES[0] + "` with the case / repair / pickup columns listed below. " +
+      "If there is a status column, rows not marked delivered/closed are treated as open.");
+  }
+  var t = jm.totals;
+  function card(label, value, sub, cls) {
+    return '<div class="card"><div class="label">' + esc_(label) + '</div><div class="value' +
+      (cls ? " " + cls : "") + '">' + esc_(value) + '</div><div class="sub">' + esc_(sub || "") + "</div></div>";
+  }
+  var head =
+    '<div class="cards">' +
+    card("Open Jobs", t.openJobs, t.closedExcluded + " closed excluded") +
+    card("Ready for Pickup", t.readyForPickup, "awaiting customer collection") +
+    card("Communicated", t.communicated, t.commRate + "% of open jobs", "pos") +
+    card("Not Communicated", t.notCommunicated, "no comm record found", "neg") +
+    card("Avg Job Age", t.avgAge + " d", t.aged + " job(s) " + CONFIG.JOB_AGE_CRITICAL_DAYS + "+ days old", "neg") +
+    card("Advance Paid", money_(t.advanceTotal), t.withAdvance + " job(s) carry an advance") +
+    "</div>";
+
+  if (!jm.hasAdvance) {
+    head += '<div class="subnote">No advance sheet found — the “Advance Paid” column is showing ₹0 for every job.</div>';
+  }
+  if (!jm.hasComm) {
+    head += '<div class="subnote">No comm sheet found — “Communicated” is No for every job.</div>';
+  }
+
+  function ageCell(age) {
+    var cls = "", label = age + " d";
+    if (age >= CONFIG.JOB_AGE_CRITICAL_DAYS) { cls = "age-crit"; label += " ⚠"; }
+    else if (age >= CONFIG.JOB_AGE_WARN_DAYS) { cls = "age-warn"; }
+    return '<td class="' + cls + ' num">' + label + "</td>";
+  }
+
+  var rows = jm.jobs.map(function (j) {
+    var comm = j.communicated
+      ? '<span class="comm-yes">Yes</span>'
+      : '<span class="comm-no">No</span>';
+    var commDate = j.communicated
+      ? '<td>' + esc_(j.commDate) + "</td>"
+      : '<td class="muted">—</td>';
+    return "<tr" + (j.isReady ? ' class="ready-row"' : "") + ">" +
+      '<td class="sticky-col"><b>' + esc_(j.caseId) + "</b></td>" +
+      "<td>" + esc_(j.name) + "</td>" +
+      "<td>" + esc_(j.mobile) + "</td>" +
+      "<td>" + esc_(j.product) + "</td>" +
+      "<td>" + esc_(j.createdDate) + "</td>" +
+      "<td>" + esc_(j.repairDate) + "</td>" +
+      (j.isReady ? '<td class="comm-yes"><b>' + esc_(j.readyDate) + "</b></td>" : "<td>" + esc_(j.readyDate) + "</td>") +
+      ageCell(j.jobAge) +
+      '<td class="num">' + money_(j.advance) + "</td>" +
+      "<td>" + comm + "</td>" +
+      commDate +
+      "</tr>";
+  }).join("");
+
+  var table =
+    '<div class="scroll-x"><table class="ptable jobtable">' +
+    '<thead><tr>' +
+    "<th>Case ID</th><th>Customer</th><th>Mobile</th><th>Product</th>" +
+    "<th>Job created</th><th>Repair created</th><th>Ready for pickup</th>" +
+    "<th>Job age</th><th>Advance paid</th><th>Communicated</th><th>Comm. updated</th>" +
+    "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+
+  return head + table;
+}
+
+/** Whole performance tab content (walk-in analysis + token creation + job management). */
+function renderPerformanceHtml_(pd) {
+  var wl = pd.walkin, jm = pd.jobs;
+
+  var secWalkin =
+    '<section class="sec"><div class="sec-head">' +
+    '<h2>🚶 Walk-in Analysis</h2>' +
+    '<p class="sec-sub">source: ' + esc_(wl.sheetName) + ". Every row is one walk-in — MobileNo identifies the visitor; a row with a CaseId counts as a case, a row with an InvoiceCode as a completed sale.</p>" +
+    "</div>" + renderWalkinAnalysis_(wl) + "</section>";
+
+  var secToken =
+    '<section class="sec"><div class="sec-head">' +
+    '<h2>🎟 Token Creation</h2>' +
+    '<p class="sec-sub">how many walk-ins each person’s tokens generated, and their contribution share.</p>' +
+    "</div>" + renderTokenCreation_(wl) + "</section>";
+
+  var secJobs =
+    '<section class="sec"><div class="sec-head">' +
+    '<h2>🔧 Job Management — Open Jobs</h2>' +
+    '<p class="sec-sub">source: ' + esc_(jm.sheetName) + '. Open jobs only — rows whose status (or a delivered-date) says they are closed are excluded. Advance is matched on the customer mobile; communication on the case id.</p>' +
+    "</div>" + renderJobManagement_(jm) + "</section>";
+
+  return secWalkin + secToken + secJobs;
 }
 
 function getDashboardCss_() {
@@ -1894,6 +2536,57 @@ function getDashboardCss_() {
     ".toggle-btn.open .count { display:none; }" +
     // Collapsed: hide every row outside the recent-days window.
     "table.matrix.collapsed tbody tr.extra-day { display:none; }" +
+    // ---- page slider (Business / Performance) ----
+    ".topbar-left { display:flex; flex-direction:column; gap:6px; min-width:0; }" +
+    ".brand { font-size:16px; font-weight:700; letter-spacing:.2px; }" +
+    ".tabs { display:inline-flex; background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.22);" +
+    " border-radius:999px; padding:4px; gap:4px; width:fit-content; }" +
+    ".tab-btn { appearance:none; border:none; background:transparent; color:#dfe6f5; font-size:14.5px;" +
+    " font-weight:600; padding:7px 16px; border-radius:999px; cursor:pointer; transition:all .16s ease; }" +
+    ".tab-btn:hover { color:#fff; background:rgba(255,255,255,.10); }" +
+    ".tab-btn.active { background:#fff; color:#2b3750; box-shadow:0 1px 3px rgba(0,0,0,.35); }" +
+    // ---- performance tables ----
+    ".sec { background:rgba(255,255,255,.94); border:1px solid #d6deec; border-radius:14px; padding:18px 18px 14px;" +
+    " margin-bottom:18px; box-shadow:0 1px 4px rgba(23,32,54,.12); }" +
+    ".sec-head h2 { margin:0 0 4px; font-size:17.5px; color:#22304a; }" +
+    ".sec-sub { margin:0 0 12px; font-size:12.5px; color:#5b6b85; }" +
+    ".scroll-x { overflow-x:auto; }" +
+    ".ptable { border-collapse:collapse; width:100%; font-size:13.5px; }" +
+    ".ptable th, .ptable td { text-align:left; padding:8px 11px; border-bottom:1px solid rgba(90,110,145,.22);" +
+    " vertical-align:top; white-space:nowrap; }" +
+    ".ptable thead th { background:#eef2f9; color:#33405c; font-size:12px; text-transform:uppercase;" +
+    " letter-spacing:.3px; position:sticky; top:0; }" +
+    ".ptable tbody tr:hover { background:#f4f7fc; }" +
+    ".ptable td.num { text-align:right; font-variant-numeric:tabular-nums; }" +
+    ".ptable .daycell { min-width:120px; }" +
+    ".jobtable th, .jobtable td { font-size:13px; }" +
+    ".jobtable .sticky-col { position:sticky; left:0; background:inherit; }" +
+    ".chip { display:inline-block; background:#e8eefb; color:#31408a; border-radius:999px;" +
+    " padding:2px 8px; font-size:11.5px; margin:1px 2px 1px 0; }" +
+    ".chip b { color:#223; }" +
+    // walk-in / comm status colours
+    ".comm-yes { color:#15803d; font-weight:600; }" +
+    ".comm-no { color:#c2410c; font-weight:600; }" +
+    ".ready-row { background:#ecfdf5; }" +
+    ".ready-row:hover { background:#dcfce7; }" +
+    ".undated-row { background:#fefce8; }" +
+    ".age-warn { color:#b45309; font-weight:600; }" +
+    ".age-crit { color:#b91c1c; font-weight:700; }" +
+    // token-creation bars
+    ".creat-row { display:grid; grid-template-columns:1fr 2fr 52px; align-items:center; gap:12px;" +
+    " padding:7px 2px; border-bottom:1px solid rgba(90,110,145,.15); }" +
+    ".creat-name { font-size:13.5px; font-weight:600; color:#22304a; }" +
+    ".creat-bar { background:#e6ebf4; border-radius:999px; height:16px; overflow:hidden; }" +
+    ".creat-fill { background:linear-gradient(90deg,#4f7cff,#22a06b); height:100%; border-radius:999px; }" +
+    ".creat-share { text-align:right; font-size:13px; font-weight:700; color:#22304a;" +
+    " font-variant-numeric:tabular-nums; }" +
+    ".creat-sum { font-size:12.5px; margin-bottom:6px; }" +
+    ".subnote { background:#fff8e6; border:1px solid #f0d99a; border-radius:10px; padding:9px 12px;" +
+    " font-size:12.5px; color:#7c5c10; margin-bottom:12px; }" +
+    ".empty-perf { background:#fff; border:1px dashed #cbd5e1; border-radius:12px; padding:22px;" +
+    " text-align:center; font-size:14.5px; color:#33405c; }" +
+    ".pos { color:#15803d; } .neg { color:#b91c1c; }" +
+    "@media (max-width:760px){ .creat-row{grid-template-columns:1fr;} .creat-bar{order:2;} .creat-share{order:3;text-align:left;} }" +
     "@media (max-width:640px){ .topbar h1{font-size:18px;} .card .value{font-size:18px;} }"
   );
 }

@@ -123,3 +123,46 @@ adjust `CACHE_SECONDS`.
   previously saw a "Script function not found: doGet" error, that was
   because the editor's function selector dropdown was set to `doGet`
   instead of `buildDashboard`; that only matters for Mode A, not Mode B.
+
+## Performance page (second tab)
+
+The dashboard's top bar has a **Business / Performance** slider. Business is
+the original page (unchanged). Performance is a second page that reads four
+extra tabs. All four are looked up by tab name (case-insensitive, a few
+spellings accepted) — see `CONFIG.WALKIN_SHEET_NAMES`, `SERVICE_SHEET_NAMES`,
+`ADVANCE_SHEET_NAMES`, `COMM_SHEET_NAMES`. If a tab is missing, that section
+simply shows guidance instead of breaking.
+
+### Walk-in Analysis + Token Creation — `walkin` tab
+| Column | Used for |
+| --- | --- |
+| `MobileNo` | every row = **one walk-in** (the visitor's mobile is the count) |
+| `TokenDate` | the visit date (`yyyy-mm-dd hh:mm:ss`) — drives the date-wise table, newest first |
+| `VisitPurposeDesc` | visit purpose, shown as per-day chips and a purpose summary |
+| `CaseId` | a row with a case id counts as a **case created** |
+| `InvoiceCode` | a row with an invoice code counts as an **invoice created** |
+| `**Remark` / `Remark` | a row with a remark text counts toward "remarks updated" |
+| `TokenCreatedBy` *(optional)* | who generated the token → the **Token Creation** panel (count + % share). Also auto-detects `UserName` / `Staff` / `CreatedBy`. If absent, the panel explains how to add it. |
+
+### Job Management (open jobs only) — `service` tab
+One row per case. **Duplicate case ids are de-duplicated; every listed job is "open".**
+| Column | Used for |
+| --- | --- |
+| `CaseId` | unique job id (also the key for the communication lookup) |
+| `FirstName` (+ `LastName`) | customer name |
+| `MobileNo` | customer mobile — matched to the advance amount |
+| `ProductDescription` | product |
+| `CaseDate` | job created date (fallback for job age) |
+| `RepairCreatedDate` | repair created date |
+| `Ready_For_Pickup_Date_CRM` | ready-for-pickup date (row highlighted green when set) |
+| `JobAge` | job age in days — if blank, computed as days since `CaseDate` |
+| `Status` *(optional)* | any value containing deliver/closed/cancel/complete/collected is treated as **closed** and excluded. Otherwise the job is open. |
+| `DeliveredDate` *(optional, used when there is no `Status`)* | a date here marks the job closed |
+
+### Job management — `advance` and `comm` tabs
+- `advance`: `MobileNo` + `AvailableBalance` (typos like the tab name `advace` are accepted). Balances for the same mobile are **summed**.
+- `comm`: `CaseId` + `CreatedDate` (+ optional `Remark`/`Message`). The job is **Communicated = Yes** when any matching case is found, and the **latest** `CreatedDate` is shown.
+
+### Tunables (CONFIG)
+- `JOB_CLOSED_KEYWORDS` — words that mark a job closed.
+- `JOB_AGE_WARN_DAYS` (7) / `JOB_AGE_CRITICAL_DAYS` (15) — job-age colour thresholds.
