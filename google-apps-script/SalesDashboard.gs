@@ -338,6 +338,11 @@ function loadDashboardData_() {
   var target = parseTargetSheet(targetValues);
   var result = { ss: ss, data: computeDashboard(allRows, target) };
 
+  // Store code for the page title — read straight from crm!C2, exactly the
+  // cell the previous script used for its location header.
+  result.data.store.storeCode =
+    (crmValues[1] && crmValues[1].length > 2) ? str_(crmValues[1][2]) : "";
+
   // Average revenue per unique walk-in — the walkin sheet is optional, so a
   // missing tab simply leaves this metric blank instead of failing the page.
   try {
@@ -2198,6 +2203,8 @@ function refreshDashboardSections() {
 function buildDashboardPage_(data) {
   var css = getDashboardCss_();
   var sections = renderSectionsHtml_(data);
+  var storeCode = (data.store && data.store.storeCode) ? data.store.storeCode : "";
+  var pageTitle = "Store Performance Dashboard" + (storeCode ? " - " + storeCode : "");
 
   // ---- second tab: Performance (walk-ins + tokens + open jobs) ----
   var perfData = loadPerformanceData_();
@@ -2282,10 +2289,10 @@ function buildDashboardPage_(data) {
 
   return (
     "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
-    "<title>Sales Performance Dashboard</title><style>" + css + "</style></head><body>" +
+    "<title>" + esc_(pageTitle) + "</title><style>" + css + "</style></head><body>" +
     '<header class="topbar"><div class="topbar-inner">' +
     "<div class=\"topbar-left\">" +
-    '<div class="brand">📊 Sales Performance Dashboard</div>' +
+    '<div class="brand">' + esc_(pageTitle) + "</div>" +
     // ---- page slider: Business (this page) / Performance (new page) ----
     '<div class="tabs" role="tablist">' +
     '<button class="tab-btn active" data-page="business" onclick="switchPage(this)">💼 Business</button>' +
@@ -2625,6 +2632,34 @@ function getDashboardCss_() {
     ".card .value.pos { color:var(--achieved); } .card .value.neg { color:var(--danger); }" +
     ".card-unclaimed { border-color:#eab308; background:linear-gradient(145deg,rgba(90,62,8,.95),rgba(46,32,6,.95)); }" +
     ".card-unclaimed .value, .card-unclaimed .value.neg { color:var(--balance); }" +
+    // ---- Section 1 store tiles: 1:1 port of the old page's kpi-card pieces ----
+    ".rgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,225px),1fr)); gap:10px; }" +
+    ".rtile { padding:11px; }" +
+    ".rtile.done { background:linear-gradient(145deg,rgba(11,93,71,.98),rgba(9,50,54,.98)); border-color:#57f2bd; }" +
+    ".rt-head { align-items:center; display:flex; gap:6px; justify-content:space-between; margin-bottom:8px; min-width:0; }" +
+    ".rt-head h3 { color:#fff; font-size:.88rem; font-weight:850; letter-spacing:-.015em; margin:0;" +
+    " min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }" +
+    ".status { border-radius:999px; flex-shrink:0; font-size:.55rem; font-weight:850;" +
+    " padding:3px 6px; text-transform:uppercase; }" +
+    ".status.on { background:rgba(97,239,187,.17); color:var(--achieved); }" +
+    ".status.pending { background:rgba(255,210,122,.15); color:var(--balance); }" +
+    ".mg { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; width:100%; }" +
+    ".metric { background:rgba(255,255,255,.055); border-radius:7px; min-width:0; padding:7px 6px; }" +
+    ".metric span { color:var(--muted); display:block; font-size:.56rem; font-weight:800;" +
+    " letter-spacing:.045em; line-height:1.1; text-transform:uppercase; white-space:nowrap; }" +
+    ".metric strong { display:block; margin-top:3px; font-size:.82rem; font-weight:850;" +
+    " letter-spacing:-.02em; line-height:1.15; font-variant-numeric:tabular-nums; white-space:nowrap; }" +
+    ".metric.t strong { color:var(--target); } .metric.a strong { color:var(--achieved); }" +
+    ".metric.p strong { color:var(--percent); } .metric.b strong { color:var(--balance); }" +
+    ".dreq { background:rgba(69,220,255,.09); border-left:3px solid var(--accent); border-radius:7px;" +
+    " margin-top:6px; padding:6px 8px; width:100%; }" +
+    ".dreq span { color:var(--muted); display:block; font-size:.54rem; font-weight:800;" +
+    " letter-spacing:.045em; line-height:1.1; text-transform:uppercase; }" +
+    ".dreq strong { color:#e9fbff; display:block; font-size:.82rem; font-variant-numeric:tabular-nums;" +
+    " line-height:1.15; margin-top:2px; white-space:nowrap; }" +
+    ".rtile .bar { margin-top:7px; }" +
+    ".rtile.done .bar-fill { background:#6dffc7; }" +
+    ".sec-desc { color:#64748b; font-size:.72rem; margin:-3px 0 10px; }" +
     // ---- badges / status pills: old .status pills ----
     ".badge { display:inline-block; padding:3px 10px; border-radius:999px; font-weight:850;" +
     " font-size:.66rem; text-transform:uppercase; letter-spacing:.02em; }" +
@@ -2688,13 +2723,14 @@ function getDashboardCss_() {
     "tr.person-band-2 td { background:rgba(99,230,183,.055); }" +
     "tr.person-band-3 td { background:rgba(223,178,255,.055); }" +
     "tr.person-band-4 td { background:rgba(255,157,167,.055); }" +
-    // Sensex-style cells — condition unchanged (day >= daily target → green, else red);
-    // palette now matches the old page's green/red pills (#63e6b7 / #ff9da7).
-    "td.val-good { background:#63e6b7 !important; color:#12352d; font-weight:800; }" +
-    "td.val-good .tgt { color:rgba(18,53,45,.75); }" +
-    "td.val-bad { background:#ff9da7 !important; color:#5f2028; font-weight:800; }" +
-    "td.val-bad .tgt { color:rgba(95,32,40,.75); }" +
-    "td.val-good .cell-tint, td.val-bad .cell-tint { background:transparent; }" +
+    // Oval achievement pills — exact old-page look: an oval around the
+    // achieved number, mint/salmon fill with dark readable text inside.
+    // The condition is unchanged (met the daily target → green, else red).
+    ".apill { display:inline-flex; align-items:center; justify-content:center; min-width:72px;" +
+    " max-width:100%; padding:4px 11px; border-radius:999px; font-size:.78rem; font-weight:800;" +
+    " line-height:1; white-space:nowrap; font-variant-numeric:tabular-nums; box-sizing:border-box; }" +
+    ".apill.ok { background:#63e6b7; color:#12352d; box-shadow:0 1px 3px rgba(18,53,45,.16); }" +
+    ".apill.no { background:#ff9da7; color:#5f2028; box-shadow:0 1px 3px rgba(95,32,40,.16); }" +
     // ---- section 7 date-by-date matrix ----
     "table.matrix { font-size:.8rem; border-collapse:separate; border-spacing:0; }" +
     "table.matrix th, table.matrix td { white-space:nowrap; padding:8px 10px; }" +
@@ -2837,20 +2873,52 @@ function renderStoreCards_(data) {
   );
 }
 
+/**
+ * Section 1 — Store Performance tiles.
+ *
+ * Rendered exactly like the old script page: one dark navy tile per revenue
+ * type, each with a status pill (In Progress / Completed), a 2x2 metric grid
+ * (Target · Achievement · Achievement % · Balance), a cyan Per-Day
+ * Requirement strip and a progress bar. The per-day requirement reuses the
+ * existing bucket requiredPerDay value (balance ÷ working days left,
+ * today counted) — only the presentation changed, not the conditions.
+ */
 function renderStoreTable_(data) {
   var s = data.store;
-  var buckets = [["Total Revenue", s.total], ["Service", s.service], ["Accessories", s.accessory],
-    ["Repair", s.repair], ["Gross Profit", s.grossProfit]];
-  var rows = buckets.map(function (pair) {
-    var label = pair[0], b = pair[1];
-    return "<tr><td>" + esc_(label) + "</td><td>" + money_(b.target) + "</td><td>" + money_(b.achieved) +
-      "</td><td>" + barHtml_(b.pct) + " " + pctBadgeHtml_(b.pct) + "</td><td>" + money_(b.balance) +
-      "</td><td>" + money_(b.requiredPerDay) + "</td></tr>";
-  }).join("");
+  // Signed money like the old page: a covered target shows the excess with a
+  // minus sign (−₹1,40,068) instead of a clamped zero.
+  function sMoney(n) { return n < 0 ? "\u2212" + money_(-n) : money_(n); }
+  function tile(title, b) {
+    var pct = b.target > 0 ? (100 * b.achieved / b.target) : 0;
+    var complete = b.target > 0 && pct >= 100;
+    var signedBalance = b.target - b.achieved;
+    var dayLabel = complete ? "Target Completed / Excess" : "Per Day Requirement";
+    var dayValue = complete ? sMoney(signedBalance) : money_(b.requiredPerDay);
+    var width = Math.max(0, Math.min(100, pct));
+    return '<div class="card rtile' + (complete ? " done" : "") + '">' +
+      '<div class="rt-head"><h3>' + esc_(title) + "</h3>" +
+      '<span class="status ' + (complete ? "on" : "pending") + '">' +
+      (complete ? "Completed" : "In Progress") + "</span></div>" +
+      '<div class="mg">' +
+      '<div class="metric t"><span>Target</span><strong>' + money_(b.target) + "</strong></div>" +
+      '<div class="metric a"><span>Achievement</span><strong>' + money_(b.achieved) + "</strong></div>" +
+      '<div class="metric p"><span>Achievement %</span><strong>' + pct.toFixed(1) + "%</strong></div>" +
+      '<div class="metric b"><span>Balance</span><strong>' + sMoney(signedBalance) + "</strong></div>" +
+      "</div>" +
+      '<div class="dreq"><span>' + esc_(dayLabel) + "</span><strong>" + dayValue + "</strong></div>" +
+      '<div class="bar"><i class="bar-fill" style="width:' + width.toFixed(1) + '%"></i></div>' +
+      "</div>";
+  }
   return (
-    '<section class="section"><h2>1 &middot; Store Target vs Achievement</h2><div class="body scroll-x">' +
-    "<table><thead><tr><th>Revenue Type</th><th>Target</th><th>Achieved</th><th>Achieved %</th>" +
-    "<th>Balance</th><th>Req / Day</th></tr></thead><tbody>" + rows + "</tbody></table></div></section>"
+    '<section class="section"><h2>1 &middot; Store Performance</h2><div class="body">' +
+    '<div class="sec-desc">Target vs Achievement &middot; Run Rate</div>' +
+    '<div class="rgrid">' +
+    tile("Service Revenue", s.service) +
+    tile("Accessory Revenue", s.accessory) +
+    tile("Repair Revenue", s.repair) +
+    tile("Total Revenue", s.total) +
+    tile("Gross Profit", s.grossProfit) +
+    "</div></div></section>"
   );
 }
 
@@ -3116,7 +3184,6 @@ function renderDateWiseTable_(data) {
     var byKey = {};
     (d.people || []).forEach(function (pp) { byKey[pp.key] = pp; });
 
-    var dateCls = d.totalRevenue >= dailyTarget ? "val-good" : "val-bad";
     var classes = [];
     if (d.holiday) classes.push("holiday");
     // Rows outside the collapsed window are tagged so the toggle can show them.
@@ -3126,7 +3193,10 @@ function renderDateWiseTable_(data) {
     tr += '<td class="sticky-col"><b>' + esc_(d.undated ? "No date" : d.dateKey) + "</b>" +
       (d.weekday ? ' <span class="muted">' + esc_(d.weekday) + "</span>" : "") +
       (d.holiday ? ' <span class="muted">🔶</span>' : "") + "</td>";
-    tr += '<td class="' + dateCls + '">' + money_(d.totalRevenue) + "</td>";
+    // Oval pill around the achieved figure (green = met the store daily
+    // target, red = missed) — same condition, new presentation.
+    tr += '<td><span class="apill ' + (d.totalRevenue >= dailyTarget ? "ok" : "no") + '">' +
+      money_(d.totalRevenue) + "</span></td>";
 
     people.forEach(function (p, i) {
       var pd = byKey[p.key];
@@ -3137,9 +3207,12 @@ function renderDateWiseTable_(data) {
         var tk = pair[0];
         var achieved = typeMap[tk] ? typeMap[tk].value : 0;
         var tgt = p.dailyTargets[tk] || 0;
-        var cls = tgt > 0 ? (achieved >= tgt ? "val-good" : "val-bad") : "muted";
-        tr += '<td class="cell-' + (i % 5) + " " + cls + '">' +
-          money_(achieved) +
+        // Pill around the achieved number only; the daily target stays small
+        // underneath. The met/missed condition is unchanged.
+        var figure = tgt > 0
+          ? '<span class="apill ' + (achieved >= tgt ? "ok" : "no") + '">' + money_(achieved) + "</span>"
+          : '<span class="muted">' + money_(achieved) + "</span>";
+        tr += '<td class="cell-' + (i % 5) + '">' + figure +
           '<span class="tgt">/ ' + money_(tgt) + "</span></td>";
       });
     });
@@ -3198,7 +3271,8 @@ function renderDateWiseTable_(data) {
     '<p class="muted" style="font-size:12.5px;margin:12px 0 0">' +
     "Each cell shows <b>achieved / that engineer's daily target</b> for the revenue type — " +
     "the daily target is the <b>balance needed for the month ÷ working days remaining</b>. " +
-    "Sensex-style cells turn <b>green</b> when the day beats the target and <b>red</b> when it falls short. " +
+    "Achieved values sit inside <b>oval pills</b> that turn <b>green</b> when the day meets the target " +
+    "and <b>red</b> when it falls short. " +
     "The <b>Store Total</b> column uses the store daily target of " + money_(dailyTarget) + ". " +
     "Collapsed view shows the latest " + CONFIG.COLLAPSED_DAYS + " days; expand for every date.</p>" +
     "</div></section>"

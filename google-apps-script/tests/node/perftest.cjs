@@ -137,8 +137,18 @@ check("avg tile 3 details",page.indexOf("gross profit ÷")>-1);
 check("avg GP 683",page.indexOf("₹683")>-1);
 check("invoice ÷ total invoices label",page.indexOf("invoice value ÷ 3 total invoices")>-1);
 check("store target under repair line",page.indexOf("Store Total Revenue Target")>-1);
-check("sensex green css (old-page pill green)",page.indexOf("background:#63e6b7")>-1);
-check("sensex red css (old-page pill red)",page.indexOf("background:#ff9da7")>-1);
+// Section 7 oval pills: mint/salmon fills with dark text, pill markup present
+check("oval pill green css",page.indexOf(".apill.ok { background:#63e6b7")>-1);
+check("oval pill red css",page.indexOf(".apill.no { background:#ff9da7")>-1);
+check("oval pill cells render",page.indexOf('<span class="apill no">')>-1||page.indexOf('<span class="apill ok">')>-1);
+// Section 1 store tiles like the old page
+check("store tile grid",page.indexOf('<div class="rgrid">')>-1);
+check("store tile card",page.indexOf('class="card rtile')>-1);
+check("status pill text",page.indexOf("In Progress")>-1||page.indexOf("Completed")>-1);
+check("per-day requirement strip",page.indexOf("Per Day Requirement")>-1);
+check("metric grid",page.indexOf('class="metric a"')>-1&&page.indexOf('class="metric b"')>-1);
+// Title from crm!C2 (mock C2 = "Subha")
+check("title uses crm C2",page.indexOf("Store Performance Dashboard - Subha")>-1);
 check("Process tab",page.indexOf("Process")>-1&&page.indexOf("📈 Performance")===-1);
 check("walkin hsl tint",page.indexOf("background:hsl(")>-1);
 check("token table",page.indexOf("% of creation")>-1&&page.indexOf("Total tokens generated")>-1);

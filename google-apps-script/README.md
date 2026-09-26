@@ -271,3 +271,22 @@ Translating rules applied (no conditions or data touched):
   date rows use pastel `hsl(…,94%)` tints; every other table is dark navy.
 - The background photo layer was removed so the page gradient matches the
   old page exactly.
+
+### Design tweaks after the screenshots
+
+- **Page title** is now `Store Performance Dashboard - <store code>`, with the
+  store code read from **`crm!C2`** (the cell the old script used for its
+  location header). The browser `<title>` uses the same string.
+- **Section 1 · Store Performance** is a set of tiles (one per revenue type:
+  Service / Accessory / Repair / Total / Gross Profit) exactly like the old
+  page: status pill (In Progress / Completed with the green "done" tint), a
+  2×2 metric grid (Target · Achievement · Achievement % · Balance, with the
+  signed balance shown like `−₹1,40,068` when a target is exceeded), the
+  cyan Per-Day Requirement strip (reuses the existing per-bucket
+  `requiredPerDay`; Completed tiles show the excess) and the gradient
+  progress bar.
+- **Section 7 date-wise** achievement numbers now sit inside **oval pills**
+  (mint `#63e6b7` with `#12352d` text when the day meets its target, salmon
+  `#ff9da7` with `#5f2028` text when it misses), matching the old page's
+  pill style. The met/missed condition and the small `/ daily target` line
+  are unchanged.
