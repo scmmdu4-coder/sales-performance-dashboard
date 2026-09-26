@@ -290,3 +290,36 @@ Translating rules applied (no conditions or data touched):
   `#ff9da7` with `#5f2028` text when it misses), matching the old page's
   pill style. The met/missed condition and the small `/ daily target` line
   are unchanged.
+
+## Latest changes (post screenshots)
+
+- **Avg Invoice Value tile removed** from the top card row.
+- **Fonts +2pt page-wide** — the whole stylesheet is rem-based, so the root
+  font-size went from 16px to 18px, scaling everything evenly.
+- **Tab slider**: the Business / Process / Performance chooser is now a wide
+  centered pill bar under the title (`.tabs-row`), with bigger buttons.
+- **Section 5 "Approx Value" → "Approx Achievable Value"**: balance count ×
+  the row-15 unit value (what can still be won), with the small line showing
+  `balance N × ₹unit`; "target covered" when the balance is 0.
+- The **"SchemeCode starts with DISC" / "SubCategory contains AMC"** helper
+  notes are hidden from Section 6 (the cards remain).
+- Section 7 **legend cards (per-person daily targets)** are darker and
+  centre-aligned like the person headers in the date-wise table itself.
+- Section 7 now has a **Gross Profit column per salesperson** (achieved pill
+  + per-day target = balance ÷ remaining working days, same rule as the
+  revenue types). Person objects expose `grossProfit` bucket +
+  `dailyTargets.grossProfit`.
+- **Job Management**: rows are de-duplicated on **unique CaseId** *before*
+  the open-status filter (latest CaseDate wins, ties → later row; the merged
+  count is noted in the section subtitle). New columns **Warranty Type**
+  (`service!GSXWarrantyStatusDesc`) and **Repair Type**
+  (`service!RepairDocType`) per case.
+- **New third tab 📈 Performance** — repair-type analytics over unique case
+  ids (`service!RepairDocType` + `service!CaseDate`):
+  - one **tile per repair type** with this month's count and the prev-3-
+    months monthly average + delta;
+  - a **comparison table** — this month vs avg/month over the 3 previous
+    months, Δ %, and **average days from CaseDate →
+    Ready_For_Pickup_Date_CRM** for both windows;
+  - a **date × repair-type pivot** for the current month (newest first,
+    totals row).

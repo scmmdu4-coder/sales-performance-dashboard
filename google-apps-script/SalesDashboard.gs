@@ -1246,6 +1246,10 @@ function computeDashboard(allRows, target) {
       repair: sum(mine, function (r) { return revenueTypeKey_(r.revenueType) === "repair"; }),
     };
     ach.total = ach.service + ach.accessory + ach.repair;
+    // Gross profit earned by this person (for the date-wise GP column).
+    var achGrossProfit = 0;
+    mine.forEach(function (r) { if (r.taxableAmount >= 0) achGrossProfit += r.grossProfit; });
+    achGrossProfit = Math.round(achGrossProfit);
 
     // Service & accessory are the only revenue types that EARN incentive.
     var svcInc = incentiveForPct_(target.serviceIncentive.service, pct_(ach.service, t.service));
@@ -1276,12 +1280,15 @@ function computeDashboard(allRows, target) {
       service: mk(t.service, ach.service, svcInc),
       accessory: mk(t.accessory, ach.accessory, accInc),
       repair: mk(t.repair, ach.repair, 0),
+      grossProfit: mk(t.grossProfit, achGrossProfit, 0),
       // Per-day target for this engineer = the BALANCE still needed for that
       // revenue type ÷ the number of working days REMAINING in the month.
       dailyTargets: {
         service: Math.round(safeDiv_(balSvc, Math.max(1, remainingWorkingToday))),
         accessory: Math.round(safeDiv_(balAcc, Math.max(1, remainingWorkingToday))),
         repair: Math.round(safeDiv_(balRep, Math.max(1, remainingWorkingToday))),
+        grossProfit: Math.round(safeDiv_(Math.max(0, t.grossProfit - achGrossProfit),
+          Math.max(1, remainingWorkingToday))),
         total: Math.round(safeDiv_(balSvc + balAcc + balRep, Math.max(1, remainingWorkingToday))),
       },
       // incentive gate details, surfaced in the UI
@@ -1642,6 +1649,14 @@ var SERVICE_SPEC = {
   // Two extra repair-status columns: GSX's own status and the CRM repair status.
   gsxStatus: [/gsx.*repair.*status/i, /gsx.*status/i, /^gsx/i],
   crmRepairStatus: [/crm.*job.*status/i, /crm.*repair.*status/i, /^crm_?job/i, /job.*status.*desc/i, /part.*used.*desc/i, /part.*used/i],
+  // Warranty classification per case — service!GSXWarrantyStatusDesc.
+  warranty: [/gsx.*warranty.*status.*desc/i, /gsx.*warranty/i, /warranty.*status/i, /warranty/i],
+  // Repair-type classification — service!RepairDocType (also drives the
+  // repair analytics on the Performance page).
+  repairDocType: [/repair.*doc.*type/i, /repair.*type/i, /doc.*type/i],
+  // Ready-for-pickup date — service!Ready_For_Pickup_Date_CRM (average
+  // days from CaseDate to pickup-ready on the Performance page).
+  readyPickup: [/ready.*for.*pickup/i, /ready.*pickup/i, /pickup.*date/i],
 };
 
 var ADVANCE_SPEC = {
@@ -1663,7 +1678,7 @@ function computeJobManagement_(ss) {
   }
 
   var read = readSheetRows_(serviceSheet, SERVICE_SPEC,
-    ["caseDate", "repairCreatedDate", "deliveredDate"]);
+    ["caseDate", "repairCreatedDate", "deliveredDate", "readyPickup"]);
   // The generic job-status regexes would also match CRM_JobStatusDesc — never
   // let the same column drive both fields; the dedicated CRM column wins.
   var hasStatus = read.col && read.col.status !== -1 && read.col.status !== read.col.crmRepairStatus;
@@ -1704,15 +1719,29 @@ function computeJobManagement_(ss) {
   var today = new Date();
   var todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
 
-  var seen = {};
-  var jobs = [];
-  var closedCount = 0;
-
+  // ---- UNIQUE case id first -------------------------------------------
+  // The sheet can repeat a case on several rows. Before any status filter,
+  // collapse to one row per CaseId — the one with the LATEST case date
+  // (ties fall to the later row). The jobs table and the repair analytics
+  // both work on these unique cases only.
+  var byCase = {};
+  var order = [];
   read.rows.forEach(function (r) {
     var caseId = str_(r.caseId);
     if (!caseId) return;
-    if (seen[caseId]) return;   // unique case id
-    seen[caseId] = true;
+    var cd = parseAnyDate_(r.caseDate);
+    var score = cd.valid ? cd.ts : 0;
+    var prev = byCase[caseId];
+    if (!prev || score >= prev.score) byCase[caseId] = { row: r, score: score };
+    if (!prev) order.push(caseId);
+  });
+  var uniqueRows = order.map(function (cid) { return byCase[cid].row; });
+
+  var jobs = [];
+  var closedCount = 0;
+
+  uniqueRows.forEach(function (r) {
+    var caseId = str_(r.caseId);
 
     var delivered = parseAnyDate_(r.deliveredDate);
     // Only jobs whose JobStatus is "open" are listed. When there is no status
@@ -1762,6 +1791,8 @@ function computeJobManagement_(ss) {
       commTs: comm ? comm.ts : 0,
       gsxStatus: gsxStatus || "—",
       crmRepairStatus: crmRepairStatus || "—",
+      warranty: str_(r.warranty) || "—",
+      repairType: str_(r.repairDocType) || "—",
       isUnclaimed: isUnclaimed,
       // Communication freshness: days since the latest comm for this case.
       commAgeDays: comm ? Math.floor((Date.now() - comm.ts) / 86400000) : -1,
@@ -1786,9 +1817,31 @@ function computeJobManagement_(ss) {
     avgAge: jobs.length ? Math.round(jobs.reduce(function (a, j) { return a + j.jobAge; }, 0) / jobs.length) : 0,
   };
   totals.commRate = pct_(totals.communicated, totals.openJobs);
+  totals.duplicatesMerged = Math.max(0, (function () {
+    var n = 0;
+    read.rows.forEach(function (r) { if ((str_(r.caseId) || "").trim()) n++; });
+    return n - uniqueRows.length;
+  })());
+
+  // Unique cases for the repair analytics page (all statuses, not just open).
+  var serviceRows = uniqueRows.map(function (r) {
+    var cd = parseAnyDate_(r.caseDate);
+    var rp = parseAnyDate_(r.readyPickup);
+    return {
+      caseId: str_(r.caseId),
+      caseTs: cd.valid ? cd.ts : 0,
+      caseDay: cd.valid ? cd.dayKey : "",
+      caseMonth: cd.valid ? cd.dayKey.slice(3) : "",   // "mm-yyyy" from "dd-mm-yyyy"
+      readyTs: rp.valid ? rp.ts : 0,
+      readyDay: rp.valid ? rp.dayKey : "",
+      status: str_(r.status),
+      repairType: str_(r.repairDocType) || "",
+      warranty: str_(r.warranty) || "",
+    };
+  });
 
   return {
-    available: true, sheetName: serviceSheet.getName(),
+    available: true, sheetName: serviceSheet.getName(), serviceRows: serviceRows,
     hasStatus: hasStatus,
     hasAdvance: !!advanceSheet, hasComm: !!commSheet,
     advanceViaColumn: !advanceSheet && advanceDirectCol !== -1,
@@ -1798,12 +1851,215 @@ function computeJobManagement_(ss) {
   };
 }
 
-/** Loads everything the Performance page needs. */
+/**
+ * Repair-type analytics for the PERFORMANCE tab.
+ *
+ * Sources (per unique CaseId, all statuses):
+ *   - repair type classification: service!RepairDocType
+ *   - date of the repair:         service!CaseDate
+ *   - turnaround time:            service!CaseDate → service!Ready_For_Pickup_Date_CRM
+ *
+ * Produces per repair type:
+ *   - count for the current calendar month,
+ *   - average monthly repairs created over the past 3 full months,
+ *   - average days from case creation to ready-for-pickup (this month vs the
+ *     past-3-month window),
+ * plus a date × repair-type pivot for the current month.
+ */
+function computeRepairAnalytics_(serviceRows) {
+  var rows = (serviceRows || []).filter(function (r) { return r.caseTs > 0; });
+  if (!rows.length) return { available: false, types: [], tiles: [], pivot: null, comparison: [] };
+
+  var now = new Date();
+  function pad2(x) { return (x < 10 ? "0" : "") + x; }
+  function mkeyOf(y, m) { return y + "-" + pad2(m + 1); }
+  function monthAbbr(m) { return ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m]; }
+
+  var curKey = mkeyOf(now.getFullYear(), now.getMonth());
+  var curLabel = monthAbbr(now.getMonth()) + " " + now.getFullYear();
+
+  // The three full months that came before the current one.
+  var prev3 = [];
+  for (var k = 3; k >= 1; k--) {
+    var dd = new Date(now.getFullYear(), now.getMonth() - k, 1);
+    prev3.push({ key: mkeyOf(dd.getFullYear(), dd.getMonth()),
+      label: monthAbbr(dd.getMonth()) + " " + dd.getFullYear() });
+  }
+  var prev3Keys = {};
+  prev3.forEach(function (o) { prev3Keys[o.key] = true; });
+
+  function typeOf(r) { var t = (r.repairType || "").trim(); return t || "Unspecified"; }
+
+  var types = [];
+  var typeSet = {};
+  rows.forEach(function (r) { var t = typeOf(r);
+    if (!typeSet[t]) { typeSet[t] = true; types.push(t); } });
+  types.sort();
+
+  var stat = {};
+  types.forEach(function (t) {
+    stat[t] = { cur: 0, byMonth: {}, curDurs: [], prevDurs: [] };
+  });
+  var dayMap = {};  // current-month pivot days
+
+  rows.forEach(function (r) {
+    // r.caseMonth is "mm-yyyy" (slice of "dd-mm-yyyy"); normalise to "yyyy-mm".
+    var mkNorm = r.caseMonth ? r.caseMonth.slice(3) + "-" + r.caseMonth.slice(0, 2) : "";
+    var t = typeOf(r);
+    var st = stat[t];
+    var dur = (r.readyTs && r.readyTs >= r.caseTs)
+      ? Math.round((r.readyTs - r.caseTs) / 86400000) : -1;
+
+    if (mkNorm === curKey) {
+      st.cur++;
+      var dr = dayMap[r.caseDay] || (dayMap[r.caseDay] = { ts: r.caseTs, total: 0, perType: {} });
+      dr.total++;
+      dr.perType[t] = (dr.perType[t] || 0) + 1;
+      if (dur >= 0) st.curDurs.push(dur);
+    } else if (prev3Keys[mkNorm]) {
+      st.byMonth[mkNorm] = (st.byMonth[mkNorm] || 0) + 1;
+      if (dur >= 0) st.prevDurs.push(dur);
+    }
+  });
+
+  function avg1(arr) {
+    if (!arr.length) return { avg: null, n: 0 };
+    var sum = 0; arr.forEach(function (x) { sum += x; });
+    return { avg: Math.round((sum / arr.length) * 10) / 10, n: arr.length };
+  }
+
+  var comparison = types.map(function (t) {
+    var st = stat[t];
+    var prevTotal = 0;
+    prev3.forEach(function (o) { prevTotal += st.byMonth[o.key] || 0; });
+    var perMonth = Math.round((prevTotal / 3) * 10) / 10;
+    var deltaPct = perMonth > 0 ? Math.round(((st.cur - perMonth) / perMonth) * 100) : null;
+    var c = avg1(st.curDurs), pv = avg1(st.prevDurs);
+    return {
+      type: t, cur: st.cur, perMonth: perMonth, deltaPct: deltaPct,
+      curDaysAvg: c.avg, curDaysN: c.n, prevDaysAvg: pv.avg, prevDaysN: pv.n,
+    };
+  });
+
+  // Pivot: most recent date first.
+  var daysArr = Object.keys(dayMap).map(function (k) {
+    var d = dayMap[k]; d.dayKey = k; return d;
+  }).sort(function (a, b) { return b.ts - a.ts; });
+  var totals = {}; types.forEach(function (t) { totals[t] = 0; });
+  daysArr.forEach(function (d) {
+    types.forEach(function (t) { totals[t] += d.perType[t] || 0; });
+  });
+  var grand = types.reduce(function (a, t) { return a + totals[t]; }, 0);
+
+  var tiles = comparison.map(function (c) {
+    return { type: c.type, cur: c.cur, perMonth: c.perMonth, deltaPct: c.deltaPct,
+      curDaysAvg: c.curDaysAvg, prevDaysAvg: c.prevDaysAvg };
+  });
+
+  return {
+    available: true,
+    types: types, curLabel: curLabel, prev3Labels: prev3.map(function (o) { return o.label; }).join(", "),
+    tiles: tiles,
+    pivot: { rows: daysArr, totals: totals, grand: grand },
+    comparison: comparison,
+    totalRows: rows.length,
+  };
+}
+
+/** Renders the PERFORMANCE tab (repair tiles, comparison, date pivot). */
+function renderRepairAnalytics_(ra) {
+  if (!ra || !ra.available) {
+    return '<section class="sec"><div class="sec-head"><h2>📈 Repair Type Performance</h2>' +
+      '<p class="sec-sub">needs the service sheet with CaseDate, RepairDocType and Ready_For_Pickup_Date_CRM columns.</p>' +
+      "</div>" +
+      '<div class="empty-perf">No dated service cases found.</div></section>';
+  }
+
+  // ---- tiles: one per repair type ----
+  var tiles = '<div class="cards">' + ra.tiles.map(function (t) {
+    var deltaTxt = t.deltaPct === null ? " · <span class=\"muted\">no 3-month baseline</span>"
+      : " · <span class=\"" + (t.deltaPct >= 0 ? "pos" : "neg") + "\">" +
+        (t.deltaPct >= 0 ? "+" : "") + t.deltaPct + "% vs 3-mo avg</span>";
+    return '<div class="card"><div class="label">' + esc_(t.type) + "</div>" +
+      '<div class="value">' + t.cur + "</div>" +
+      '<div class="sub">avg ' + t.perMonth + "/month · prev 3 months" + deltaTxt +
+      (t.curDaysAvg !== null ? "<br>avg ready time " + t.curDaysAvg + " d this month" : "") +
+      "</div></div>";
+  }).join("") + "</div>";
+
+  // ---- comparison table: this month vs the past-3-month average ----
+  var totalCur = 0, totalPrevSum = 0;
+  ra.comparison.forEach(function (c) { totalCur += c.cur; totalPrevSum += c.perMonth; });
+  function fmtDays(avg, n) { return avg === null ? '<span class="muted">—</span>' : avg + ' d <span class="muted">(' + n + ")</span>"; }
+  function fmtDelta(d) {
+    if (d === null) return '<span class="muted">—</span>';
+    return '<span class="' + (d >= 0 ? "comm-yes" : "age-crit") + '">' + (d >= 0 ? "+" : "") + d + "%</span>";
+  }
+  var cmpRows = ra.comparison.map(function (c) {
+    return "<tr><td>" + esc_(c.type) + '</td><td class="num">' + c.cur + '</td><td class="num">' + c.perMonth +
+      '</td><td class="num">' + fmtDelta(c.deltaPct) + '</td><td class="num">' + fmtDays(c.curDaysAvg, c.curDaysN) +
+      '</td><td class="num">' + fmtDays(c.prevDaysAvg, c.prevDaysN) + "</td></tr>";
+  }).join("") +
+    '<tr class="totrow"><td>Total</td><td class="num">' + totalCur + '</td><td class="num">' +
+    (Math.round(totalPrevSum * 10) / 10) + '</td><td class="num"></td><td class="num"></td><td class="num"></td></tr>';
+
+  var cmpTable =
+    '<div class="scroll-x"><table class="ptable"><thead><tr>' +
+    '<th>Repair Type</th><th class="num">This month</th><th class="num">Avg / month (last 3 months)</th>' +
+    '<th class="num">Δ %</th><th class="num">Avg days to ready · this month</th>' +
+    '<th class="num">Avg days to ready · last 3 months</th>' +
+    "</tr></thead><tbody>" + cmpRows + "</tbody></table></div>";
+
+  // ---- pivot: dates (current month) × repair types ----
+  var pv = ra.pivot;
+  var pivHead = "<tr><th>Date</th>" + ra.types.map(function (t) {
+    return '<th class="num">' + esc_(t) + "</th>";
+  }).join("") + '<th class="num">Total</th></tr>';
+  var pivBody = pv.rows.map(function (d) {
+    return "<tr><td>" + esc_(d.dayKey) + "</td>" + ra.types.map(function (t) {
+      var n = d.perType[t] || 0;
+      return '<td class="num">' + (n || '<span class="muted">0</span>') + "</td>";
+    }).join("") + '<td class="num"><b>' + d.total + "</b></td></tr>";
+  }).join("");
+  var pivFoot = '<tr class="totrow"><td>Total</td>' + ra.types.map(function (t) {
+    return '<td class="num"><b>' + pv.totals[t] + "</b></td>";
+  }).join("") + '<td class="num"><b>' + pv.grand + "</b></td></tr>";
+
+  var pivotTable =
+    '<div class="scroll-x"><table class="ptable"><thead>' + pivHead + "</thead><tbody>" +
+    pivBody + pivFoot + "</tbody></table></div>";
+
+  return (
+    '<section class="sec"><div class="sec-head">' +
+    "<h2>📈 Repair Type Performance — tiles &amp; monthly comparison</h2>" +
+    '<p class="sec-sub">Classification from <b>service!RepairDocType</b>, dates from <b>service!CaseDate</b> on unique case ids. ' +
+    "Current month = <b>" + esc_(ra.curLabel) + "</b>; comparison average spans the previous 3 months (<b>" +
+    esc_(ra.prev3Labels) + "</b>). Turnaround = CaseDate → Ready_For_Pickup_Date_CRM.</p></div>" +
+    tiles + cmpTable + "</section>" +
+    '<section class="sec"><div class="sec-head">' +
+    "<h2>🗓 Repair Types by Date — " + esc_(ra.curLabel) + "</h2>" +
+    '<p class="sec-sub">One row per date (newest first), one column per repair type, current month only.</p></div>' +
+    pivotTable + "</section>"
+  );
+}
+
+/** Tab subtitle for the repair/performance page. */
+function repairMeta_(ra, generatedAt) {
+  var total = 0;
+  (ra && ra.comparison ? ra.comparison : []).forEach(function (c) { total += c.cur; });
+  return total + " repairs this month · " +
+    (ra && ra.types ? ra.types.length : 0) + " repair types · updated " +
+    Utilities.formatDate(generatedAt, Session.getScriptTimeZone(), "dd-MM-yyyy HH:mm");
+}
+
+/** Loads everything the Performance & Process pages need. */
 function loadPerformanceData_() {
   var ss = getSpreadsheet_();
+  var jm = computeJobManagement_(ss);
   return {
     walkin: computeWalkinAnalysis_(ss),
-    jobs: computeJobManagement_(ss),
+    jobs: jm,
+    repair: computeRepairAnalytics_(jm.serviceRows || []),
     generatedAt: new Date(),
   };
 }
@@ -2009,7 +2265,7 @@ function writeInvoiceValuationSection_(sheet, row, data) {
 
 function writeDateWiseSection_(sheet, row, data) {
   var people = data.salespeople;
-  var TYPES = [["service", "Service"], ["accessory", "Accessory"], ["repair", "Repair"]];
+  var TYPES = [["service", "Service"], ["accessory", "Accessory"], ["repair", "Repair"], ["grossProfit", "Gross Profit"]];
   var width = 2 + people.length * TYPES.length;
 
   row = sectionHeader_(sheet, row, "7 · DATE-WISE SALES REVENUE ANALYSIS (by salesperson)", width);
@@ -2093,7 +2349,9 @@ function writeDateWiseSection_(sheet, row, data) {
       if (pd) pd.types.forEach(function (t) { typeMap[t.type] = t; });
       TYPES.forEach(function (pair, ti) {
         var tk = pair[0];
-        var achieved = typeMap[tk] ? typeMap[tk].value : 0;
+        var achieved = tk === "grossProfit"
+          ? (pd ? pd.grossProfit : 0)
+          : (typeMap[tk] ? typeMap[tk].value : 0);
         var tgt = p.dailyTargets[tk] || 0;
         var c = 3 + i * TYPES.length + ti;
         sheet.getRange(row, c).setBackground(tints[i % tints.length]);
@@ -2184,6 +2442,8 @@ function refreshDashboardSections() {
   var perfData = loadPerformanceData_();
   var perfHtml = renderPerformanceHtml_(perfData);
   var perfMeta = perfMeta_(perfData);
+  var repHtml = renderRepairAnalytics_(perfData.repair);
+  var repMeta = repairMeta_(perfData.repair, perfData.generatedAt);
 
   // Keep the server-side page cache in step with what we just computed.
   try {
@@ -2196,6 +2456,7 @@ function refreshDashboardSections() {
   return JSON.stringify({
     html: sections, meta: renderMetaText_(data),
     perfHtml: perfHtml, perfMeta: perfMeta,
+    repairHtml: repHtml, repairMeta: repMeta,
   });
 }
 
@@ -2206,10 +2467,13 @@ function buildDashboardPage_(data) {
   var storeCode = (data.store && data.store.storeCode) ? data.store.storeCode : "";
   var pageTitle = "Store Performance Dashboard" + (storeCode ? " - " + storeCode : "");
 
-  // ---- second tab: Performance (walk-ins + tokens + open jobs) ----
+  // ---- second tab: Process (walk-ins + tokens + open jobs) ----
   var perfData = loadPerformanceData_();
   var perfHtml = renderPerformanceHtml_(perfData);
   var perfMeta = perfMeta_(perfData);
+  // ---- third tab: Performance (repair-type analytics) ----
+  var repHtml = renderRepairAnalytics_(perfData.repair);
+  var repMeta = repairMeta_(perfData.repair, perfData.generatedAt);
 
   // Refresh runs through google.script.run because the page is served inside
   // a sandboxed iframe — window.location there points at an internal
@@ -2228,15 +2492,14 @@ function buildDashboardPage_(data) {
     // Page slider: flip the active tab, show the matching <main>, and swap the
     // subtitle from that container's data-meta attribute.
     "function currentPage(){var a=document.querySelector('.tab-btn.active');return a?a.dataset.page:'business';}" +
+    "function paneFor(page){return page==='business'?'content':page==='performance'?'perfContent':'repairContent';}" +
     "function switchPage(btn){" +
     "  var tabs=document.querySelectorAll('.tab-btn');" +
     "  for(var i=0;i<tabs.length;i++){tabs[i].classList.toggle('active', tabs[i]===btn);}" +
     "  var page=btn.dataset.page;" +
-    "  var biz=document.getElementById('content');" +
-    "  var perf=document.getElementById('perfContent');" +
-    "  biz.style.display=(page==='business')?'block':'none';" +
-    "  perf.style.display=(page==='performance')?'block':'none';" +
-    "  var active=(page==='performance')?perf:biz;" +
+    "  ['content','perfContent','repairContent'].forEach(function(id){" +
+    "    document.getElementById(id).style.display=(id===paneFor(page))?'block':'none';});" +
+    "  var active=document.getElementById(paneFor(page));" +
     "  document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';" +
     "}" +
     "function dashRefresh(btn){" +
@@ -2258,7 +2521,9 @@ function buildDashboardPage_(data) {
     "        biz.innerHTML=d.html;" +
     "        biz.setAttribute('data-meta', d.meta);" +
     "        if(d.perfHtml){ perf.innerHTML=d.perfHtml; perf.setAttribute('data-meta', d.perfMeta); }" +
-    "        var active=currentPage()==='performance'?perf:biz;" +
+    "        var rep=document.getElementById('repairContent');" +
+    "        if(d.repairHtml){ rep.innerHTML=d.repairHtml; rep.setAttribute('data-meta', d.repairMeta); }" +
+    "        var active=document.getElementById(paneFor(currentPage()));" +
     "        document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';" +
     "        if(wasOpen){" +
     "          var nt=document.getElementById('dwTable');" +
@@ -2293,20 +2558,22 @@ function buildDashboardPage_(data) {
     '<header class="topbar"><div class="topbar-inner">' +
     "<div class=\"topbar-left\">" +
     '<div class="brand">' + esc_(pageTitle) + "</div>" +
-    // ---- page slider: Business (this page) / Performance (new page) ----
-    '<div class="tabs" role="tablist">' +
-    '<button class="tab-btn active" data-page="business" onclick="switchPage(this)">💼 Business</button>' +
-    '<button class="tab-btn" data-page="performance" onclick="switchPage(this)">🛠 Process</button>' +
-    "</div>" +
     '<div class="meta" id="meta">' + esc_(bizMeta) + "</div>" +
     '<div class="note" id="note"></div>' +
     "</div>" +
     '<button class="refresh-btn" onclick="dashRefresh(this)">' +
     '<span class="spin"></span><span class="txt">↻ Refresh data</span></button>' +
+    // ---- page slider: Business / Process / Performance — wide centered bar ----
+    '<div class="tabs-row"><div class="tabs" role="tablist">' +
+    '<button class="tab-btn active" data-page="business" onclick="switchPage(this)">💼 Business</button>' +
+    '<button class="tab-btn" data-page="performance" onclick="switchPage(this)">🛠 Process</button>' +
+    '<button class="tab-btn" data-page="repair" onclick="switchPage(this)">📈 Performance</button>' +
+    "</div></div>" +
     "</div></header>" +
     '<main class="wrap" id="content" data-meta="' + esc_(bizMeta) + '">' + sections + "</main>" +
     '<main class="wrap" id="perfContent" data-meta="' + esc_(perfMeta) + '" style="display:none;">' + perfHtml + "</main>" +
-    '<footer class="foot">Business uses the crm / target sheets · the Process page uses the walkin / service / advance / comm sheets. Press “Refresh data” to pull the latest values.</footer>' +
+    '<main class="wrap" id="repairContent" data-meta="' + esc_(repMeta) + '" style="display:none;">' + repHtml + "</main>" +
+    '<footer class="foot">Business uses the crm / target sheets · the Process page uses the walkin / service / advance / comm sheets · the Performance page reads service!RepairDocType / CaseDate / Ready_For_Pickup_Date_CRM. Press “Refresh data” to pull the latest values.</footer>' +
     clientScript +
     "</body></html>"
   );
@@ -2516,6 +2783,8 @@ function renderJobManagement_(jm) {
       "<td>" + esc_(j.name) + "</td>" +
       "<td>" + esc_(j.mobile) + "</td>" +
       "<td>" + esc_(j.product) + "</td>" +
+      "<td>" + esc_(j.warranty) + "</td>" +
+      "<td>" + esc_(j.repairType) + "</td>" +
       repairStatusCell(j.gsxStatus) +
       repairStatusCell(j.crmRepairStatus) +
       "<td>" + esc_(j.createdDate) + "</td>" +
@@ -2531,6 +2800,7 @@ function renderJobManagement_(jm) {
     '<div class="scroll-x"><table class="ptable jobtable">' +
     '<thead><tr>' +
     "<th>Case ID</th><th>Customer</th><th>Mobile</th><th>Product</th>" +
+    "<th>Warranty Type</th><th>Repair Type</th>" +
     "<th>GSX repair status</th><th>CRM repair status</th>" +
     "<th>Job created</th><th>Repair created</th>" +
     "<th>Job age</th><th>Advance paid</th><th>Communicated</th><th>Comm. updated</th>" +
@@ -2558,7 +2828,9 @@ function renderPerformanceHtml_(pd) {
   var secJobs =
     '<section class="sec"><div class="sec-head">' +
     '<h2>🔧 Job Management — Open Jobs</h2>' +
-    '<p class="sec-sub">source: ' + esc_(jm.sheetName) + '. Only cases whose <b>JobStatus is “open”</b> are listed. Advance is matched on the customer mobile with the advance sheet. Communicated = Yes when a comm record matches the case id — the latest update shows <span style="color:#15803d;font-weight:700">green</span> when within ' + CONFIG.COMM_STALE_DAYS + ' days of today, <span style="color:#b91c1c;font-weight:700">red</span> when older or “Not updated”. “Unclaimed Device” rows are highlighted amber.</p>' +
+    '<p class="sec-sub">source: ' + esc_(jm.sheetName) + '. One row per <b>unique CaseId</b> (repeated rows are merged, latest case date wins' +
+    (jm.totals.duplicatesMerged ? ' — ' + jm.totals.duplicatesMerged + " duplicate row(s) merged" : "") +
+    '). Only cases whose <b>JobStatus is “open”</b> are listed. Warranty Type comes from <b>GSXWarrantyStatusDesc</b>, Repair Type from <b>RepairDocType</b>. Advance is matched on the customer mobile with the advance sheet. Communicated = Yes when a comm record matches the case id — the latest update shows <span style="color:#15803d;font-weight:700">green</span> when within ' + CONFIG.COMM_STALE_DAYS + ' days of today, <span style="color:#b91c1c;font-weight:700">red</span> when older or “Not updated”. “Unclaimed Device” rows are highlighted amber.</p>' +
     "</div>" + renderJobManagement_(jm) + "</section>";
 
   return secWalkin + secToken + secJobs;
@@ -2578,6 +2850,9 @@ function getDashboardCss_() {
     " --line:#3a5575; --muted:#aebdd0; --white:#f8fbff; --achieved:#63e6b7; --target:#8fc7ff;" +
     " --balance:#ffd477; --percent:#dfb2ff; --accent:#45d9f5; --danger:#ff9da7; --completed:#63efbb; }" +
     "* { box-sizing:border-box; }" +
+    // +2 points across the whole page: every size below is rem-based, so a
+    // slightly larger root font scales all text up evenly.
+    "html { font-size:18px; }" +
     "body { margin:0; min-height:100vh;" +
     " background:linear-gradient(180deg,#edf2f7 0%,#e7edf3 100%); color:#17263a;" +
     " font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }" +
@@ -2594,12 +2869,13 @@ function getDashboardCss_() {
     ".topbar .meta { color:#64748b; font-size:.78rem; font-weight:600; }" +
     ".topbar .note { font-size:.74rem; min-height:15px; font-weight:600; }" +
     ".topbar .note.ok { color:#0d7d56; } .topbar .note.err { color:#c2393f; }" +
-    // tabs: light pill container, dark navy active — same family as the old refresh button
-    ".tabs { display:inline-flex; background:#ffffff; border:1px solid #d5dde6;" +
-    " border-radius:999px; padding:4px; gap:4px; width:fit-content; box-shadow:0 3px 10px rgba(15,23,42,.05); }" +
-    ".tab-btn { appearance:none; border:none; background:transparent; color:#475569; font-size:.78rem;" +
-    " font-weight:800; padding:8px 18px; border-radius:999px; cursor:pointer; transition:all .16s ease;" +
-    " white-space:nowrap; }" +
+    // page slider: a wide pill bar, centered on the page under the title
+    ".tabs-row { width:100%; display:flex; justify-content:center; margin-top:10px; }" +
+    ".tabs { display:flex; background:#ffffff; border:1px solid #d5dde6; border-radius:999px; padding:5px;" +
+    " gap:6px; width:min(760px,100%); box-shadow:0 3px 10px rgba(15,23,42,.06); }" +
+    ".tab-btn { appearance:none; border:none; background:transparent; color:#475569; font-size:.92rem;" +
+    " font-weight:800; padding:13px 18px; border-radius:999px; cursor:pointer; transition:all .16s ease;" +
+    " flex:1; text-align:center; white-space:nowrap; }" +
     ".tab-btn:hover { color:#16263a; background:#eef2f6; }" +
     ".tab-btn.active { background:#172b43; color:#fff; box-shadow:0 3px 8px rgba(15,23,42,.18); }" +
     // ---- refresh button: ported exact ----
@@ -2757,8 +3033,10 @@ function getDashboardCss_() {
     ".subpanel-head .muted { color:#718096; }" +".subpanel .muted { color:#718096; }" +
     ".legend-row { display:flex; flex-wrap:wrap; gap:10px; margin:0 0 12px; }" +
     ".legend-card { font-size:.76rem; padding:8px 12px; border-radius:8px; border:1px solid #d5dde6;" +
-    " line-height:1.5; background:rgba(255,255,255,.92); color:#334155; box-shadow:0 3px 10px rgba(15,23,42,.04); }" +
-    ".legend-card .muted { color:#718096; }" +
+    " line-height:1.5; background:rgba(255,255,255,.92); color:#1f2937; text-align:center;" +
+    " box-shadow:0 3px 10px rgba(15,23,42,.04); font-variant-numeric:tabular-nums; }" +
+    ".legend-card b { color:#111827; }" +
+    ".legend-card .muted { color:#475569; }" +
     // ---- section 7 collapse / expand ----
     ".toggle-btn { display:inline-flex; align-items:center; gap:9px; margin:0 0 12px;" +
     " background:#172b43; color:#fff; border:none; border-radius:8px; padding:9px 14px;" +
@@ -2852,22 +3130,6 @@ function renderStoreCards_(data) {
     card("Unique Invoices", s.uniqueInvoices, "deduped invoice codes") +
     card("Total Revenue", money_(s.total.achieved), s.total.pct + "% of target") +
     card("Gross Profit", money_(s.grossProfit.achieved), s.grossProfit.pct + "% of target") +
-    // Avg value tile with THREE details: invoice value against the total
-    // invoice count, total invoice value against total unique walk-ins, and
-    // average gross profit against the total invoice count.
-    (function () {
-      var avgGp = s.totalInvoices > 0 ? Math.round(s.grossProfit.achieved / s.totalInvoices) : 0;
-      return '<div class="card"><div class="label">Avg Invoice Value</div>' +
-        '<div class="value" style="font-size:25px">' + money_(s.avgInvoiceLineValue) + "</div>" +
-        '<div class="sub">invoice value ÷ ' + s.totalInvoices + " total invoices</div>" +
-        (s.avgPerWalkin
-          ? '<div class="value" style="font-size:25px;margin-top:7px">' + money_(s.avgPerWalkin) + "</div>" +
-            '<div class="sub">invoice value ÷ ' + s.uniqueWalkins + " unique walk-ins</div>"
-          : "") +
-        '<div class="value" style="font-size:25px;margin-top:7px">' + money_(avgGp) + "</div>" +
-        '<div class="sub">gross profit ÷ ' + s.totalInvoices + " total invoices</div>" +
-        "</div>";
-    })() +
     grTile +
     "</div>"
   );
@@ -3032,19 +3294,18 @@ function renderKpiSection_(data) {
 
   var rows = allKpis.map(function (k) {
     var pctVal = k.target > 0 ? pct_(k.achieved, k.target) : 0;
-    // Approx value pairs: what the achieved count is already worth, plus what
-    // is still worth chasing — the BALANCE x the per-unit approx value from
-    // target!B15:L15, so the number to hit next is visible right beside it.
-    var approx = k.approxAmount > 0 ? k.achieved * k.approxAmount : 0;
+    // Approx ACHIEVABLE value: the BALANCE count still to be hit multiplied
+    // by the per-unit approximate value from target!B15:L15 — how much can
+    // still be won against this KPI's balance target this month.
     var approxBal = k.approxAmount > 0 && k.target > 0 ? k.balance * k.approxAmount : 0;
     var approxCell;
     if (k.approxAmount <= 0) {
       approxCell = '<span class="muted">&mdash;</span>';
     } else if (approxBal > 0) {
-      approxCell = money_(approx) + '<br><span class="muted" style="font-size:12.5px">' +
-        money_(approxBal) + " to target</span>";
+      approxCell = money_(approxBal) + '<br><span class="muted" style="font-size:12.5px">balance ' +
+        k.balance + " × " + money_(k.approxAmount) + "</span>";
     } else {
-      approxCell = money_(approx) + '<br><span class="pos" style="font-size:12.5px">target covered</span>';
+      approxCell = money_(approxBal) + '<br><span class="pos" style="font-size:12.5px">target covered</span>';
     }
     return "<tr><td>" + esc_(k.label) + "</td><td>" + esc_(k.category) + "</td><td>" +
       (k.target > 0 ? k.target : "&mdash;") + "</td><td>" + k.achieved + "</td><td>" +
@@ -3058,10 +3319,10 @@ function renderKpiSection_(data) {
   return (
     '<section class="section"><h2>5 &middot; Store KPI Parameters</h2><div class="body scroll-x">' +
     "<table><thead><tr><th>KPI</th><th>Type</th><th>Target</th><th>Achieved</th><th>Achieved %</th>" +
-    "<th>Balance</th><th>Approx Value</th><th>Achieved Value</th><th>Achieved GP</th></tr></thead><tbody>" + rows +
+    "<th>Balance</th><th>Approx Achievable Value</th><th>Achieved Value</th><th>Achieved GP</th></tr></thead><tbody>" + rows +
     "</tbody></table>" +
     '<p class="muted" style="font-size:12.5px;margin:12px 0 0">Targets read from <b>target!B12:L14</b>. ' +
-    "<b>Approx Value</b> = achieved count × that KPI’s approximate unit value in <b>target!B15:L15</b>; the smaller line below is balance count × the same unit value — the amount still to be gained that month.</p>" +
+    "<b>Approx Achievable Value</b> = the balance count still needed × that KPI’s approximate unit value in <b>target!B15:L15</b> — the amount still winnable to close the balance target.</p>" +
     "</div></section>"
   );
 }
@@ -3080,9 +3341,9 @@ function renderInvoiceValuation_(data) {
     "<th>Gross Profit</th></tr></thead><tbody>" + rows + totalRow + "</tbody></table>" +
     '<div class="cards" style="margin-top:14px">' +
     '<div class="card"><div class="label">Bundle Unique Invoices</div><div class="value">' +
-    data.invoiceValuation.bundleUniqueInvoices + '</div><div class="sub">SchemeCode starts with DISC</div></div>' +
+    data.invoiceValuation.bundleUniqueInvoices + "</div></div>" +
     '<div class="card"><div class="label">AMC Unique Invoices</div><div class="value">' +
-    data.invoiceValuation.amcUniqueInvoices + '</div><div class="sub">SubCategory contains AMC</div></div>' +
+    data.invoiceValuation.amcUniqueInvoices + "</div></div>" +
     "</div>" +
     renderArAttachment_(data) +
     "</div></section>"
@@ -3151,7 +3412,7 @@ function renderArAttachment_(data) {
 function renderDateWiseTable_(data) {
   var dailyTarget = data.store.dailyTarget;
   var people = data.salespeople;
-  var TYPES = [["service", "Service"], ["accessory", "Accessory"], ["repair", "Repair"]];
+  var TYPES = [["service", "Service"], ["accessory", "Accessory"], ["repair", "Repair"], ["grossProfit", "Gross Profit"]];
 
   // Newest date first, so the current day and the two before it sit at the
   // top of the table — exactly what the collapsed view shows.

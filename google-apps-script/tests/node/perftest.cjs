@@ -67,14 +67,18 @@ var cm=[["CaseId","CreatedDate","Remark"],
 
 // ---- service ----
 var sv=[["CaseId","FirstName","LastName","MobileNo","ProductDescription","CaseDate",
- "RepairCreatedDate","JobAge","Status","DeliveredDate","GSXRepairStatusDescription","CRM_JobStatusDesc"],
- ["C1001","Ravi","Kumar","919876543210","iPhone 13",daysAgoStr(14,"10"),daysAgoStr(13,"11"),14,"Open","","Repair Complete","Original Display Used"],
- ["C1002","Anita","Devi","919876543211","Samsung S23",daysAgoStr(4,"09"),daysAgoStr(3,"14"),4,"Open","","Unclaimed Device","Part Used"],
- ["C1003","Mani","Kandan","919876543212","OnePlus 11",daysAgoStr(2,"10"),"",2,"Open","","Diagnosis In Progress","Device Unclaimed Device due"],
- ["C1004","Peela","Dass","919876543217","Realme 12",daysAgoStr(1,"08"),"",1,"Open","","Repair In Progress",""],
- ["C1005","Old","Closed","919876543218","Pixel 7",daysAgoStr(55,"09"),daysAgoStr(54,"10"),55,"Delivered",daysAgoStr(50,"10"),"Repair Complete","Part Used"],
- ["C1006","Age","Fallback","919876543219","Moto G",daysAgoStr(20,"09"),"","","Open","","Waiting for Part",""],
- ["C1007","Can","Cell","919876543220","Nokia",daysAgoStr(2,"09"),"",2,"Cancelled","","Aborted",""]];
+ "RepairCreatedDate","JobAge","Status","DeliveredDate","GSXRepairStatusDescription","CRM_JobStatusDesc",
+ "GSXWarrantyStatusDesc","RepairDocType","Ready_For_Pickup_Date_CRM"],
+ // duplicate of C1003 with an OLDER case date placed BEFORE the real row —
+ // the merger must keep the later (real) row instead.
+ ["C1003","Mani","Kandan","919876543212","Different Phone",daysAgoStr(5,"10"),"",5,"Open","","Diagnosis In Progress","","In Warranty","Walk-In Repair",""],
+ ["C1001","Ravi","Kumar","919876543210","iPhone 13",daysAgoStr(14,"10"),daysAgoStr(13,"11"),14,"Open","","Repair Complete","Original Display Used","In Warranty","Walk-In Repair",daysAgoStr(12,"10")],
+ ["C1002","Anita","Devi","919876543211","Samsung S23",daysAgoStr(4,"09"),daysAgoStr(3,"14"),4,"Open","","Unclaimed Device","Part Used","Out of Warranty","Carry-In Repair",daysAgoStr(1,"12")],
+ ["C1003","Mani","Kandan","919876543212","OnePlus 11",daysAgoStr(2,"10"),"",2,"Open","","Diagnosis In Progress","Device Unclaimed Device due","In Warranty","Walk-In Repair",""],
+ ["C1004","Peela","Dass","919876543217","Realme 12",daysAgoStr(1,"08"),"",1,"Open","","Repair In Progress","","In Warranty","Mail-In Repair",""],
+ ["C1005","Old","Closed","919876543218","Pixel 7",daysAgoStr(55,"09"),daysAgoStr(54,"10"),55,"Delivered",daysAgoStr(50,"10"),"Repair Complete","Part Used","In Warranty","Carry-In Repair",daysAgoStr(50,"10")],
+ ["C1006","Age","Fallback","919876543219","Moto G",daysAgoStr(20,"09"),"","","Open","","Waiting for Part","","Out of Warranty","Walk-In Repair",""],
+ ["C1007","Can","Cell","919876543220","Nokia",daysAgoStr(2,"09"),"",2,"Cancelled","","Aborted","","In Warranty","Carry-In Repair",""]];
 
 // ---- advance ----
 var av=[["MobileNo","AvailableBalance"],["919876543210",500],["919876543210",200],["919876543217",350],["919876543219",999]];
@@ -108,6 +112,10 @@ check("Subha svc daily matches balance/remaining", subha.dailyTargets.service===
   [subha.dailyTargets.service,balS,rem]);
 check("Dinesh svc daily = 120000/remaining", dinesh.dailyTargets.service===Math.round(120000/Math.max(1,rem)));
 check("Dinesh repair daily = 80000/remaining", dinesh.dailyTargets.repair===Math.round(80000/Math.max(1,rem)));
+check("Subha GP daily = (96000-1750)/remaining", subha.dailyTargets.grossProfit===Math.round(94250/Math.max(1,rem)),
+  subha.dailyTargets.grossProfit);
+check("Dinesh GP daily = (64000-300)/remaining", dinesh.dailyTargets.grossProfit===Math.round(63700/Math.max(1,rem)),
+  dinesh.dailyTargets.grossProfit);
 check("Subha acc daily balance-based", subha.dailyTargets.accessory===Math.round(89100/Math.max(1,rem)));
 
 console.log("== WALK-IN ==");
@@ -120,7 +128,9 @@ check("23 purposes total", (d23.purposes["Repair Submission"]||0)===2);
 
 console.log("== JOBS ==");
 var j=loadPerformanceData_().jobs;
-check("open jobs 5",j.totals.openJobs===5,j.totals.openJobs);
+check("open jobs 5 (dedupe keeps unique case ids)",j.totals.openJobs===5,j.totals.openJobs);
+check("duplicate rows merged count",j.totals.duplicatesMerged===1,j.totals.duplicatesMerged);
+check("kept row is the latest case date",j.jobs.filter(function(o){return o.caseId==="C1003";})[0].product==="OnePlus 11");
 check("non-open excluded 2",j.totals.closedExcluded===2,j.totals.closedExcluded);
 check("C1006 fallback age ~20d", (function(){var c=j.jobs.find(function(o){return o.caseId==="C1006";});return c&&Math.abs(c.jobAge-20)<=1;})());
 check("unclaimed 2",j.totals.unclaimed===2);
@@ -128,14 +138,11 @@ check("advance via advance-sheet total 2049",j.totals.advanceTotal===2049,j.tota
 
 console.log("== HTML ==");
 var page=buildDashboardPage_(biz);
-check("KPI heeft Approx Value header",page.indexOf("Approx Value")>-1);
+check("KPI heeft Approx Value header",page.indexOf("Approx Achievable Value")>-1);
 check("approx achieved ₹400",page.indexOf("₹400")>-1);
-check("approx-to-target guidance ₹9,600",page.indexOf("₹9,600 to target")>-1);
+check("approx achievable value ₹9,600",page.indexOf("<th>Approx Achievable Value</th>")>-1&&page.indexOf("₹9,600")>-1);
 check("review tile big = gain +19",page.indexOf('class="value pos">+19</div>')>-1);
 check("review caption small",page.indexOf("1494 this month")>-1&&page.indexOf("previous 1475")>-1);
-check("avg tile 3 details",page.indexOf("gross profit ÷")>-1);
-check("avg GP 683",page.indexOf("₹683")>-1);
-check("invoice ÷ total invoices label",page.indexOf("invoice value ÷ 3 total invoices")>-1);
 check("store target under repair line",page.indexOf("Store Total Revenue Target")>-1);
 // Section 7 oval pills: mint/salmon fills with dark text, pill markup present
 check("oval pill green css",page.indexOf(".apill.ok { background:#63e6b7")>-1);
@@ -149,7 +156,23 @@ check("per-day requirement strip",page.indexOf("Per Day Requirement")>-1);
 check("metric grid",page.indexOf('class="metric a"')>-1&&page.indexOf('class="metric b"')>-1);
 // Title from crm!C2 (mock C2 = "Subha")
 check("title uses crm C2",page.indexOf("Store Performance Dashboard - Subha")>-1);
-check("Process tab",page.indexOf("Process")>-1&&page.indexOf("📈 Performance")===-1);
+check("three tabs: Business / Process / Performance",page.indexOf("🛠 Process")>-1
+  &&page.indexOf("📈 Performance")>-1&&page.indexOf("💼 Business")>-1);
+check("tab slider row",page.indexOf('class="tabs-row"')>-1);
+check("fonts bumped globally",page.indexOf("font-size:18px")>-1);
+check("DISC/AMC notes hidden",page.indexOf("starts with DISC")===-1&&page.indexOf("SubCategory contains AMC")===-1);
+check("date-wise GP column",page.indexOf('class="grp grp-0">Gross Profit</th>')>-1);
+check("legend shows GP daily target",page.indexOf("Gross Profit "+"₹"+subha.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
+check("GP daily target in legend for Dinesh",page.indexOf("Gross Profit "+"₹"+dinesh.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
+check("jobs warranty column",page.indexOf("<th>Warranty Type</th>")>-1);
+check("jobs repair type column",page.indexOf("<th>Repair Type</th>")>-1);
+check("jobs warranty value renders",page.indexOf("Out of Warranty")>-1);
+check("repair tab section",page.indexOf("Repair Type Performance")>-1);
+check("repair pivot has type column",page.indexOf('<th class="num">Mail-In Repair</th>')>-1);
+check("repair tile avg baseline",page.indexOf("avg 0.3/month")>-1);
+check("no-baseline note",page.indexOf("no 3-month baseline")>-1);
+check("repair meta",page.indexOf("6 repairs this month · 3 repair types")>-1);
+check("avg days to ready col",page.indexOf("Avg days to ready · this month")>-1);
 check("walkin hsl tint",page.indexOf("background:hsl(")>-1);
 check("token table",page.indexOf("% of creation")>-1&&page.indexOf("Total tokens generated")>-1);
 check("ready col gone",page.indexOf("Ready for pickup")===-1);

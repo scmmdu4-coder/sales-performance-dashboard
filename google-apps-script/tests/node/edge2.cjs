@@ -49,7 +49,7 @@ var page=buildDashboardPage_(biz);
 check("negative review diff tile",page.indexOf('class="value neg">-5</div>')>-1);
 check("review caption negative",page.indexOf("35 this month")>-1&&page.indexOf("previous 40")>-1);
 check("approx cell em-dash when unit 0",page.indexOf(">—<")>-1);
-check("no walkin sheet -> avg tile still renders",page.indexOf("Avg Invoice Value")>-1);
+check("avg invoice value tile is gone",page.indexOf("Avg Invoice Value")===-1);
 check("comm C1 red (older than 2 days)",page.indexOf("comm-neg")>-1);
 check("no process/perf regression",page.indexOf("Process")>-1);
 

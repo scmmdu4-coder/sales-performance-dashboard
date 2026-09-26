@@ -20,12 +20,22 @@ var NAMES=["Ravi","Anita","Mani","Peela","Kumar","Divya","Suresh","Rekha","Arjun
 var LAST=["Kumar","Devi","Kandan","Dass"];
 var GSX=["Diagnosis In Progress","Repair In Progress","Repair Complete","Waiting for Part","Quality Check"];
 var CRMS=["Part Used","Original Display Used","Device Unclaimed Device due",""];
+var RTYPES=["Walk-In Repair","Carry-In Repair","Mail-In Repair","Screen Replacement"];
+var WARR=["In Warranty","Out of Warranty"];
 var SVC=[];
 for(var i=0;i<26;i++){var age=(i%28)+1;
-  SVC.push(["C100"+i,NAMES[i%16],LAST[i%4],"9198765432"+("000000"+i).slice(-3),"iPhone 13",daysAgoStr(age,"10"),age,age,"Open","","",GSX[i%5],CRMS[i%4],(i%3===0?200:(i*50)%900)]);}
+  // every third case is already ready for pickup (2-6 day turnaround)
+  var ready=(i%3===0)?daysAgoStr(Math.max(0,age-(1+i%5)),"11"):"";
+  // 16 fields, aligned to the 16-column header below.
+  SVC.push(["C100"+i,NAMES[i%16],LAST[i%4],"9198765432"+("000000"+i).slice(-3),"iPhone 13",daysAgoStr(age,"10"),age,age,"Open","",GSX[i%5],CRMS[i%4],(i%3===0?200:(i*50)%900),WARR[i%2],RTYPES[i%4],ready]);}
+// a few older cases across the previous months for the 3-month comparison
+for(var mo=1;mo<=3;mo++){for(var j=0;j<3+mo;j++){var a=30*mo+(j*6);
+  SVC.push(["C5"+mo+""+j,"Old"+j,LAST[j%4],"919876640000"+mo+j,"Pixel 7",daysAgoStr(a,"10"),a,a,"Delivered",daysAgoStr(a-4,"10"),"Repair Complete","Part Used",0,WARR[j%2],RTYPES[(j+mo)%4],daysAgoStr(a-4,"10")]);}}
+// one duplicated case row (older case date) — the page must merge it away
+SVC.unshift(["C1005","Kumar","Devi","919876543205","Different Phone",daysAgoStr(9,"10"),9,9,"Open","",GSX[0],"Part Used",0,"In Warranty","Walk-In Repair",""]);
 
 SVC.push(["C4001","Old","Closed","919876640001","Pixel 7",daysAgoStr(55,"10"),54,55,"Delivered",daysAgoStr(50,"10"),"Repair Complete","Part Used",0]);
-var sv=[["CaseId","FirstName","LastName","MobileNo","ProductDescription","CaseDate","RepairCreatedDate","JobAge","Status","DeliveredDate","GSXRepairStatusDescription","CRM_JobStatusDesc","AvailableBalance"]].concat(SVC);
+var sv=[["CaseId","FirstName","LastName","MobileNo","ProductDescription","CaseDate","RepairCreatedDate","JobAge","Status","DeliveredDate","GSXRepairStatusDescription","CRM_JobStatusDesc","AvailableBalance","GSXWarrantyStatusDesc","RepairDocType","Ready_For_Pickup_Date_CRM"]].concat(SVC);
 var RND=mulberry(42);function mulberry(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;}}
 var kpiProb=[4,2,1,0,2,1,3];
 var rev=["Service","Accessories","Repair"];
