@@ -2558,208 +2558,239 @@ function renderPerformanceHtml_(pd) {
 }
 
 function getDashboardCss_() {
+  // =========================================================================
+  // Visual design ported 1:1 from the previous "script page" the user shared:
+  // light grey page, dark navy cards, Inter font stack, and these exact
+  // palette tokens —
+  //   achieved #63e6b7 · target #8fc7ff · balance #ffd477 · percent #dfb2ff
+  //   muted #aebdd0 · white #f8fbff · line #3a5575 · danger #ff9da7
+  // Only looks changed; no condition or data logic was touched.
+  // =========================================================================
   return (
-    "* { box-sizing: border-box; }" +
-    // ---- mild dark page background, with the background photo at 40% ----
-    "body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;" +
-    " background:#33405c; color:#1f2937; position:relative; min-height:100vh; }" +
-    // The photo sits in a fixed layer behind everything at 40% opacity, so if
-    // the image fails to load the mild dark background still shows through.
-    (CONFIG.BACKGROUND_IMAGE_URL
-      ? "body::before { content:''; position:fixed; inset:0; z-index:-1; opacity:.40;" +
-        " background-image:url('" + CONFIG.BACKGROUND_IMAGE_URL + "');" +
-        " background-size:cover; background-position:center;" +
-        " background-repeat:no-repeat; pointer-events:none; }"
-      : "") +
-    ".topbar { background:#2b3750; color:#fff; padding:16px 20px; border-bottom:1px solid #46536f;" +
-    " position:sticky; top:0; z-index:20; }" +
-    ".topbar-inner { max-width:1320px; margin:0 auto; display:flex; align-items:center;" +
-    " justify-content:space-between; gap:16px; flex-wrap:wrap; }" +
-    ".topbar h1 { margin:0 0 4px; font-size:23px; }" +
-    ".topbar .meta { font-size:13.5px; opacity:.85; font-weight:500; }" +
-    ".topbar .note { font-size:12.5px; margin-top:3px; min-height:15px; }" +
-    ".topbar .note.ok { color:#8ef0b4; }" +
-    ".topbar .note.err { color:#ffb4b4; }" +
-    ".refresh-btn { background:#4f7cff; color:#fff; border:none; border-radius:8px; padding:10px 18px;" +
-    " font-size:14.5px; font-weight:800; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,.25);" +
-    " display:inline-flex; align-items:center; gap:8px; white-space:nowrap; }" +
-    ".refresh-btn:hover { background:#3d6af0; }" +
-    ".refresh-btn:disabled { opacity:.65; cursor:progress; }" +
-    ".refresh-btn .spin { display:none; width:13px; height:13px; border:2px solid rgba(255,255,255,.4);" +
+    ":root { --page:#eef2f6; --surface:#17263a; --surface-2:#20344d; --surface-3:#263e5b;" +
+    " --line:#3a5575; --muted:#aebdd0; --white:#f8fbff; --achieved:#63e6b7; --target:#8fc7ff;" +
+    " --balance:#ffd477; --percent:#dfb2ff; --accent:#45d9f5; --danger:#ff9da7; --completed:#63efbb; }" +
+    "* { box-sizing:border-box; }" +
+    "body { margin:0; min-height:100vh;" +
+    " background:linear-gradient(180deg,#edf2f7 0%,#e7edf3 100%); color:#17263a;" +
+    " font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }" +
+    // ---- page frame ----
+    ".wrap { max-width:1720px; margin:0 auto; padding:20px 22px 40px; }" +
+    // ---- top bar (light, like the old page header) ----
+    ".topbar { position:sticky; top:0; z-index:20; padding:14px 22px 12px;" +
+    " background:rgba(238,242,246,.92); backdrop-filter:blur(6px); border-bottom:1px solid #d5dde6; }" +
+    ".topbar-inner { max-width:1720px; margin:0 auto; display:flex; align-items:center;" +
+    " justify-content:space-between; gap:20px; flex-wrap:wrap; }" +
+    ".topbar-left { display:flex; flex-direction:column; gap:6px; min-width:0; }" +
+    ".brand { color:#16263a; font-size:clamp(1.45rem,2.5vw,2rem); font-weight:850;" +
+    " letter-spacing:-.035em; line-height:1.1; }" +
+    ".topbar .meta { color:#64748b; font-size:.78rem; font-weight:600; }" +
+    ".topbar .note { font-size:.74rem; min-height:15px; font-weight:600; }" +
+    ".topbar .note.ok { color:#0d7d56; } .topbar .note.err { color:#c2393f; }" +
+    // tabs: light pill container, dark navy active — same family as the old refresh button
+    ".tabs { display:inline-flex; background:#ffffff; border:1px solid #d5dde6;" +
+    " border-radius:999px; padding:4px; gap:4px; width:fit-content; box-shadow:0 3px 10px rgba(15,23,42,.05); }" +
+    ".tab-btn { appearance:none; border:none; background:transparent; color:#475569; font-size:.78rem;" +
+    " font-weight:800; padding:8px 18px; border-radius:999px; cursor:pointer; transition:all .16s ease;" +
+    " white-space:nowrap; }" +
+    ".tab-btn:hover { color:#16263a; background:#eef2f6; }" +
+    ".tab-btn.active { background:#172b43; color:#fff; box-shadow:0 3px 8px rgba(15,23,42,.18); }" +
+    // ---- refresh button: ported exact ----
+    ".refresh-btn { flex-shrink:0; border:0; border-radius:8px; padding:9px 14px; background:#172b43;" +
+    " color:#ffffff; cursor:pointer; font-size:.76rem; font-weight:800; white-space:nowrap;" +
+    " box-shadow:0 5px 14px rgba(15,23,42,.16); display:inline-flex; align-items:center; gap:8px; }" +
+    ".refresh-btn:hover { background:#223b59; }" +
+    ".refresh-btn:disabled { opacity:.6; cursor:wait; }" +
+    ".refresh-btn .spin { display:none; width:12px; height:12px; border:2px solid rgba(255,255,255,.4);" +
     " border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; }" +
     ".refresh-btn.loading .spin { display:inline-block; }" +
     "@keyframes spin { to { transform:rotate(360deg); } }" +
-    ".wrap { max-width:1320px; margin:0 auto; padding:20px 16px 50px; }" +
-    // mild light tile surfaces
-    ".section { background:#f5f7fb; border-radius:12px; box-shadow:0 2px 8px rgba(0,0,0,.18);" +
-    " margin-bottom:20px; overflow:hidden; }" +
-    ".section h2 { margin:0; padding:14px 18px; font-size:15.5px; letter-spacing:.06em; text-transform:uppercase;" +
-    " background:#43587f; color:#fff; }" +
-    ".section .body { padding:16px 18px; }" +
-    ".cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:12px; margin-bottom:20px; }" +
-    ".card { background:#f5f7fb; border-radius:12px; padding:14px 16px; box-shadow:0 2px 8px rgba(0,0,0,.18); }" +
-    ".section .card { box-shadow:none; border:1px solid #dde3ee; background:#fbfcfe; }" +
-    ".card .label { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#55637c; font-weight:800; }" +
-    ".card .value { font-size:29px; font-weight:800; margin-top:5px; color:#1f2937;" +
-    " font-variant-numeric:tabular-nums; }" +
-    ".card .sub { font-size:13.5px; color:#55637c; margin-top:4px; font-weight:500; }" +
-    "table { width:100%; border-collapse:collapse; font-size:15.5px; background:#fbfcfe; }" +
-    "th { text-align:right; font-size:12.5px; text-transform:uppercase; letter-spacing:.06em; color:#41506b;" +
-    " padding:9px 10px; border-bottom:2px solid #c6d0e2; background:#eef2f9; font-weight:800; }" +
+    // ---- section headings: the old .section-heading look (no coloured band) ----
+    ".section { margin-bottom:26px; overflow:visible; }" +
+    ".section h2 { margin:0 0 9px; padding:0; background:none; color:#182a40;" +
+    " font-size:1rem; font-weight:850; letter-spacing:-.015em; text-transform:none; }" +
+    ".section .body { padding:0; }" +
+    // ---- cards: the old .kpi-card dark navy tile ----
+    ".cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,225px),1fr)); gap:10px; margin-bottom:16px; }" +
+    ".card { background:linear-gradient(145deg,rgba(23,49,84,.98),rgba(11,25,47,.98));" +
+    " border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 20px rgba(0,0,0,.18);" +
+    " min-width:0; overflow:hidden; padding:13px; }" +
+    ".card .label { color:var(--muted); display:block; font-size:.6rem; font-weight:800;" +
+    " letter-spacing:.06em; line-height:1.15; text-transform:uppercase; white-space:nowrap;" +
+    " overflow:hidden; text-overflow:ellipsis; }" +
+    ".card .value { display:block; margin-top:4px; color:var(--white);" +
+    " font-size:clamp(1rem,1.6vw,1.3rem); font-weight:850; letter-spacing:-.02em; line-height:1.1;" +
+    " font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }" +
+    ".card .sub { display:block; margin-top:4px; color:var(--muted); font-size:.72rem; font-weight:500; }" +
+    ".card .value.pos { color:var(--achieved); } .card .value.neg { color:var(--danger); }" +
+    ".card-unclaimed { border-color:#eab308; background:linear-gradient(145deg,rgba(90,62,8,.95),rgba(46,32,6,.95)); }" +
+    ".card-unclaimed .value, .card-unclaimed .value.neg { color:var(--balance); }" +
+    // ---- badges / status pills: old .status pills ----
+    ".badge { display:inline-block; padding:3px 10px; border-radius:999px; font-weight:850;" +
+    " font-size:.66rem; text-transform:uppercase; letter-spacing:.02em; }" +
+    ".badge.good { background:rgba(97,239,187,.17); color:var(--achieved); }" +
+    ".badge.info { background:rgba(143,199,255,.16); color:var(--target); }" +
+    ".badge.warn { background:rgba(255,210,122,.15); color:var(--balance); }" +
+    ".badge.bad { background:rgba(255,157,167,.15); color:var(--danger); }" +
+    // ---- progress bars: old .progress ----
+    ".bar { height:4px; border-radius:999px; background:rgba(255,255,255,.10); overflow:hidden; min-width:70px; }" +
+    ".bar-fill { height:100%; border-radius:inherit; display:block; background:linear-gradient(90deg,#46d5ff,#62efbb); }" +
+    ".bar-fill.good { background:#6dffc7; } .bar-fill.info { background:linear-gradient(90deg,#46d5ff,#8fc7ff); }" +
+    ".bar-fill.warn { background:var(--balance); } .bar-fill.bad { background:var(--danger); }" +
+    // ---- generic text tones ----
+    ".pos { color:var(--achieved); font-weight:700; } .neg { color:var(--danger); font-weight:700; }" +
+    ".muted { color:var(--muted); }" +
+    "table .muted { color:#8b9db8; }" +
+    // ---- tables: old .date-report dark surface ----
+    "table { width:100%; border-collapse:separate; border-spacing:0; font-size:.8rem;" +
+    " background:rgba(12,29,53,.96); border:1px solid var(--line); border-radius:11px; overflow:hidden;" +
+    " box-shadow:0 8px 20px rgba(0,0,0,.14); }" +
+    "th { text-align:right; background:#203852; color:var(--muted); font-size:.68rem; font-weight:700;" +
+    " letter-spacing:.03em; text-transform:uppercase; padding:8px 10px; border-bottom:1px solid var(--line); }" +
     "th:first-child, td:first-child { text-align:left; }" +
-    "td { padding:9px 10px; text-align:right; font-size:15.5px; font-weight:500; font-variant-numeric:tabular-nums;" +
-    " border-bottom:1px solid rgba(90,110,145,.22); }" +
-"tbody tr:last-child td { border-bottom:none; }" +
-    "tr:nth-child(even) td { background:#f2f5fa; }" +
-    "tr.holiday td { background:#fdf0d5 !important; }" +
-    "tr.total-row td { background:#dfe6f2 !important; font-weight:700; }" +
-    ".badge { display:inline-block; padding:3px 11px; border-radius:999px; font-weight:800; font-size:14px; }" +
-    ".badge.good { background:#d7f5df; color:#15803d; }" +
-    ".badge.info { background:#dae7fd; color:#1d4ed8; }" +
-    ".badge.warn { background:#fdeecb; color:#b45309; }" +
-    ".badge.bad { background:#fcdede; color:#b91c1c; }" +
-    ".bar { height:6px; border-radius:999px; background:#dfe5ef; overflow:hidden; min-width:80px; }" +
-    ".bar-fill { height:100%; border-radius:999px; }" +
-    ".bar-fill.good { background:#16a34a; } .bar-fill.info { background:#2563eb; }" +
-    ".bar-fill.warn { background:#d97706; } .bar-fill.bad { background:#dc2626; }" +
-    ".person-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px; }" +
-    ".person-card { border:1px solid #dde3ee; border-radius:10px; padding:14px; background:#fbfcfe; }" +
-    ".person-card h3 { margin:0 0 8px; font-size:17.5px; }" +
+    "td { padding:8px 10px; text-align:right; color:var(--white); font-size:.8rem; font-weight:400;" +
+    " font-variant-numeric:tabular-nums; background:rgba(255,255,255,.035);" +
+    " border-bottom:1px solid rgba(58,85,117,.45); }" +
+    "tbody tr:last-child td { border-bottom:none; }" +
+    "tbody tr:hover td { background:rgba(69,217,245,.06); }" +
+    "tr.holiday td { background:rgba(255,212,119,.10) !important; }" +
+    "tr.total-row td { background:#263e5b !important; color:#ffffff; font-weight:900; }" +
+    // ---- salesperson cards ----
+    ".person-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr)); gap:10px; }" +
+    ".person-card { background:rgba(12,29,53,.94); border:1px solid var(--line); border-radius:11px;" +
+    " min-width:0; padding:12px; }" +
+    ".person-card h3 { color:#ffffff; font-size:.92rem; font-weight:850; margin:0 0 9px; min-width:0; }" +
     ".row-line { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:7px 0 3px;" +
-    " font-size:15.5px; font-weight:600; font-variant-numeric:tabular-nums; }" +
-    ".scroll-x { overflow-x:auto; }" +
-    ".foot { text-align:center; color:#b9c3d6; font-size:12.5px; padding:6px 0 28px; }" +
-    ".pos { color:#15803d; font-weight:700; } .neg { color:#b91c1c; font-weight:700; }" +
-    ".muted { color:#6b7688; }" +
-    // incentive gate note inside person cards
-    ".gate { margin-top:10px; padding:9px 11px; border-radius:8px; font-size:13px; line-height:1.45; }" +
-    ".gate.met { background:#e6f7ec; border:1px solid #b6e6c6; color:#14663a; }" +
-    ".gate.blocked { background:#fdecec; border:1px solid #f3c3c3; color:#8f2020; }" +
-    ".incentive-line { display:flex; justify-content:space-between; font-size:14px; margin-top:6px;" +
-    " font-variant-numeric:tabular-nums; padding-bottom:5px;" +
-    " border-bottom:1px solid rgba(90,110,145,.16); }" +
-    // date-wise per-person grouping
-    "table.detail td, table.detail th { font-size:15.5px; }" +
-    "tr.date-head td { background:#e3e9f4 !important; font-weight:700; color:#26334d;" +
-    " border-top:2px solid #b9c6dd; }" +
+    " color:var(--white); font-size:.82rem; font-weight:600; font-variant-numeric:tabular-nums; }" +
+    ".row-line .muted { color:var(--muted); }" +
+    ".scroll-x { overflow-x:auto; border-radius:11px; }" +
+    ".foot { text-align:center; color:#64748b; font-size:.74rem; padding:14px 0 26px; font-weight:500; }" +
+    // ---- incentive gate notes inside person cards ----
+    ".gate { margin-top:10px; padding:9px 11px; border-radius:8px; font-size:.78rem; line-height:1.45; }" +
+    ".gate.met { background:rgba(97,239,187,.10); border:1px solid rgba(97,239,187,.35); color:#a5f3d0; }" +
+    ".gate.blocked { background:rgba(255,157,167,.10); border:1px solid rgba(255,157,167,.35); color:#ffc7cd; }" +
+    ".incentive-line { display:flex; justify-content:space-between; font-size:.78rem; margin-top:6px;" +
+    " color:var(--white); font-variant-numeric:tabular-nums; padding-bottom:5px;" +
+    " border-bottom:1px solid rgba(58,85,117,.45); }" +
+    ".incentive-line .muted { color:var(--muted); }" +
+    // ---- date-wise per-person grouping (wide business table) ----
+    "table.detail td, table.detail th { font-size:.8rem; }" +
+    "tr.date-head td { background:#203852 !important; color:var(--white); font-weight:750;" +
+    " border-top:1px solid var(--line); }" +
     "td.person-cell { font-weight:700; border-left:4px solid transparent; }" +
-    ".sp-0 { border-left-color:#4f7cff !important; }" +
-    ".sp-1 { border-left-color:#ef8b3c !important; }" +
-    ".sp-2 { border-left-color:#22a06b !important; }" +
-    ".sp-3 { border-left-color:#a855f7 !important; }" +
-    ".sp-4 { border-left-color:#ec4899 !important; }" +
-    "tr.person-band-0 td { background:#f4f7ff; } tr.person-band-0:nth-child(even) td { background:#eef3ff; }" +
-    "tr.person-band-1 td { background:#fff7f0; } tr.person-band-1:nth-child(even) td { background:#fdf1e6; }" +
-    "tr.person-band-2 td { background:#f1fbf6; } tr.person-band-2:nth-child(even) td { background:#e9f7f0; }" +
-    "tr.person-band-3 td { background:#faf5ff; } tr.person-band-3:nth-child(even) td { background:#f5edfe; }" +
-    "tr.person-band-4 td { background:#fef4f9; } tr.person-band-4:nth-child(even) td { background:#fdecf4; }" +
-    // Sensex-style cells: whole cell turns green/red with white text when the
-    // day beats / misses the daily target (not just coloured digits).
-    "td.val-good { background:#16a34a; color:#fff; font-weight:800; }" +
-    "td.val-good .tgt { color:rgba(255,255,255,.9); }" +
-    "td.val-bad { background:#e23b3b; color:#fff; font-weight:800; }" +
-    "td.val-bad .tgt { color:rgba(255,255,255,.9); }" +
+    ".sp-0 { border-left-color:#8fc7ff !important; }" +
+    ".sp-1 { border-left-color:#fbbf24 !important; }" +
+    ".sp-2 { border-left-color:#63e6b7 !important; }" +
+    ".sp-3 { border-left-color:#dfb2ff !important; }" +
+    ".sp-4 { border-left-color:#ff9da7 !important; }" +
+    "tr.person-band-0 td { background:rgba(143,199,255,.055); }" +
+    "tr.person-band-1 td { background:rgba(251,191,36,.055); }" +
+    "tr.person-band-2 td { background:rgba(99,230,183,.055); }" +
+    "tr.person-band-3 td { background:rgba(223,178,255,.055); }" +
+    "tr.person-band-4 td { background:rgba(255,157,167,.055); }" +
+    // Sensex-style cells — condition unchanged (day >= daily target → green, else red);
+    // palette now matches the old page's green/red pills (#63e6b7 / #ff9da7).
+    "td.val-good { background:#63e6b7 !important; color:#12352d; font-weight:800; }" +
+    "td.val-good .tgt { color:rgba(18,53,45,.75); }" +
+    "td.val-bad { background:#ff9da7 !important; color:#5f2028; font-weight:800; }" +
+    "td.val-bad .tgt { color:rgba(95,32,40,.75); }" +
     "td.val-good .cell-tint, td.val-bad .cell-tint { background:transparent; }" +
     // ---- section 7 date-by-date matrix ----
-    "table.matrix { font-size:15.5px; border-collapse:separate; border-spacing:0; }" +
+    "table.matrix { font-size:.8rem; border-collapse:separate; border-spacing:0; }" +
     "table.matrix th, table.matrix td { white-space:nowrap; padding:8px 10px; }" +
-"table.matrix tbody td { border-bottom:1px solid rgba(90,110,145,.28); }" +
+    "table.matrix tbody td { border-bottom:1px solid rgba(58,85,117,.45); }" +
     "table.matrix thead th { position:sticky; top:0; z-index:3; }" +
-    "table.matrix th.grp { text-align:center; border-left:1px solid #d4dcea; }" +
-    "table.matrix .sticky-col { position:sticky; left:0; z-index:2; background:#eef2f9;" +
-    " text-align:left; border-right:2px solid #d4dcea; }" +
-    "table.matrix tbody tr:nth-child(even) .sticky-col { background:#e8edf6; }" +
-    "table.matrix thead .sticky-col { z-index:4; }" +
-    "table.matrix td .tgt { display:block; font-size:12.5px; font-weight:600; color:#6b788f; margin-top:2px; }" +
-    // tinted column groups, one per salesperson
-    "th.grp-0, td.cell-0 { background:#f4f7ff; } tr:nth-child(even) td.cell-0 { background:#eaf1ff; }" +
-    "th.grp-1, td.cell-1 { background:#fff7f0; } tr:nth-child(even) td.cell-1 { background:#fdefe2; }" +
-    "th.grp-2, td.cell-2 { background:#f1fbf6; } tr:nth-child(even) td.cell-2 { background:#e6f6ee; }" +
-    "th.grp-3, td.cell-3 { background:#faf5ff; } tr:nth-child(even) td.cell-3 { background:#f3eafe; }" +
-    "th.grp-4, td.cell-4 { background:#fef4f9; } tr:nth-child(even) td.cell-4 { background:#fce9f2; }" +
-    "table.matrix tr.holiday .sticky-col { background:#fdf0d5 !important; }" +
-    "table.matrix tr.total-row td { background:#dfe6f2 !important; border-top:2px solid #b9c6dd; }" +
-    // ---- AR attachment sub-panel inside section 6 ----
-    ".subpanel { margin-top:18px; padding:14px 16px; border-radius:10px;" +
-    " border:1px solid #d5dded; background:#eef3fb; }" +
-    ".subpanel-head { font-size:14px; font-weight:800; text-transform:uppercase; letter-spacing:.06em;" +
-    " color:#33456b; margin:0 0 12px; }" +
-    ".subpanel .card { background:#ffffff; border:1px solid #dde4f0; }" +
+    "table.matrix th.grp { text-align:center; border-left:1px solid var(--line); }" +
+    "table.matrix .sticky-col { position:sticky; left:0; z-index:2; background:#17263a;" +
+    " text-align:left; border-right:1px solid var(--line); }" +
+    "table.matrix thead .sticky-col { z-index:4; background:#203852; }" +
+    "table.matrix td .tgt { display:block; font-size:.66rem; font-weight:600; color:#8b9db8; margin-top:2px; }" +
+    // subtle tinted column groups, one per salesperson
+    "th.grp-0, td.cell-0 { background:rgba(143,199,255,.055); } th.grp-0 { background:rgba(143,199,255,.12); }" +
+    "th.grp-1, td.cell-1 { background:rgba(251,191,36,.055); } th.grp-1 { background:rgba(251,191,36,.12); }" +
+    "th.grp-2, td.cell-2 { background:rgba(99,230,183,.055); } th.grp-2 { background:rgba(99,230,183,.12); }" +
+    "th.grp-3, td.cell-3 { background:rgba(223,178,255,.055); } th.grp-3 { background:rgba(223,178,255,.12); }" +
+    "th.grp-4, td.cell-4 { background:rgba(255,157,167,.055); } th.grp-4 { background:rgba(255,157,167,.12); }" +
+    "table.matrix tr.holiday .sticky-col { background:rgba(255,212,119,.16) !important; }" +
+    "table.matrix tr.total-row td { background:#263e5b !important; border-top:1px solid var(--line); }" +
+    // ---- AR attachment sub-panel inside section 6 (light panel like old summary items) ----
+    ".subpanel { margin-top:14px; padding:13px 15px; border-radius:10px;" +
+    " border:1px solid #d5dde6; background:rgba(255,255,255,.92); box-shadow:0 3px 10px rgba(15,23,42,.05); }" +
+    ".subpanel-head { font-size:.68rem; font-weight:850; text-transform:uppercase; letter-spacing:.08em;" +
+    " color:#475569; margin:0 0 12px; }" +
+    ".subpanel-head .muted { color:#718096; }" +".subpanel .muted { color:#718096; }" +
     ".legend-row { display:flex; flex-wrap:wrap; gap:10px; margin:0 0 12px; }" +
-    ".legend-card { font-size:13px; padding:8px 12px; border-radius:8px; border:1px solid #dde3ee; line-height:1.5; }" +
+    ".legend-card { font-size:.76rem; padding:8px 12px; border-radius:8px; border:1px solid #d5dde6;" +
+    " line-height:1.5; background:rgba(255,255,255,.92); color:#334155; box-shadow:0 3px 10px rgba(15,23,42,.04); }" +
+    ".legend-card .muted { color:#718096; }" +
     // ---- section 7 collapse / expand ----
     ".toggle-btn { display:inline-flex; align-items:center; gap:9px; margin:0 0 12px;" +
-    " background:#43587f; color:#fff; border:none; border-radius:8px; padding:9px 16px;" +
-    " font-size:14px; font-weight:800; cursor:pointer; box-shadow:0 1px 3px rgba(0,0,0,.18); }" +
-    ".toggle-btn:hover { background:#374a6c; }" +
+    " background:#172b43; color:#fff; border:none; border-radius:8px; padding:9px 14px;" +
+    " font-size:.76rem; font-weight:800; cursor:pointer; box-shadow:0 5px 14px rgba(15,23,42,.16); }" +
+    ".toggle-btn:hover { background:#223b59; }" +
     ".toggle-btn .chev { display:inline-block; font-size:10px; transition:transform .18s ease; }" +
     ".toggle-btn.open .chev { transform:rotate(180deg); }" +
-    ".toggle-btn .count { background:rgba(255,255,255,.22); border-radius:999px;" +
-    " padding:2px 10px; font-size:12.5px; font-weight:800; }" +
+    ".toggle-btn .count { background:rgba(255,255,255,.18); border-radius:999px;" +
+    " padding:2px 10px; font-size:.68rem; font-weight:800; }" +
     ".toggle-btn.open .count { display:none; }" +
-    // Collapsed: hide every row outside the recent-days window.
     "table.matrix.collapsed tbody tr.extra-day { display:none; }" +
-    // ---- page slider (Business / Performance) ----
-    ".topbar-left { display:flex; flex-direction:column; gap:6px; min-width:0; }" +
-    ".brand { font-size:17.5px; font-weight:800; letter-spacing:.2px; }" +
-    ".tabs { display:inline-flex; background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.22);" +
-    " border-radius:999px; padding:4px; gap:4px; width:fit-content; }" +
-    ".tab-btn { appearance:none; border:none; background:transparent; color:#dfe6f5; font-size:16px;" +
-    " font-weight:700; padding:8px 18px; border-radius:999px; cursor:pointer; transition:all .16s ease; }" +
-    ".tab-btn:hover { color:#fff; background:rgba(255,255,255,.10); }" +
-    ".tab-btn.active { background:#fff; color:#2b3750; box-shadow:0 1px 3px rgba(0,0,0,.35); }" +
-    // ---- performance tables ----
-    ".sec { background:rgba(255,255,255,.94); border:1px solid #d6deec; border-radius:14px; padding:18px 18px 14px;" +
-    " margin-bottom:18px; box-shadow:0 1px 4px rgba(23,32,54,.12); }" +
-    ".sec-head h2 { margin:0 0 4px; font-size:20px; color:#22304a; }" +
-    ".sec-sub { margin:0 0 12px; font-size:14px; color:#5b6b85; font-weight:500; }" +
-    ".scroll-x { overflow-x:auto; }" +
-    ".ptable { border-collapse:collapse; width:100%; font-size:15px; }" +
-    ".ptable th, .ptable td { text-align:left; padding:9px 12px; border-bottom:1px solid rgba(90,110,145,.22);" +
-    " vertical-align:top; white-space:nowrap; font-weight:500; }" +
-    ".ptable thead th { background:#eef2f9; color:#33405c; font-size:12.5px; font-weight:800; text-transform:uppercase;" +
-    " letter-spacing:.3px; position:sticky; top:0; }" +
-    ".ptable tbody tr:hover { background:#f4f7fc; }" +
+    // ---- process page panels: light cards like the old summary strip ----
+    ".sec { background:rgba(255,255,255,.92); border:1px solid #d5dde6; border-radius:9px;" +
+    " padding:14px 15px 12px; margin-bottom:16px; box-shadow:0 3px 10px rgba(15,23,42,.05); }" +
+    ".sec-head h2 { margin:0 0 4px; color:#182a40; font-size:1rem; font-weight:850; letter-spacing:-.015em; }" +
+    ".sec-sub { margin:0 0 12px; color:#64748b; font-size:.78rem; font-weight:500; }" +
+    ".sec .muted { color:#64748b; }" +
+
+    // dark tables inside the process page (jobs / tokens), matching the old date-report
+    ".ptable { border-collapse:separate; border-spacing:0; width:100%; font-size:.8rem;" +
+    " background:rgba(12,29,53,.96); border:1px solid var(--line); border-radius:11px; overflow:hidden;" +
+    " box-shadow:0 8px 20px rgba(0,0,0,.12); }" +
+    ".ptable th, .ptable td { text-align:left; padding:8px 11px; border-bottom:1px solid rgba(58,85,117,.45);" +
+    " vertical-align:top; white-space:nowrap; font-weight:400; color:var(--white); }" +
+    ".ptable td { background:rgba(255,255,255,.035); }" +
+    ".ptable thead th { background:#203852; color:var(--muted); font-size:.68rem; font-weight:700;" +
+    " text-transform:uppercase; letter-spacing:.03em; position:sticky; top:0; border-bottom:1px solid var(--line); }" +
+    ".ptable tbody tr:hover td { background:rgba(69,217,245,.06); }" +
     ".ptable td.num { text-align:right; font-variant-numeric:tabular-nums; }" +
-    ".ptable .daycell { min-width:120px; }" +
-    ".jobtable th, .jobtable td { font-size:14.5px; }" +
-    ".jobtable .sticky-col { position:sticky; left:0; background:inherit; }" +
-    ".chip { display:inline-block; background:#e8eefb; color:#31408a; border-radius:999px;" +
-    " padding:3px 9px; font-size:12.5px; margin:1px 2px 1px 0; font-weight:600; }" +
-    ".chip b { color:#223; }" +
-    // walk-in / comm status colours
-    ".comm-yes { color:#15803d; font-weight:700; }" +
-    ".comm-no { color:#c2410c; font-weight:700; }" +
-    // Unclaimed devices: warm amber row, amber accent bar on the case-id cell,
-    // and a solid amber badge — clearly distinct from the green ready rows.
-    ".unclaimed-row { background:#fff7e0 !important; }" +
-    ".unclaimed-row:hover { background:#fef0c0 !important; }" +
+    ".ptable .daycell { min-width:110px; }" +
+    ".jobtable th, .jobtable td { font-size:.78rem; }" +
+    ".jobtable .sticky-col { position:sticky; left:0; background:#17263a; }" +
+    ".jobtable thead .sticky-col { background:#203852; }" +
+    ".chip { display:inline-block; background:rgba(69,217,245,.12); color:#aee8f7; border-radius:999px;" +
+    " padding:3px 9px; font-size:.68rem; margin:1px 2px 1px 0; font-weight:600; }" +
+    ".chip b { color:#ffffff; }" +
+    // walk-in / comm status colours on the dark tables
+    ".comm-yes { color:var(--achieved); font-weight:700; }" +
+    ".comm-no { color:#fbbf24; font-weight:700; }" +
+    ".comm-pos { color:#12352d; background:#63e6b7 !important; font-weight:700; }" +
+    ".comm-neg { color:#5f2028; background:#ff9da7 !important; font-weight:700; }" +
+    // unclaimed devices: keeps the amber identity, tuned for the dark table
+    ".unclaimed-row td { background:rgba(255,212,119,.10) !important; }" +
+    ".unclaimed-row:hover td { background:rgba(255,212,119,.16) !important; }" +
     ".unclaimed-row .sticky-col { box-shadow:inset 4px 0 0 #eab308; }" +
-    ".badge-unclaimed { display:inline-block; background:#b45309; color:#fff; font-weight:800;" +
-    " font-size:12.5px; padding:3px 10px; border-radius:999px; white-space:nowrap; }" +
-    ".badge-unclaimed.sm { font-size:11px; padding:2px 7px; background:#eab308; color:#451a03; }" +
-    ".card-unclaimed { background:#fff7e0; border-color:#eab308; }" +
-    ".card-unclaimed .value.neg { color:#b45309; }" +
-    ".undated-row { background:#fefce8; }" +
-    // Comm. updated cell: green tint = updated within the window, red = old / none.
-    ".comm-pos { color:#15803d; background:#e6f7ee; font-weight:700; }" +
-    ".comm-neg { color:#b91c1c; background:#fdeaea; font-weight:700; }" +
-    // Walk-in analysis: grouped purpose header + dead-lead figures.
+    ".badge-unclaimed { display:inline-block; background:rgba(255,210,122,.18); color:var(--balance); font-weight:850;" +
+    " font-size:.68rem; padding:3px 10px; border-radius:999px; white-space:nowrap; text-transform:uppercase; }" +
+    ".badge-unclaimed.sm { font-size:.62rem; padding:2px 7px; background:var(--balance); color:#451a03; }" +
+    ".undated-row td { background:rgba(223,178,255,.08); }" +
+    // walk-in analysis stays on the light surface: its date rows are pastel hsl tints
+    ".walkintable { background:rgba(255,255,255,.92); border:1px solid #d5dde6; box-shadow:0 3px 10px rgba(15,23,42,.05); }" +
+    ".walkintable thead th { background:#eef2f9; color:#475569; }" +
+    ".walkintable td { color:#17263a; background:#fbfcfe; border-bottom:1px solid rgba(90,110,145,.22); }" +
     ".walkintable thead th.grp { background:#dfe8f6; text-align:center; }" +
     ".walkintable thead th { text-align:center; }" +
     ".walkintable th:first-child, .walkintable td.daycell { text-align:left; }" +
-    ".walkintable .totrow td { background:#eef2f9; border-top:2px solid #b9c6dd; }" +
-    ".walkintable td.dead { color:#b91c1c; font-weight:700; }" +
-    ".walkintable td.conv { color:#31408a; font-weight:600; }" +
-    ".tokentable .totrow td { background:#eef2f9; border-top:2px solid #b9c6dd; }" +
-    ".age-warn { color:#b45309; font-weight:600; }" +
-    ".age-crit { color:#b91c1c; font-weight:700; }" +
-    ".subnote { background:#fff8e6; border:1px solid #f0d99a; border-radius:10px; padding:9px 12px;" +
-    " font-size:13.5px; color:#7c5c10; margin-bottom:12px; font-weight:500; }" +
-    ".empty-perf { background:#fff; border:1px dashed #cbd5e1; border-radius:12px; padding:22px;" +
-    " text-align:center; font-size:15.5px; color:#33405c; font-weight:500; }" +
-    ".pos { color:#15803d; } .neg { color:#b91c1c; }" +
-        "@media (max-width:640px){ .topbar h1{font-size:19px;} .card .value{font-size:21px;} }"
+    ".walkintable tbody tr:hover td { background:#eef4fb; }" +
+    ".walkintable .totrow td { background:#dfe6f2 !important; border-top:1px solid #b9c6dd; color:#17263a; font-weight:800; }" +
+    ".walkintable td.dead { color:#c2393f; font-weight:700; }" +
+    ".walkintable td.conv { color:#2f5aa8; font-weight:600; }" +
+    ".tokentable .totrow td { background:#263e5b !important; color:#ffffff; font-weight:900; border-top:1px solid var(--line); }" +
+    ".age-warn { color:var(--balance); font-weight:600; }" +
+    ".age-crit { color:var(--danger); font-weight:700; }" +
+    ".subnote { background:rgba(255,210,122,.14); border:1px solid rgba(255,210,122,.45); border-radius:8px; padding:9px 12px;" +
+    " font-size:.78rem; color:#6b5410; margin-bottom:12px; font-weight:500; }" +
+    ".empty-perf { background:rgba(255,255,255,.92); border:1px dashed #cbd5e1; border-radius:9px; padding:22px;" +
+    " text-align:center; font-size:.82rem; color:#64748b; font-weight:500; }" +
+    "@media (max-width:640px){ .brand{font-size:1.1rem;} .card .value{font-size:1rem;} }"
   );
 }
 

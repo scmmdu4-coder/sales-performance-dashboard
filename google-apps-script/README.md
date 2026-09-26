@@ -246,3 +246,28 @@ assert the computed values and rendered HTML (daily-target balance math,
 reversed review tile, 3-value avg tile, approx-to-target line, sensex CSS,
 advance fallback, comm 2-day window, KPI/pivot/token tables, …). Run either
 file with plain `node` — they exit non-zero on failure.
+
+## Design system (latest)
+
+The whole dashboard now uses the **exact look of the previous "script page"**
+the user shared (its HTML/CSS was provided): light grey page gradient
+(`#edf2f7 → #e7edf3`), dark navy cards
+(`linear-gradient(145deg, rgba(23,49,84,.98), rgba(11,25,47,.98))` over
+`rgba(12,29,53,.96)` tables with `#203852` headers), the Inter font stack,
+tabular numbers, and the old palette tokens:
+
+- achieved `#63e6b7` · target `#8fc7ff` · balance `#ffd477` · percent `#dfb2ff`
+- muted `#aebdd0` · white `#f8fbff` · border `#3a5575` · danger `#ff9da7`
+- refresh button `#172b43`; section headings on the light page `#182a40`.
+
+Translating rules applied (no conditions or data touched):
+
+- Date-wise "sensex" cells keep the same condition (day ≥ daily target) but
+  now use the old page's pill palette as full-cell fills: `#63e6b7`/`#12352d`
+  green and `#ff9da7`/`#5f2028` red.
+- Salesperson column tints are subtle translucent versions of the accent
+  colors (blue/amber/mint/purple/salmon) instead of pastel card colors.
+- The walk-in analysis table stays on a **light** surface because its
+  date rows use pastel `hsl(…,94%)` tints; every other table is dark navy.
+- The background photo layer was removed so the page gradient matches the
+  old page exactly.
