@@ -544,10 +544,12 @@ function mkDateParts_(dd, mm, yyyy, minutes) {
 
 /** Find the column index (0-based) whose header matches any of the given regexes. Returns -1 if none. */
 function findColumn_(header, patterns) {
-  for (var c = 0; c < header.length; c++) {
-    var h = str_(header[c]);
-    for (var p = 0; p < patterns.length; p++) {
-      if (patterns[p].test(h)) return c;
+  // Pattern-major: the FIRST pattern is the most specific and wins across
+  // the whole header row, no matter where that column sits. Each field
+  // spec therefore starts with an exact /^CanonicalName$/i pattern.
+  for (var p = 0; p < patterns.length; p++) {
+    for (var c = 0; c < header.length; c++) {
+      if (patterns[p].test(str_(header[c]))) return c;
     }
   }
   return -1;
@@ -1633,41 +1635,41 @@ function computeWalkinAnalysis_(ss) {
  * ========================================================================= */
 
 var SERVICE_SPEC = {
-  caseId: [/case.*id/i, /^case$/i],
-  firstName: [/first.*name/i, /customer.*name/i, /^name$/i],
-  lastName: [/last.*name/i, /surname/i],
-  mobile: [/mobile.*no/i, /^mobile$/i, /phone/i],
-  product: [/product.*desc/i, /^product$/i, /item.*desc/i],
-  caseDate: [/case.*date/i, /job.*creat.*date/i, /creat.*date/i],
-  repairCreatedDate: [/repair.*creat.*date/i, /repair.*date/i],
-  jobAge: [/job.*age/i, /^age$/i, /aging/i],
-  status: [/job.*status$/i, /case.*status$/i, /^status$/i, /^state$/i],
+  caseId: [/^caseid$/i, /case.*id/i, /^case$/i],
+  firstName: [/^firstname$/i, /first.*name/i, /customer.*name/i, /^name$/i],
+  lastName: [/^lastname$/i, /last.*name/i, /surname/i],
+  mobile: [/^mobileno$/i, /mobile.*no/i, /^mobile$/i, /phone/i],
+  product: [/^productdescription$/i, /product.*desc/i, /^product$/i, /item.*desc/i],
+  caseDate: [/^casedate$/i, /case.*date/i, /job.*creat.*date/i, /creat.*date/i],
+  repairCreatedDate: [/^repaircreateddate$/i, /repair.*creat.*date/i, /repair.*date/i],
+  jobAge: [/^jobage$/i, /job.*age/i, /^age$/i, /aging/i],
+  status: [/^jobstatus$/i, /job.*status$/i, /case.*status$/i, /^status$/i, /^state$/i],
   // Fallback only: if there is no advance sheet at all, an AvailableBalance
   // column directly on the service sheet is used instead.
-  advanceDirect: [/available.*balance/i],
-  deliveredDate: [/deliver.*date/i, /closed.*date/i, /collect.*date/i],
+  advanceDirect: [/^availablebalance$/i, /available.*balance/i],
+  deliveredDate: [/^delivereddate$/i, /deliver.*date/i, /closed.*date/i, /collect.*date/i],
   // Two extra repair-status columns: GSX's own status and the CRM repair status.
-  gsxStatus: [/gsx.*repair.*status/i, /gsx.*status/i, /^gsx/i],
-  crmRepairStatus: [/crm.*job.*status/i, /crm.*repair.*status/i, /^crm_?job/i, /job.*status.*desc/i, /part.*used.*desc/i, /part.*used/i],
+  gsxStatus: [/^gsxrepairstatusdescription$/i, /^gsxrepairstatus/i, /gsx.*repair.*status/i, /gsx.*status/i, /^gsx/i],
+  crmRepairStatus: [/^crm_jobstatusdesc$/i, /crm.*job.*status/i, /crm.*repair.*status/i, /^crm_?job/i, /job.*status.*desc/i, /part.*used.*desc/i, /part.*used/i],
   // Warranty classification per case — service!GSXWarrantyStatusDesc.
-  warranty: [/gsx.*warranty.*status.*desc/i, /gsx.*warranty/i, /warranty.*status/i, /warranty/i],
+  warranty: [/^gsxwarrantystatusdesc$/i, /gsx.*warranty.*status.*desc/i, /gsx.*warranty/i, /warranty.*status/i, /warranty/i],
   // Repair-type classification — service!RepairDocType (also drives the
   // repair analytics on the Performance page).
-  repairDocType: [/repair.*doc.*type/i, /repair.*type/i, /doc.*type/i],
+  repairDocType: [/^repairdoctype$/i, /repair.*doc.*type/i, /repair.*type/i, /doc.*type/i],
   // Ready-for-pickup date — service!Ready_For_Pickup_Date_CRM (average
   // days from CaseDate to pickup-ready on the Performance page).
-  readyPickup: [/ready.*for.*pickup/i, /ready.*pickup/i, /pickup.*date/i],
+  readyPickup: [/^ready_for_pickup_date_crm$/i, /ready.*for.*pickup/i, /ready.*pickup/i, /pickup.*date/i],
 };
 
 var ADVANCE_SPEC = {
-  mobile: [/mobile.*no/i, /^mobile$/i, /phone/i, /contact/i],
-  availableBalance: [/available.*balance/i, /^balance$/i, /advance.*amount/i, /^advance$/i],
-  caseId: [/case.*id/i],
+  mobile: [/^mobileno$/i, /mobile.*no/i, /^mobile$/i, /phone/i, /contact/i],
+  availableBalance: [/^availablebalance$/i, /available.*balance/i, /^balance$/i, /advance.*amount/i, /^advance$/i],
+  caseId: [/^caseid$/i, /case.*id/i],
 };
 
 var COMM_SPEC = {
-  caseId: [/case.*id/i, /^case$/i],
-  createdDate: [/creat.*date/i, /^date$/i, /comm.*date/i],
+  caseId: [/^caseid$/i, /case.*id/i, /^case$/i],
+  createdDate: [/^createddate$/i, /creat.*date/i, /^date$/i, /comm.*date/i],
   remark: [/remark/i, /message/i, /note/i, /comment/i],
 };
 
@@ -1840,8 +1842,20 @@ function computeJobManagement_(ss) {
     };
   });
 
+  // Which physical header each displayed column resolved to. Surfaced on
+  // the page so a mis-mapped/unspelled column is visible at a glance.
+  var sources = {};
+  ["caseId", "mobile", "product", "warranty", "repairDocType", "gsxStatus",
+   "crmRepairStatus", "caseDate", "repairCreatedDate", "jobAge",
+   "advanceDirect", "status", "deliveredDate", "readyPickup"]
+    .forEach(function (f) {
+      sources[f] = (read.col && read.col[f] !== undefined && read.col[f] !== -1)
+        ? str_(read.header[read.col[f]]) : "";
+    });
+
   return {
     available: true, sheetName: serviceSheet.getName(), serviceRows: serviceRows,
+    sources: sources,
     hasStatus: hasStatus,
     hasAdvance: !!advanceSheet, hasComm: !!commSheet,
     advanceViaColumn: !advanceSheet && advanceDirectCol !== -1,
@@ -2806,7 +2820,21 @@ function renderJobManagement_(jm) {
     "<th>Job age</th><th>Advance paid</th><th>Communicated</th><th>Comm. updated</th>" +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>";
 
-  return head + table;
+  // Resolved column mapping — printed under the section so the user can
+  // verify each displayed column against their sheet headers at a glance.
+  function srcLine(pair) {
+    var h = jm.sources ? str_(jm.sources[pair[1]]) : "";
+    return esc_(pair[0]) + " ← " + (h ? "<b>" + esc_(h) + "</b>" : '<span class="map-missing">not found</span>');
+  }
+  var mapLine = '<div class="map-line">' + [
+    ["Case ID","caseId"],["Mobile","mobile"],["Product","product"],
+    ["Warranty Type","warranty"],["Repair Type","repairDocType"],
+    ["GSX repair status","gsxStatus"],["CRM repair status","crmRepairStatus"],
+    ["Job created","caseDate"],["Repair created","repairCreatedDate"],
+    ["Job age","jobAge"],["Advance paid","advanceDirect"],["Open filter","status"]]
+    .map(srcLine).join(" · ") + "</div>";
+
+  return head + mapLine + table;
 }
 
 /** Whole performance tab content (walk-in analysis + token creation + job management). */
@@ -3104,6 +3132,9 @@ function getDashboardCss_() {
     " font-size:.78rem; color:#6b5410; margin-bottom:12px; font-weight:500; }" +
     ".empty-perf { background:rgba(255,255,255,.92); border:1px dashed #cbd5e1; border-radius:9px; padding:22px;" +
     " text-align:center; font-size:.82rem; color:#64748b; font-weight:500; }" +
+    ".map-line { font-size:.68rem; color:#64748b; margin:0 0 10px; font-weight:500; line-height:1.6; }" +
+    ".map-line b { color:#17263a; font-weight:750; }" +
+    ".map-missing { color:#c2393f; font-weight:800; }" +
     "@media (max-width:640px){ .brand{font-size:1.1rem;} .card .value{font-size:1rem;} }"
   );
 }

@@ -323,3 +323,21 @@ Translating rules applied (no conditions or data touched):
     Ready_For_Pickup_Date_CRM** for both windows;
   - a **date × repair-type pivot** for the current month (newest first,
     totals row).
+
+### Job Management — mapping guarantees
+
+- Column resolution is now **pattern-major with exact-name tiers**: every
+  service/advance/comm field starts with an exact `/^CanonicalName$/i`
+  pattern (`CaseId`, `MobileNo`, `JobStatus`, `GSXRepairStatusDescription`,
+  `CRM_JobStatusDesc`, `GSXWarrantyStatusDesc`, `RepairDocType`,
+  `Ready_For_Pickup_Date_CRM`, `AvailableBalance`, `CreatedDate`, …), so the
+  canonical headers always win even if the sheet carries extra similarly
+  named columns or reorders them. Looser fallbacks remain for custom sheets.
+- The Job Management section prints a small **mapping line**
+  (`Case ID ← CaseId · Mobile ← MobileNo · …`) resolved from the live sheet
+  headers — any column that could not be found shows as red `not found`
+  instead of silently rendering dashes.
+- Comm. updated rule restated: green when the latest `comm!CreatedDate` for
+  the case is within 48 h (COMM_STALE_DAYS = 2) of now, red otherwise or
+  when missing. Only `JobStatus` containing "open" is listed, on unique
+  `service!CaseId` rows.

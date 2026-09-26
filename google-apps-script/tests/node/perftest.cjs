@@ -136,6 +136,28 @@ check("C1006 fallback age ~20d", (function(){var c=j.jobs.find(function(o){retur
 check("unclaimed 2",j.totals.unclaimed===2);
 check("advance via advance-sheet total 2049",j.totals.advanceTotal===2049,j.totals.advanceTotal);
 
+// ---- exact mapping spec, letter by letter ----
+check("map Case ID <- CaseId",j.sources.caseId==="CaseId",j.sources.caseId);
+check("map Mobile <- MobileNo",j.sources.mobile==="MobileNo",j.sources.mobile);
+check("map GSX <- GSXRepairStatusDescription",j.sources.gsxStatus==="GSXRepairStatusDescription",j.sources.gsxStatus);
+check("map CRM <- CRM_JobStatusDesc",j.sources.crmRepairStatus==="CRM_JobStatusDesc",j.sources.crmRepairStatus);
+check("map Warranty <- GSXWarrantyStatusDesc",j.sources.warranty==="GSXWarrantyStatusDesc",j.sources.warranty);
+check("map RepairType <- RepairDocType",j.sources.repairDocType==="RepairDocType",j.sources.repairDocType);
+check("map Open filter <- Status",j.sources.status==="Status",j.sources.status);
+var c1001=j.jobs.find(function(o){return o.caseId==="C1001";});
+check("C1001 gsx value",c1001.gsxStatus==="Repair Complete",c1001.gsxStatus);
+check("C1001 crm value",c1001.crmRepairStatus==="Original Display Used",c1001.crmRepairStatus);
+check("C1001 warranty value",c1001.warranty==="In Warranty",c1001.warranty);
+check("C1001 repair type value",c1001.repairType==="Walk-In Repair",c1001.repairType);
+check("C1001 advance 500+200 by mobile",c1001.advance===700,c1001.advance);
+check("C1001 mobile",c1001.mobile==="919876543210",c1001.mobile);
+check("C1001 communicated yes",c1001.communicated===true);
+check("C1001 comm fresh (1d) green",c1001.staleComm===false);
+var c1002=j.jobs.find(function(o){return o.caseId==="C1002";});
+check("C1002 comm 4d red",c1002.staleComm===true);
+check("C1004 advance 350",j.jobs.find(function(o){return o.caseId==="C1004";}).advance===350);
+check("mapping line on page",true); // replaced below on HTML section
+
 console.log("== HTML ==");
 var page=buildDashboardPage_(biz);
 check("KPI heeft Approx Value header",page.indexOf("Approx Achievable Value")>-1);
@@ -177,6 +199,7 @@ check("walkin hsl tint",page.indexOf("background:hsl(")>-1);
 check("token table",page.indexOf("% of creation")>-1&&page.indexOf("Total tokens generated")>-1);
 check("ready col gone",page.indexOf("Ready for pickup")===-1);
 check("comm pos/neg present",page.indexOf("comm-pos")>-1&&page.indexOf("comm-neg")>-1);
+check("mapping line on page",page.indexOf('class="map-line"')>-1&&page.indexOf("Mobile ← <b>MobileNo</b>")>-1);
 check("business sections intact",page.indexOf("Invoice Valuation")>-1&&page.indexOf("Date-wise")>-1);
 
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
