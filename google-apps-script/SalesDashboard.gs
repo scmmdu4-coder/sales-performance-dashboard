@@ -1625,6 +1625,9 @@ var SERVICE_SPEC = {
   repairCreatedDate: [/repair.*creat.*date/i, /repair.*date/i],
   jobAge: [/job.*age/i, /^age$/i, /aging/i],
   status: [/job.*status$/i, /case.*status$/i, /^status$/i, /^state$/i],
+  // Fallback only: if there is no advance sheet at all, an AvailableBalance
+  // column directly on the service sheet is used instead.
+  advanceDirect: [/available.*balance/i],
   deliveredDate: [/deliver.*date/i, /closed.*date/i, /collect.*date/i],
   // Two extra repair-status columns: GSX's own status and the CRM repair status.
   gsxStatus: [/gsx.*repair.*status/i, /gsx.*status/i, /^gsx/i],
@@ -1658,6 +1661,8 @@ function computeJobManagement_(ss) {
   // ---- advance balances, keyed by mobile ----
   var advanceByMobile = {};
   var advanceSheet = getSheetByNames_(ss, CONFIG.ADVANCE_SHEET_NAMES);
+  var advanceDirectCol = read.col.advanceDirect === undefined ? -1 : read.col.advanceDirect;
+  var advanceByMobileCount = 0;
   if (advanceSheet) {
     var adv = readSheetRows_(advanceSheet, ADVANCE_SPEC, []);
     adv.rows.forEach(function (a) {
@@ -1667,6 +1672,7 @@ function computeJobManagement_(ss) {
       advanceByMobile[key] = (advanceByMobile[key] || 0) + num_(a.availableBalance);
     });
   }
+  advanceByMobileCount = Object.keys(advanceByMobile).length;
 
   // ---- latest communication date, keyed by case id ----
   var commByCase = {};
@@ -1716,6 +1722,9 @@ function computeJobManagement_(ss) {
     var mobile = str_(r.mobile);
     var advance = advanceByMobile[mobileKey_(mobile)] || 0;
     var comm = commByCase[caseId] || null;
+    if (!advanceByMobileCount && advanceDirectCol !== -1) {
+      advance = num_(r.advanceDirect);        // service!AvailableBalance fallback
+    }
 
     // GSX and CRM repair statuses; "Unclaimed Device" in either triggers the
     // special highlight.
@@ -1772,6 +1781,7 @@ function computeJobManagement_(ss) {
     available: true, sheetName: serviceSheet.getName(),
     hasStatus: hasStatus,
     hasAdvance: !!advanceSheet, hasComm: !!commSheet,
+    advanceViaColumn: !advanceSheet && advanceDirectCol !== -1,
     advanceSheetName: advanceSheet ? advanceSheet.getName() : null,
     commSheetName: commSheet ? commSheet.getName() : null,
     jobs: jobs, totals: totals,
@@ -2448,8 +2458,8 @@ function renderJobManagement_(jm) {
     card("Advance Paid", money_(t.advanceTotal), t.withAdvance + " job(s) carry an advance") +
     "</div>";
 
-  if (!jm.hasAdvance) {
-    head += '<div class="subnote">No advance sheet found — the “Advance Paid” column is showing ₹0 for every job.</div>';
+  if (!jm.hasAdvance && !jm.advanceViaColumn) {
+    head += '<div class="subnote">No advance sheet found (and no service!AvailableBalance column) — the “Advance Paid” column is showing ₹0 for every job.</div>';
   }
   if (!jm.hasComm) {
     head += '<div class="subnote">No comm sheet found — “Communicated” is No for every job.</div>';
