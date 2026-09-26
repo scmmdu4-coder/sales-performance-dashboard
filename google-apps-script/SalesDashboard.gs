@@ -336,7 +336,19 @@ function loadDashboardData_() {
 
   var allRows = parseCrmRows(crmValues);
   var target = parseTargetSheet(targetValues);
-  return { ss: ss, data: computeDashboard(allRows, target) };
+  var result = { ss: ss, data: computeDashboard(allRows, target) };
+
+  // Average revenue per unique walk-in — the walkin sheet is optional, so a
+  // missing tab simply leaves this metric blank instead of failing the page.
+  try {
+    var wi = countWalkins_(ss);
+    if (wi.unique > 0) {
+      result.data.store.uniqueWalkins = wi.unique;
+      result.data.store.avgPerWalkin = Math.round(result.data.store.total.achieved / wi.unique);
+    }
+  } catch (e) { /* walk-in stats are best-effort */ }
+
+  return result;
 }
 
 /** MODE A: writes/refreshes the "Dashboard" tab inside the spreadsheet. */
@@ -813,6 +825,7 @@ function parseTargetSheet(rows) {
     var typeCell = at(11, kc);          // row 12 — revenue type
     var nameCell = at(12, kc);          // row 13 — KPI name
     var targetCell = at(13, kc);        // row 14 — target count
+    var approxCell = at(14, kc);        // row 15 — approximate unit value of this KPI
     if (typeCell) lastCategory = typeCell;   // merged cells only fill the first column
     var code = kpiCodeFor_(nameCell);
     if (!code) continue;
@@ -822,7 +835,7 @@ function parseTargetSheet(rows) {
       label: str_(nameCell) || code,
       target: parseMoney_(targetCell),
       value: 0,
-      approxAmount: 0,
+      approxAmount: parseMoney_(approxCell),
     });
   }
 
@@ -1460,13 +1473,21 @@ var WALKIN_SPEC = {
   createdBy: [/token.*creat.*by/i, /creat.*by/i, /token.*user/i, /user.*id/i, /^user.*name$/i, /staff/i, /employee/i],
 };
 
-/** Maps a free-text visit purpose to one of the three fixed buckets. */
-function walkinPurposeBucket_(purpose) {
-  var l = (purpose || "").toLowerCase();
-  if (/collect/.test(l)) return "collection";
-  if (/enqu|enquiry|sales|general/.test(l)) return "enquiry";
-  if (/repair/.test(l)) return "repair";
-  return "other";
+/**
+ * Counts walk-ins from the walkin sheet: total rows and UNIQUE visitors
+ * (distinct mobile numbers — the sheet's walk-in identity column, which is
+ * located by header name so it works wherever the column sits, e.g. column G).
+ */
+function countWalkins_(ss) {
+  var sheet = getSheetByNames_(ss, CONFIG.WALKIN_SHEET_NAMES);
+  if (!sheet) return { rows: 0, unique: 0 };
+  var read = readSheetRows_(sheet, { mobile: WALKIN_SPEC.mobile }, []);
+  var seen = {};
+  read.rows.forEach(function (r) {
+    var k = mobileKey_(r.mobile);
+    if (k) seen[k] = true;
+  });
+  return { rows: read.rows.length, unique: Object.keys(seen).length };
 }
 
 function computeWalkinAnalysis_(ss) {
@@ -1481,9 +1502,9 @@ function computeWalkinAnalysis_(ss) {
   var hasCreator = read.col && read.col.createdBy !== -1;
 
   var dayMap = {};
+  var purposeTotals = {};
   var creatorTotals = {};
-  var totals = { walkins: 0, cases: 0, invoices: 0, remarks: 0, deadLeads: 0,
-    collection: 0, enquiry: 0, repair: 0, other: 0 };
+  var totals = { walkins: 0, cases: 0, invoices: 0, remarks: 0, deadLeads: 0 };
 
   rows.forEach(function (r) {
     var d = parseAnyDate_(r.tokenDate);
@@ -1494,7 +1515,7 @@ function computeWalkinAnalysis_(ss) {
         sortKey: d.valid ? d.year * 10000 + d.month * 100 + d.day : -1,
         weekday: d.valid ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(d.year, d.month - 1, d.day).getDay()] : "",
         walkins: 0, cases: 0, invoices: 0, remarks: 0, deadLeads: 0,
-        collection: 0, enquiry: 0, repair: 0, other: 0, creators: {},
+        purposes: {}, creators: {},
       };
     }
     var bucket = dayMap[key];
@@ -1516,10 +1537,10 @@ function computeWalkinAnalysis_(ss) {
       bucket.deadLeads += 1; totals.deadLeads += 1;
     }
 
-    // Visit purpose into the fixed buckets (Collection / Enquiry / Repair / Other).
-    var pb = walkinPurposeBucket_(str_(r.visitPurpose));
-    bucket[pb] += 1;
-    totals[pb] += 1;
+    // Visit purpose kept EXACTLY as written in the sheet — the pivot columns.
+    var purpose = str_(r.visitPurpose) || "Not specified";
+    bucket.purposes[purpose] = (bucket.purposes[purpose] || 0) + 1;
+    purposeTotals[purpose] = (purposeTotals[purpose] || 0) + 1;
 
     if (hasCreator) {
       var by = str_(r.createdBy) || "Unassigned";
@@ -1547,15 +1568,41 @@ function computeWalkinAnalysis_(ss) {
     return c;
   });
 
+  // Pivot columns: purposes ordered by volume; beyond 8 they merge into "Others".
+  var PURP_COLS_MAX = 8;
+  var purposeCols = toSortedList(purposeTotals).map(function (x) { return x.name; });
+  var mergedCol = null;
+  if (purposeCols.length > PURP_COLS_MAX) {
+    mergedCol = "Others";
+    var kept = purposeCols.slice(0, PURP_COLS_MAX);
+    purposeCols = kept.concat([mergedCol]);
+    days.forEach(function (d) {
+      var merged = 0;
+      Object.keys(d.purposes).forEach(function (name) {
+        if (kept.indexOf(name) === -1) {
+          merged += d.purposes[name];
+          delete d.purposes[name];
+        }
+      });
+      if (merged) d.purposes[mergedCol] = merged;
+    });
+  }
+  // Per-column totals for the footer.
+  var purposeColTotals = purposeCols.map(function (name) {
+    var sum = 0;
+    days.forEach(function (d) { sum += d.purposes[name] || 0; });
+    return sum;
+  });
+
   return {
     available: true, sheetName: sheet.getName(), hasCreator: hasCreator,
     days: days,
+    purposeCols: purposeCols,
+    purposeColTotals: purposeColTotals,
     creators: creators,
     totals: {
       walkins: totals.walkins, cases: totals.cases, invoices: totals.invoices,
       remarks: totals.remarks, deadLeads: totals.deadLeads,
-      collection: totals.collection, enquiry: totals.enquiry,
-      repair: totals.repair, other: totals.other,
       caseRate: pct_(totals.cases, totals.walkins),
       invoiceRate: pct_(totals.invoices, totals.walkins),
       deadRate: pct_(totals.deadLeads, totals.walkins),
@@ -1576,9 +1623,8 @@ var SERVICE_SPEC = {
   product: [/product.*desc/i, /^product$/i, /item.*desc/i],
   caseDate: [/case.*date/i, /job.*creat.*date/i, /creat.*date/i],
   repairCreatedDate: [/repair.*creat.*date/i, /repair.*date/i],
-  readyForPickup: [/ready.*pickup/i, /ready.*for.*collect/i],
   jobAge: [/job.*age/i, /^age$/i, /aging/i],
-  status: [/job.*status/i, /case.*status/i, /^status$/i, /state/i],
+  status: [/job.*status$/i, /case.*status$/i, /^status$/i, /^state$/i],
   deliveredDate: [/deliver.*date/i, /closed.*date/i, /collect.*date/i],
   // Two extra repair-status columns: GSX's own status and the CRM repair status.
   gsxStatus: [/gsx.*repair.*status/i, /gsx.*status/i, /^gsx/i],
@@ -1597,16 +1643,6 @@ var COMM_SPEC = {
   remark: [/remark/i, /message/i, /note/i, /comment/i],
 };
 
-/** True when a status string means the job is finished. */
-function isClosedStatus_(status) {
-  var l = str_(status).toLowerCase();
-  if (!l) return false;
-  for (var i = 0; i < CONFIG.JOB_CLOSED_KEYWORDS.length; i++) {
-    if (l.indexOf(CONFIG.JOB_CLOSED_KEYWORDS[i]) > -1) return true;
-  }
-  return false;
-}
-
 function computeJobManagement_(ss) {
   var serviceSheet = getSheetByNames_(ss, CONFIG.SERVICE_SHEET_NAMES);
   if (!serviceSheet) {
@@ -1614,7 +1650,7 @@ function computeJobManagement_(ss) {
   }
 
   var read = readSheetRows_(serviceSheet, SERVICE_SPEC,
-    ["caseDate", "repairCreatedDate", "readyForPickup", "deliveredDate"]);
+    ["caseDate", "repairCreatedDate", "deliveredDate"]);
   // The generic job-status regexes would also match CRM_JobStatusDesc — never
   // let the same column drive both fields; the dedicated CRM column wins.
   var hasStatus = read.col && read.col.status !== -1 && read.col.status !== read.col.crmRepairStatus;
@@ -1663,12 +1699,13 @@ function computeJobManagement_(ss) {
     seen[caseId] = true;
 
     var delivered = parseAnyDate_(r.deliveredDate);
-    var isClosed = hasStatus ? isClosedStatus_(r.status) : delivered.valid;
-    if (isClosed) { closedCount++; return; }       // OPEN jobs only
+    // Only jobs whose JobStatus is "open" are listed. When there is no status
+    // column, anything without a delivered date counts as open.
+    var isOpen = hasStatus ? /open/i.test(str_(r.status)) : !delivered.valid;
+    if (!isOpen) { closedCount++; return; }       // OPEN jobs only
 
     var created = parseAnyDate_(r.caseDate);
     var repair = parseAnyDate_(r.repairCreatedDate);
-    var ready = parseAnyDate_(r.readyForPickup);
 
     // Prefer the sheet's own JobAge; fall back to days since the case date.
     var age = num_(r.jobAge);
@@ -1699,8 +1736,6 @@ function computeJobManagement_(ss) {
       createdDate: created.valid ? created.dayKey : "—",
       createdTs: created.valid ? created.ts : 0,
       repairDate: repair.valid ? repair.dayKey : "—",
-      readyDate: ready.valid ? ready.dayKey : "—",
-      isReady: ready.valid,
       jobAge: age,
       advance: advance,
       communicated: !!comm,
@@ -1722,7 +1757,6 @@ function computeJobManagement_(ss) {
   var totals = {
     openJobs: jobs.length,
     closedExcluded: closedCount,
-    readyForPickup: jobs.filter(function (j) { return j.isReady; }).length,
     communicated: jobs.filter(function (j) { return j.communicated; }).length,
     notCommunicated: jobs.filter(function (j) { return !j.communicated; }).length,
     advanceTotal: jobs.reduce(function (a, j) { return a + j.advance; }, 0),
@@ -2300,7 +2334,12 @@ function renderWalkinAnalysis_(wl) {
 
   function c0(n) { return n ? ('<td class="num">' + n + "</td>") : '<td class="num muted">—</td>'; }
 
-  var rows = wl.days.map(function (d) {
+  // Each DATE ROW gets its own soft hue so neighbouring dates are easy to tell
+  // apart (pivot-style shading). Hue steps keep consecutive dates distinct.
+  var rows = wl.days.map(function (d, i) {
+    var hue = (i * 47) % 360;
+    var tint = "hsl(" + hue + ",72%,94%)";
+    var cells = wl.purposeCols.map(function (name) { return c0(d.purposes[name] || 0); }).join("");
     var dead = d.deadLeads
       ? '<td class="num dead">' + d.deadLeads + "</td>"
       : '<td class="num muted">—</td>';
@@ -2310,11 +2349,11 @@ function renderWalkinAnalysis_(wl) {
     var remark = d.remarks
       ? '<td class="num">' + d.remarks + "</td>"
       : '<td class="num muted">—</td>';
-    return "<tr" + (d.undated ? ' class="undated-row"' : "") + ">" +
+    return '<tr style="background:' + tint + '"' + (d.undated ? ' class="undated-row"' : "") + ">" +
       '<td class="daycell"><b>' + esc_(d.undated ? "No date" : d.dateKey) + "</b>" +
         (d.weekday ? ' <span class="muted">' + d.weekday + "</span>" : "") + "</td>" +
       '<td class="num"><b>' + d.walkins + "</b></td>" +
-      c0(d.collection) + c0(d.enquiry) + c0(d.repair) + c0(d.other) +
+      cells +
       '<td class="num">' + d.cases + "</td>" +
       '<td class="num conv">' + d.caseRate + "%</td>" +
       '<td class="num">' + d.invoices + "</td>" +
@@ -2325,15 +2364,14 @@ function renderWalkinAnalysis_(wl) {
       "</tr>";
   }).join("");
 
-  // totals footer
+  var purposeFoot = wl.purposeColTotals.map(function (n) {
+    return n ? ('<td class="num">' + n + "</td>") : '<td class="num">—</td>';
+  }).join("");
   var foot =
     '<tr class="totrow">' +
     "<td><b>Total</b></td>" +
     '<td class="num"><b>' + t.walkins + "</b></td>" +
-    '<td class="num">' + (t.collection || "—") + "</td>" +
-    '<td class="num">' + (t.enquiry || "—") + "</td>" +
-    '<td class="num">' + (t.repair || "—") + "</td>" +
-    '<td class="num">' + (t.other || "—") + "</td>" +
+    purposeFoot +
     '<td class="num">' + t.cases + "</td>" +
     '<td class="num">' + t.caseRate + "%</td>" +
     '<td class="num">' + t.invoices + "</td>" +
@@ -2343,15 +2381,16 @@ function renderWalkinAnalysis_(wl) {
     '<td class="num dead">' + t.deadRate + "%</td>" +
     "</tr>";
 
+  var purpHeads = wl.purposeCols.map(function (name) { return "<th>" + esc_(name) + "</th>"; }).join("");
   var table =
     '<div class="scroll-x"><table class="ptable walkintable">' +
     "<thead>" +
     '<tr><th rowspan="2">Date</th><th rowspan="2">Walk-ins</th>' +
-    '<th colspan="4" class="grp">Visit purpose</th>' +
+    '<th colspan="' + wl.purposeCols.length + '" class="grp">Visit purpose</th>' +
     '<th rowspan="2">Cases</th><th rowspan="2">Case conv.</th>' +
     '<th rowspan="2">Invoices</th><th rowspan="2">Invoice conv.</th>' +
     '<th rowspan="2">Remark</th><th rowspan="2">Dead leads</th><th rowspan="2">Dead leads %</th></tr>' +
-    '<tr><th>Collection</th><th>General/Sales Enquiry</th><th>Repair Submission</th><th>Other</th></tr>' +
+    "<tr>" + purpHeads + "</tr>" +
     "</thead><tbody>" + rows + foot + "</tbody></table></div>";
 
   return head + table;
@@ -2361,25 +2400,25 @@ function renderTokenCreation_(wl) {
   if (!wl.available) return "";
   if (!wl.hasCreator) {
     return '<div class="subnote">No “created by / token user” column was detected in the ' +
-      "<b>" + esc_(wl.sheetName) + "</b> sheet, so token creation by person can’t be split yet. " +
-      "Add a column such as <b>TokenCreatedBy</b> (or UserName / Staff) and it will appear automatically here.</div>";
+      "<b>" + esc_(wl.sheetName) + "</b> sheet, so token creation by user ID can’t be split yet. " +
+      "Add a column such as <b>TokenCreatedBy</b> (or UserId / UserName / Staff) and it will appear automatically here.</div>";
   }
   var t = wl.totals;
-  var max = wl.creators.length ? wl.creators[0].count : 1;
   var rows = wl.creators.map(function (c) {
-    var w = Math.round(100 * c.count / max);
-    return '<div class="creat-row">' +
-      '<div class="creat-name">' + esc_(c.name) +
-        ' <span class="muted">generated</span> <b>' + c.count + "</b>" +
-        ' <span class="muted">token' + (c.count === 1 ? "" : "s") + "</span></div>" +
-      '<div class="creat-bar"><div class="creat-fill" style="width:' + w + '%"></div></div>' +
-      '<div class="creat-share">' + c.share + "%</div>" +
-      "</div>";
+    return "<tr>" +
+      "<td><b>" + esc_(c.name) + "</b></td>" +
+      '<td class="num">' + c.count + "</td>" +
+      '<td class="num">' + c.share + "%</td>" +
+      "</tr>";
   }).join("");
+  var foot =
+    '<tr class="totrow"><td><b>Total tokens generated</b></td>' +
+    '<td class="num"><b>' + t.walkins + "</b></td>" +
+    '<td class="num"><b>100%</b></td></tr>';
   return (
-    '<div class="creat-total">🥇 <b>Total tokens generated: ' + t.walkins + "</b> — " +
-      "split by user ID below, with each user’s share of the total.</div>" +
-    rows
+    '<div class="scroll-x"><table class="ptable tokentable">' +
+    "<thead><tr><th>Token created by</th><th>Total tokens created</th><th>% of creation</th></tr></thead>" +
+    "<tbody>" + rows + foot + "</tbody></table></div>"
   );
 }
 
@@ -2396,8 +2435,7 @@ function renderJobManagement_(jm) {
   }
   var head =
     '<div class="cards">' +
-    card("Open Jobs", t.openJobs, t.closedExcluded + " closed excluded") +
-    card("Ready for Pickup", t.readyForPickup, "awaiting customer collection") +
+    card("Open Jobs", t.openJobs, t.closedExcluded + " excluded (status not open)") +
     (t.unclaimed > 0
       ? '<div class="card card-unclaimed"><div class="label">⚠ Unclaimed Devices</div>' +
         '<div class="value neg">' + t.unclaimed + '</div>' +
@@ -2439,18 +2477,17 @@ function renderJobManagement_(jm) {
     var comm = j.communicated
       ? '<span class="comm-yes">Yes</span>'
       : '<span class="comm-no">No</span>';
-    // Comm-date cell: "Not updated" when nothing is on record; red + ⚠ when the
-    // last update is stale (COMM_STALE_DAYS or older).
+    // Comm. updated cell: green when the latest update is within
+    // COMM_STALE_DAYS days of today, red when older or not on record at all.
     var commDate;
     if (!j.communicated) {
-      commDate = '<td class="comm-no">Not updated</td>';
+      commDate = '<td class="comm-neg">Not updated</td>';
+    } else if (j.staleComm) {
+      commDate = '<td class="comm-neg">' + esc_(j.commDate) + " ⚠</td>";
     } else {
-      commDate = j.staleComm
-        ? '<td class="stale-text">' + esc_(j.commDate) + " ⚠</td>"
-        : "<td>" + esc_(j.commDate) + "</td>";
+      commDate = '<td class="comm-pos">' + esc_(j.commDate) + " ✓</td>";
     }
-    // Row priority: unclaimed (amber) > stale communication (red) > ready (green).
-    var rowCls = j.isUnclaimed ? "unclaimed-row" : (j.staleComm ? "stale-row" : (j.isReady ? "ready-row" : ""));
+    var rowCls = j.isUnclaimed ? "unclaimed-row" : "";
     return "<tr" + (rowCls ? ' class="' + rowCls + '"' : "") + ">" +
       '<td class="sticky-col"><b>' + esc_(j.caseId) + "</b>" +
         (j.isUnclaimed ? ' <span class="badge-unclaimed sm">⚠ Unclaimed</span>' : "") + "</td>" +
@@ -2461,7 +2498,6 @@ function renderJobManagement_(jm) {
       repairStatusCell(j.crmRepairStatus) +
       "<td>" + esc_(j.createdDate) + "</td>" +
       "<td>" + esc_(j.repairDate) + "</td>" +
-      (j.isReady ? '<td class="comm-yes"><b>' + esc_(j.readyDate) + "</b></td>" : "<td>" + esc_(j.readyDate) + "</td>") +
       ageCell(j.jobAge) +
       '<td class="num">' + money_(j.advance) + "</td>" +
       "<td>" + comm + "</td>" +
@@ -2474,7 +2510,7 @@ function renderJobManagement_(jm) {
     '<thead><tr>' +
     "<th>Case ID</th><th>Customer</th><th>Mobile</th><th>Product</th>" +
     "<th>GSX repair status</th><th>CRM repair status</th>" +
-    "<th>Job created</th><th>Repair created</th><th>Ready for pickup</th>" +
+    "<th>Job created</th><th>Repair created</th>" +
     "<th>Job age</th><th>Advance paid</th><th>Communicated</th><th>Comm. updated</th>" +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>";
 
@@ -2500,7 +2536,7 @@ function renderPerformanceHtml_(pd) {
   var secJobs =
     '<section class="sec"><div class="sec-head">' +
     '<h2>🔧 Job Management — Open Jobs</h2>' +
-    '<p class="sec-sub">source: ' + esc_(jm.sheetName) + '. Open jobs only — rows whose status (or a delivered-date) says they are closed are excluded. Advance is matched on the customer mobile; communication on the case id (latest shown, “Not updated” when none). Jobs last updated ' + CONFIG.COMM_STALE_DAYS + '+ days ago — or never — are highlighted red; those whose GSX or CRM repair status reads “Unclaimed Device” are highlighted amber.</p>' +
+    '<p class="sec-sub">source: ' + esc_(jm.sheetName) + '. Only cases whose <b>JobStatus is “open”</b> are listed. Advance is matched on the customer mobile with the advance sheet. Communicated = Yes when a comm record matches the case id — the latest update shows <span style="color:#15803d;font-weight:700">green</span> when within ' + CONFIG.COMM_STALE_DAYS + ' days of today, <span style="color:#b91c1c;font-weight:700">red</span> when older or “Not updated”. “Unclaimed Device” rows are highlighted amber.</p>' +
     "</div>" + renderJobManagement_(jm) + "</section>";
 
   return secWalkin + secToken + secJobs;
@@ -2524,13 +2560,13 @@ function getDashboardCss_() {
     " position:sticky; top:0; z-index:20; }" +
     ".topbar-inner { max-width:1320px; margin:0 auto; display:flex; align-items:center;" +
     " justify-content:space-between; gap:16px; flex-wrap:wrap; }" +
-    ".topbar h1 { margin:0 0 4px; font-size:21px; }" +
-    ".topbar .meta { font-size:12px; opacity:.82; }" +
-    ".topbar .note { font-size:11.5px; margin-top:3px; min-height:14px; }" +
+    ".topbar h1 { margin:0 0 4px; font-size:23px; }" +
+    ".topbar .meta { font-size:13.5px; opacity:.85; font-weight:500; }" +
+    ".topbar .note { font-size:12.5px; margin-top:3px; min-height:15px; }" +
     ".topbar .note.ok { color:#8ef0b4; }" +
     ".topbar .note.err { color:#ffb4b4; }" +
     ".refresh-btn { background:#4f7cff; color:#fff; border:none; border-radius:8px; padding:10px 18px;" +
-    " font-size:13px; font-weight:700; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,.25);" +
+    " font-size:14.5px; font-weight:800; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,.25);" +
     " display:inline-flex; align-items:center; gap:8px; white-space:nowrap; }" +
     ".refresh-btn:hover { background:#3d6af0; }" +
     ".refresh-btn:disabled { opacity:.65; cursor:progress; }" +
@@ -2542,27 +2578,27 @@ function getDashboardCss_() {
     // mild light tile surfaces
     ".section { background:#f5f7fb; border-radius:12px; box-shadow:0 2px 8px rgba(0,0,0,.18);" +
     " margin-bottom:20px; overflow:hidden; }" +
-    ".section h2 { margin:0; padding:13px 18px; font-size:13px; letter-spacing:.06em; text-transform:uppercase;" +
+    ".section h2 { margin:0; padding:14px 18px; font-size:15.5px; letter-spacing:.06em; text-transform:uppercase;" +
     " background:#43587f; color:#fff; }" +
     ".section .body { padding:16px 18px; }" +
     ".cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:12px; margin-bottom:20px; }" +
     ".card { background:#f5f7fb; border-radius:12px; padding:14px 16px; box-shadow:0 2px 8px rgba(0,0,0,.18); }" +
     ".section .card { box-shadow:none; border:1px solid #dde3ee; background:#fbfcfe; }" +
-    ".card .label { font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:#55637c; font-weight:700; }" +
-    ".card .value { font-size:25px; font-weight:800; margin-top:4px; color:#1f2937;" +
+    ".card .label { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#55637c; font-weight:800; }" +
+    ".card .value { font-size:29px; font-weight:800; margin-top:5px; color:#1f2937;" +
     " font-variant-numeric:tabular-nums; }" +
-    ".card .sub { font-size:12px; color:#55637c; margin-top:3px; }" +
-    "table { width:100%; border-collapse:collapse; font-size:14.5px; background:#fbfcfe; }" +
-    "th { text-align:right; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#41506b;" +
-    " padding:9px 10px; border-bottom:2px solid #c6d0e2; background:#eef2f9; font-weight:700; }" +
+    ".card .sub { font-size:13.5px; color:#55637c; margin-top:4px; font-weight:500; }" +
+    "table { width:100%; border-collapse:collapse; font-size:15.5px; background:#fbfcfe; }" +
+    "th { text-align:right; font-size:12.5px; text-transform:uppercase; letter-spacing:.06em; color:#41506b;" +
+    " padding:9px 10px; border-bottom:2px solid #c6d0e2; background:#eef2f9; font-weight:800; }" +
     "th:first-child, td:first-child { text-align:left; }" +
-    "td { padding:9px 10px; text-align:right; font-size:14.5px; font-variant-numeric:tabular-nums;" +
+    "td { padding:9px 10px; text-align:right; font-size:15.5px; font-weight:500; font-variant-numeric:tabular-nums;" +
     " border-bottom:1px solid rgba(90,110,145,.22); }" +
 "tbody tr:last-child td { border-bottom:none; }" +
     "tr:nth-child(even) td { background:#f2f5fa; }" +
     "tr.holiday td { background:#fdf0d5 !important; }" +
     "tr.total-row td { background:#dfe6f2 !important; font-weight:700; }" +
-    ".badge { display:inline-block; padding:3px 10px; border-radius:999px; font-weight:800; font-size:13px; }" +
+    ".badge { display:inline-block; padding:3px 11px; border-radius:999px; font-weight:800; font-size:14px; }" +
     ".badge.good { background:#d7f5df; color:#15803d; }" +
     ".badge.info { background:#dae7fd; color:#1d4ed8; }" +
     ".badge.warn { background:#fdeecb; color:#b45309; }" +
@@ -2573,22 +2609,22 @@ function getDashboardCss_() {
     ".bar-fill.warn { background:#d97706; } .bar-fill.bad { background:#dc2626; }" +
     ".person-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px; }" +
     ".person-card { border:1px solid #dde3ee; border-radius:10px; padding:14px; background:#fbfcfe; }" +
-    ".person-card h3 { margin:0 0 8px; font-size:15px; }" +
+    ".person-card h3 { margin:0 0 8px; font-size:17.5px; }" +
     ".row-line { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:7px 0 3px;" +
-    " font-size:13.5px; font-variant-numeric:tabular-nums; }" +
+    " font-size:15.5px; font-weight:600; font-variant-numeric:tabular-nums; }" +
     ".scroll-x { overflow-x:auto; }" +
-    ".foot { text-align:center; color:#b9c3d6; font-size:11px; padding:6px 0 28px; }" +
+    ".foot { text-align:center; color:#b9c3d6; font-size:12.5px; padding:6px 0 28px; }" +
     ".pos { color:#15803d; font-weight:700; } .neg { color:#b91c1c; font-weight:700; }" +
     ".muted { color:#6b7688; }" +
     // incentive gate note inside person cards
-    ".gate { margin-top:10px; padding:8px 10px; border-radius:8px; font-size:11.5px; line-height:1.45; }" +
+    ".gate { margin-top:10px; padding:9px 11px; border-radius:8px; font-size:13px; line-height:1.45; }" +
     ".gate.met { background:#e6f7ec; border:1px solid #b6e6c6; color:#14663a; }" +
     ".gate.blocked { background:#fdecec; border:1px solid #f3c3c3; color:#8f2020; }" +
-    ".incentive-line { display:flex; justify-content:space-between; font-size:12.5px; margin-top:6px;" +
+    ".incentive-line { display:flex; justify-content:space-between; font-size:14px; margin-top:6px;" +
     " font-variant-numeric:tabular-nums; padding-bottom:5px;" +
     " border-bottom:1px solid rgba(90,110,145,.16); }" +
     // date-wise per-person grouping
-    "table.detail td, table.detail th { font-size:14px; }" +
+    "table.detail td, table.detail th { font-size:15.5px; }" +
     "tr.date-head td { background:#e3e9f4 !important; font-weight:700; color:#26334d;" +
     " border-top:2px solid #b9c6dd; }" +
     "td.person-cell { font-weight:700; border-left:4px solid transparent; }" +
@@ -2605,7 +2641,7 @@ function getDashboardCss_() {
     "td.val-good { color:#136c34; font-weight:800; }" +
     "td.val-bad { color:#a81b1b; font-weight:800; }" +
     // ---- section 7 date-by-date matrix ----
-    "table.matrix { font-size:14px; border-collapse:separate; border-spacing:0; }" +
+    "table.matrix { font-size:15.5px; border-collapse:separate; border-spacing:0; }" +
     "table.matrix th, table.matrix td { white-space:nowrap; padding:8px 10px; }" +
 "table.matrix tbody td { border-bottom:1px solid rgba(90,110,145,.28); }" +
     "table.matrix thead th { position:sticky; top:0; z-index:3; }" +
@@ -2614,7 +2650,7 @@ function getDashboardCss_() {
     " text-align:left; border-right:2px solid #d4dcea; }" +
     "table.matrix tbody tr:nth-child(even) .sticky-col { background:#e8edf6; }" +
     "table.matrix thead .sticky-col { z-index:4; }" +
-    "table.matrix td .tgt { display:block; font-size:11.5px; font-weight:500; color:#6b788f; margin-top:2px; }" +
+    "table.matrix td .tgt { display:block; font-size:12.5px; font-weight:600; color:#6b788f; margin-top:2px; }" +
     // tinted column groups, one per salesperson
     "th.grp-0, td.cell-0 { background:#f4f7ff; } tr:nth-child(even) td.cell-0 { background:#eaf1ff; }" +
     "th.grp-1, td.cell-1 { background:#fff7f0; } tr:nth-child(even) td.cell-1 { background:#fdefe2; }" +
@@ -2626,72 +2662,68 @@ function getDashboardCss_() {
     // ---- AR attachment sub-panel inside section 6 ----
     ".subpanel { margin-top:18px; padding:14px 16px; border-radius:10px;" +
     " border:1px solid #d5dded; background:#eef3fb; }" +
-    ".subpanel-head { font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.06em;" +
+    ".subpanel-head { font-size:14px; font-weight:800; text-transform:uppercase; letter-spacing:.06em;" +
     " color:#33456b; margin:0 0 12px; }" +
     ".subpanel .card { background:#ffffff; border:1px solid #dde4f0; }" +
     ".legend-row { display:flex; flex-wrap:wrap; gap:10px; margin:0 0 12px; }" +
-    ".legend-card { font-size:11.5px; padding:8px 12px; border-radius:8px; border:1px solid #dde3ee; line-height:1.5; }" +
+    ".legend-card { font-size:13px; padding:8px 12px; border-radius:8px; border:1px solid #dde3ee; line-height:1.5; }" +
     // ---- section 7 collapse / expand ----
     ".toggle-btn { display:inline-flex; align-items:center; gap:9px; margin:0 0 12px;" +
     " background:#43587f; color:#fff; border:none; border-radius:8px; padding:9px 16px;" +
-    " font-size:13px; font-weight:700; cursor:pointer; box-shadow:0 1px 3px rgba(0,0,0,.18); }" +
+    " font-size:14px; font-weight:800; cursor:pointer; box-shadow:0 1px 3px rgba(0,0,0,.18); }" +
     ".toggle-btn:hover { background:#374a6c; }" +
     ".toggle-btn .chev { display:inline-block; font-size:10px; transition:transform .18s ease; }" +
     ".toggle-btn.open .chev { transform:rotate(180deg); }" +
     ".toggle-btn .count { background:rgba(255,255,255,.22); border-radius:999px;" +
-    " padding:1px 9px; font-size:11.5px; font-weight:700; }" +
+    " padding:2px 10px; font-size:12.5px; font-weight:800; }" +
     ".toggle-btn.open .count { display:none; }" +
     // Collapsed: hide every row outside the recent-days window.
     "table.matrix.collapsed tbody tr.extra-day { display:none; }" +
     // ---- page slider (Business / Performance) ----
     ".topbar-left { display:flex; flex-direction:column; gap:6px; min-width:0; }" +
-    ".brand { font-size:16px; font-weight:700; letter-spacing:.2px; }" +
+    ".brand { font-size:17.5px; font-weight:800; letter-spacing:.2px; }" +
     ".tabs { display:inline-flex; background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.22);" +
     " border-radius:999px; padding:4px; gap:4px; width:fit-content; }" +
-    ".tab-btn { appearance:none; border:none; background:transparent; color:#dfe6f5; font-size:14.5px;" +
-    " font-weight:600; padding:7px 16px; border-radius:999px; cursor:pointer; transition:all .16s ease; }" +
+    ".tab-btn { appearance:none; border:none; background:transparent; color:#dfe6f5; font-size:16px;" +
+    " font-weight:700; padding:8px 18px; border-radius:999px; cursor:pointer; transition:all .16s ease; }" +
     ".tab-btn:hover { color:#fff; background:rgba(255,255,255,.10); }" +
     ".tab-btn.active { background:#fff; color:#2b3750; box-shadow:0 1px 3px rgba(0,0,0,.35); }" +
     // ---- performance tables ----
     ".sec { background:rgba(255,255,255,.94); border:1px solid #d6deec; border-radius:14px; padding:18px 18px 14px;" +
     " margin-bottom:18px; box-shadow:0 1px 4px rgba(23,32,54,.12); }" +
-    ".sec-head h2 { margin:0 0 4px; font-size:17.5px; color:#22304a; }" +
-    ".sec-sub { margin:0 0 12px; font-size:12.5px; color:#5b6b85; }" +
+    ".sec-head h2 { margin:0 0 4px; font-size:20px; color:#22304a; }" +
+    ".sec-sub { margin:0 0 12px; font-size:14px; color:#5b6b85; font-weight:500; }" +
     ".scroll-x { overflow-x:auto; }" +
-    ".ptable { border-collapse:collapse; width:100%; font-size:13.5px; }" +
-    ".ptable th, .ptable td { text-align:left; padding:8px 11px; border-bottom:1px solid rgba(90,110,145,.22);" +
-    " vertical-align:top; white-space:nowrap; }" +
-    ".ptable thead th { background:#eef2f9; color:#33405c; font-size:12px; text-transform:uppercase;" +
+    ".ptable { border-collapse:collapse; width:100%; font-size:15px; }" +
+    ".ptable th, .ptable td { text-align:left; padding:9px 12px; border-bottom:1px solid rgba(90,110,145,.22);" +
+    " vertical-align:top; white-space:nowrap; font-weight:500; }" +
+    ".ptable thead th { background:#eef2f9; color:#33405c; font-size:12.5px; font-weight:800; text-transform:uppercase;" +
     " letter-spacing:.3px; position:sticky; top:0; }" +
     ".ptable tbody tr:hover { background:#f4f7fc; }" +
     ".ptable td.num { text-align:right; font-variant-numeric:tabular-nums; }" +
     ".ptable .daycell { min-width:120px; }" +
-    ".jobtable th, .jobtable td { font-size:13px; }" +
+    ".jobtable th, .jobtable td { font-size:14.5px; }" +
     ".jobtable .sticky-col { position:sticky; left:0; background:inherit; }" +
     ".chip { display:inline-block; background:#e8eefb; color:#31408a; border-radius:999px;" +
-    " padding:2px 8px; font-size:11.5px; margin:1px 2px 1px 0; }" +
+    " padding:3px 9px; font-size:12.5px; margin:1px 2px 1px 0; font-weight:600; }" +
     ".chip b { color:#223; }" +
     // walk-in / comm status colours
-    ".comm-yes { color:#15803d; font-weight:600; }" +
-    ".comm-no { color:#c2410c; font-weight:600; }" +
-    ".ready-row { background:#ecfdf5; }" +
-    ".ready-row:hover { background:#dcfce7; }" +
+    ".comm-yes { color:#15803d; font-weight:700; }" +
+    ".comm-no { color:#c2410c; font-weight:700; }" +
     // Unclaimed devices: warm amber row, amber accent bar on the case-id cell,
     // and a solid amber badge — clearly distinct from the green ready rows.
     ".unclaimed-row { background:#fff7e0 !important; }" +
     ".unclaimed-row:hover { background:#fef0c0 !important; }" +
     ".unclaimed-row .sticky-col { box-shadow:inset 4px 0 0 #eab308; }" +
-    ".badge-unclaimed { display:inline-block; background:#b45309; color:#fff; font-weight:700;" +
-    " font-size:11.5px; padding:2px 9px; border-radius:999px; white-space:nowrap; }" +
-    ".badge-unclaimed.sm { font-size:10.5px; padding:1px 6px; background:#eab308; color:#451a03; }" +
+    ".badge-unclaimed { display:inline-block; background:#b45309; color:#fff; font-weight:800;" +
+    " font-size:12.5px; padding:3px 10px; border-radius:999px; white-space:nowrap; }" +
+    ".badge-unclaimed.sm { font-size:11px; padding:2px 7px; background:#eab308; color:#451a03; }" +
     ".card-unclaimed { background:#fff7e0; border-color:#eab308; }" +
     ".card-unclaimed .value.neg { color:#b45309; }" +
     ".undated-row { background:#fefce8; }" +
-    // Stale communication: pale red row + red accent bar — a "follow up now" signal.
-    ".stale-row { background:#ffeded; }" +
-    ".stale-row:hover { background:#ffdfdf; }" +
-    ".stale-row .sticky-col { box-shadow:inset 4px 0 0 #ef4444; }" +
-    ".stale-text { color:#b91c1c; font-weight:700; }" +
+    // Comm. updated cell: green tint = updated within the window, red = old / none.
+    ".comm-pos { color:#15803d; background:#e6f7ee; font-weight:700; }" +
+    ".comm-neg { color:#b91c1c; background:#fdeaea; font-weight:700; }" +
     // Walk-in analysis: grouped purpose header + dead-lead figures.
     ".walkintable thead th.grp { background:#dfe8f6; text-align:center; }" +
     ".walkintable thead th { text-align:center; }" +
@@ -2699,25 +2731,15 @@ function getDashboardCss_() {
     ".walkintable .totrow td { background:#eef2f9; border-top:2px solid #b9c6dd; }" +
     ".walkintable td.dead { color:#b91c1c; font-weight:700; }" +
     ".walkintable td.conv { color:#31408a; font-weight:600; }" +
-    ".creat-total { font-size:14.5px; color:#22304a; margin:2px 0 12px; }" +
+    ".tokentable .totrow td { background:#eef2f9; border-top:2px solid #b9c6dd; }" +
     ".age-warn { color:#b45309; font-weight:600; }" +
     ".age-crit { color:#b91c1c; font-weight:700; }" +
-    // token-creation bars
-    ".creat-row { display:grid; grid-template-columns:1fr 2fr 52px; align-items:center; gap:12px;" +
-    " padding:7px 2px; border-bottom:1px solid rgba(90,110,145,.15); }" +
-    ".creat-name { font-size:13.5px; font-weight:600; color:#22304a; }" +
-    ".creat-bar { background:#e6ebf4; border-radius:999px; height:16px; overflow:hidden; }" +
-    ".creat-fill { background:linear-gradient(90deg,#4f7cff,#22a06b); height:100%; border-radius:999px; }" +
-    ".creat-share { text-align:right; font-size:13px; font-weight:700; color:#22304a;" +
-    " font-variant-numeric:tabular-nums; }" +
-    ".creat-sum { font-size:12.5px; margin-bottom:6px; }" +
     ".subnote { background:#fff8e6; border:1px solid #f0d99a; border-radius:10px; padding:9px 12px;" +
-    " font-size:12.5px; color:#7c5c10; margin-bottom:12px; }" +
+    " font-size:13.5px; color:#7c5c10; margin-bottom:12px; font-weight:500; }" +
     ".empty-perf { background:#fff; border:1px dashed #cbd5e1; border-radius:12px; padding:22px;" +
-    " text-align:center; font-size:14.5px; color:#33405c; }" +
+    " text-align:center; font-size:15.5px; color:#33405c; font-weight:500; }" +
     ".pos { color:#15803d; } .neg { color:#b91c1c; }" +
-    "@media (max-width:760px){ .creat-row{grid-template-columns:1fr;} .creat-bar{order:2;} .creat-share{order:3;text-align:left;} }" +
-    "@media (max-width:640px){ .topbar h1{font-size:18px;} .card .value{font-size:18px;} }"
+        "@media (max-width:640px){ .topbar h1{font-size:19px;} .card .value{font-size:21px;} }"
   );
 }
 
@@ -2744,7 +2766,16 @@ function renderStoreCards_(data) {
     card("Unique Invoices", s.uniqueInvoices, "deduped invoice codes") +
     card("Total Revenue", money_(s.total.achieved), s.total.pct + "% of target") +
     card("Gross Profit", money_(s.grossProfit.achieved), s.grossProfit.pct + "% of target") +
-    card("Avg Invoice Value", money_(s.avgInvoiceValue), "revenue ÷ " + s.uniqueInvoices + " unique invoices") +
+    // Avg value tile with TWO details: revenue per unique invoice, and revenue
+    // per unique walk-in (from the walkin sheet, when available).
+    '<div class="card"><div class="label">Avg Invoice Value</div>' +
+    '<div class="value">' + money_(s.avgInvoiceValue) + "</div>" +
+    '<div class="sub">revenue ÷ ' + s.uniqueInvoices + " unique invoices</div>" +
+    (s.avgPerWalkin
+      ? '<div class="value" style="font-size:24px;margin-top:7px">' + money_(s.avgPerWalkin) + "</div>" +
+        '<div class="sub">revenue ÷ ' + s.uniqueWalkins + " unique walk-ins</div>"
+      : "") +
+    "</div>" +
     grTile +
     "</div>"
   );
@@ -2807,7 +2838,10 @@ function renderSalespersonCards_(data) {
       '<span class="muted">(no incentive — unlock gate)</span></span>' +
       "<span>" + money_(p.repair.achieved) + ' <span class="muted">/ ' + money_(p.repair.target) +
       "</span> " + pctBadgeHtml_(p.repair.pct) + "</span></div>" +
-      barHtml_(p.repair.pct);
+      barHtml_(p.repair.pct) +
+      // Store-wide revenue target, shown right under the repair target line.
+      '<div class="row-line" style="margin-top:6px"><span class="muted">Store Total Revenue Target</span>' +
+      '<span class="muted"><b>' + money_(data.store.total.target) + "</b></span></div>";
 
     var gateBlock = gate.met
       ? '<div class="gate met">✅ <b>Incentive unlocked.</b> Repair revenue is at ' +
@@ -2839,7 +2873,7 @@ function renderSalespersonCards_(data) {
   return (
     '<section class="section"><h2>3 &middot; Salesperson Performance</h2><div class="body">' +
     '<div class="person-grid">' + cards + "</div>" +
-    '<p class="muted" style="font-size:11.5px;margin:14px 0 0">' +
+    '<p class="muted" style="font-size:12.5px;margin:14px 0 0">' +
     "Only <b>Service</b> and <b>Accessory</b> revenue earn incentive. <b>Repair</b> revenue pays nothing on its own — " +
     "it acts as a gate: the salesperson only receives the earned amount once repair revenue reaches <b>" +
     CONFIG.REPAIR_INCENTIVE_GATE_PCT + "%</b> of their repair target.</p>" +
@@ -2874,20 +2908,25 @@ function renderKpiSection_(data) {
 
   var rows = allKpis.map(function (k) {
     var pctVal = k.target > 0 ? pct_(k.achieved, k.target) : 0;
+    // Approximate achieved value = achieved count x the per-unit approx value
+    // listed in target!B15:L15 (shown only when that row has a value).
+    var approx = k.approxAmount > 0 ? k.achieved * k.approxAmount : 0;
     return "<tr><td>" + esc_(k.label) + "</td><td>" + esc_(k.category) + "</td><td>" +
       (k.target > 0 ? k.target : "&mdash;") + "</td><td>" + k.achieved + "</td><td>" +
       (k.target > 0 ? pctBadgeHtml_(pctVal) : '<span class="muted">&mdash;</span>') +
       '</td><td class="' + (k.target > 0 && k.balance === 0 ? "pos" : k.balance > 0 ? "neg" : "muted") + '">' +
       (k.target > 0 ? k.balance : "&mdash;") + "</td><td>" +
-      money_(k.achievedValue) + "</td><td>" + money_(k.achievedGp) + "</td></tr>";
+      (approx > 0 ? money_(approx) : '<span class="muted">&mdash;</span>') +
+      "</td><td>" + money_(k.achievedValue) + "</td><td>" + money_(k.achievedGp) + "</td></tr>";
   }).join("");
 
   return (
     '<section class="section"><h2>5 &middot; Store KPI Parameters</h2><div class="body scroll-x">' +
     "<table><thead><tr><th>KPI</th><th>Type</th><th>Target</th><th>Achieved</th><th>Achieved %</th>" +
-    "<th>Balance</th><th>Achieved Value</th><th>Achieved GP</th></tr></thead><tbody>" + rows +
+    "<th>Balance</th><th>Approx Value</th><th>Achieved Value</th><th>Achieved GP</th></tr></thead><tbody>" + rows +
     "</tbody></table>" +
-    '<p class="muted" style="font-size:11.5px;margin:12px 0 0">Targets read from <b>target!B12:L14</b>.</p>' +
+    '<p class="muted" style="font-size:12.5px;margin:12px 0 0">Targets read from <b>target!B12:L14</b>. ' +
+    "<b>Approx Value</b> = achieved count × that KPI’s approximate unit value in <b>target!B15:L15</b>.</p>" +
     "</div></section>"
   );
 }
@@ -2954,7 +2993,7 @@ function renderArAttachment_(data) {
     '<div class="card"><div class="label">Accessory-only Invoices</div><div class="value muted">' +
     a.accessoryOnlyInvoices + '</div><div class="sub">excluded &middot; ' + money_(a.accessoryOnlyValue) + "</div></div>" +
     "</div>" +
-    '<p class="muted" style="font-size:11.5px;margin:12px 0 0">' +
+    '<p class="muted" style="font-size:12.5px;margin:12px 0 0">' +
     "An invoice counts as an AR attachment only when accessory revenue shares the invoice code with service or repair " +
     "revenue. Invoices carrying accessory lines alone are treated as non-attachment and excluded from the value and GP above.</p>" +
     "</div>"
@@ -3089,7 +3128,7 @@ function renderDateWiseTable_(data) {
     toggle +
     '<div class="scroll-x"><table class="matrix collapsed" id="dwTable"><thead>' + head1 + head2 + "</thead><tbody>" +
     body + foot + "</tbody></table></div>" +
-    '<p class="muted" style="font-size:11.5px;margin:12px 0 0">' +
+    '<p class="muted" style="font-size:12.5px;margin:12px 0 0">' +
     "Each cell shows <b>achieved / that person's daily target</b> for the revenue type — " +
     '<span class="pos">green</span> when the day meets or beats the target, <span class="neg">red</span> when it falls short. ' +
     "The <b>Store Total</b> column uses the store daily target of " + money_(dailyTarget) + ". " +

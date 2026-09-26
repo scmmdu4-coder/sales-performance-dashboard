@@ -181,3 +181,28 @@ One row per case. **Duplicate case ids are de-duplicated; every listed job is "o
 - `JOB_CLOSED_KEYWORDS` — words that mark a job closed.
 - `JOB_AGE_WARN_DAYS` (7) / `JOB_AGE_CRITICAL_DAYS` (15) — job-age colour thresholds.
 - `COMM_STALE_DAYS` (2) — how old the latest communication may be before a job row is highlighted as needing follow-up.
+
+## Business page extras (new)
+
+- **Avg Invoice Value tile** shows two details: *avg value against total
+  invoice* (revenue ÷ unique invoices) and *avg invoice value against unique
+  walk-in* (revenue ÷ distinct mobiles in the `walkin` sheet — the column is
+  found by its `MobileNo` header, so `walkin!G:G` works wherever it sits).
+- **Salesperson Performance** now lists the **store total revenue target**
+  under each person's individual Repair revenue target.
+
+## Performance page — current behaviour
+
+- **Walk-in Analysis** is a true pivot: one row per date (each date tinted a
+  different colour) and one column per **actual `VisitPurposeDesc` value** as
+  written in the sheet — plus walk-ins, cases (case conv %), invoices (invoice
+  conv %), remarks, dead leads and dead-leads % with a totals row.
+- **Token Creation** is a table (not a chart): token created by · total tokens
+  created · % of creation, with a total row.
+- **Job Management** lists only cases whose `service!JobStatus` is **open**
+  (non-open statuses are excluded and counted). The Ready-for-pickup column
+  was removed. **Comm. updated** is the latest `comm!CreatedDate` for the case
+  id: green when within `COMM_STALE_DAYS` (2) of today, red when older or when
+  there is no record ("Not updated"). Advance paid comes from
+  `advance!AvailableBalance` matched on `advance!MobileNo` ↔
+  `service!MobileNo` (balances summed when a customer repeats).
