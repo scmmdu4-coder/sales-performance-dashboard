@@ -206,3 +206,43 @@ One row per case. **Duplicate case ids are de-duplicated; every listed job is "o
   there is no record ("Not updated"). Advance paid comes from
   `advance!AvailableBalance` matched on `advance!MobileNo` ↔
   `service!MobileNo` (balances summed when a customer repeats).
+- If there is **no `advance` tab** (or it matches nothing), the script falls
+  back to a per-row `AvailableBalance` column read **directly from the
+  `service` sheet** (any header matching `available balance`, e.g.
+  `service!AvailableBalance`), and the table notes say which source is in
+  use. Commit `e8378b1`.
+
+## Latest changes (Tasks 12)
+
+- **Tab rename** — "📈 Performance" is now **"🛠 Process"** (internal page id
+  is unchanged; this is label-only).
+- **Google Reviews tile (Section 3) is reversed** — the big number is now the
+  **gained count** (e.g. `+19`, green, or red when negative), with the small
+  caption `1494 this month · previous 1475`.
+- **Avg Invoice Value tile (Section 3) shows three values**: avg invoice value
+  ÷ total invoices (invoice lines), total invoice value ÷ unique walk-ins,
+  and avg gross profit ÷ total invoices.
+- **Date-wise execution table (Business Section 7)** uses full-cell
+  *sensex-style* backgrounds: solid green (`#16a34a`) cells for target-achieved
+  days and solid red (`#e23b3b`) cells for days below target, with the target
+  value shown in translucent white inside the cell.
+- **Salesperson daily targets (Section 4)** are now
+  `balance ÷ working days remaining` per revenue type per engineer, i.e.
+  `max(0, target − achieved) ÷ remaining working days` (today included when
+  it is a working day) — instead of the earlier even `target ÷ total working
+  days`. Clamped at 0 once the monthly target is already covered. The store
+  monthly target daily split (Section 2) is unchanged.
+- **Section 5 Approx Value cell adds a guidance line**: in addition to the
+  approximate value of the achieved count it now shows
+  `₹X to target` (balance count × the unit value from `target!B15:L15`), or
+  "target covered" when the balance is 0. When a KPI has no unit value the
+  cell shows an em-dash as before.
+
+## Node test harnesses
+
+`google-apps-script/tests/node/perftest.cjs` and `edge2.cjs` stub the Apps
+Script services, feed mock sheets through the real `SalesDashboard.gs`, and
+assert the computed values and rendered HTML (daily-target balance math,
+reversed review tile, 3-value avg tile, approx-to-target line, sensex CSS,
+advance fallback, comm 2-day window, KPI/pivot/token tables, …). Run either
+file with plain `node` — they exit non-zero on failure.

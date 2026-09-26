@@ -1260,19 +1260,24 @@ function computeDashboard(allRows, target) {
       return { target: tg, achieved: a, pct: pct_(a, tg), balance: Math.max(0, tg - a), incentive: inc || 0 };
     }
 
+    // Balance still needed per revenue type, used for the balance-based daily targets.
+    var balSvc = Math.max(0, t.service - ach.service),
+        balAcc = Math.max(0, t.accessory - ach.accessory),
+        balRep = Math.max(0, t.repair - ach.repair);
+
     return {
       key: key, name: titleCase_(key), invoiceCount: mineInvoices,
       total: mk(t.total, ach.total, payableIncentive),
       service: mk(t.service, ach.service, svcInc),
       accessory: mk(t.accessory, ach.accessory, accInc),
       repair: mk(t.repair, ach.repair, 0),
-      // Per-day target for this person = their monthly target for that
-      // revenue type ÷ the number of working days in the month.
+      // Per-day target for this engineer = the BALANCE still needed for that
+      // revenue type ÷ the number of working days REMAINING in the month.
       dailyTargets: {
-        service: Math.round(safeDiv_(t.service, Math.max(1, totalWorkingDays))),
-        accessory: Math.round(safeDiv_(t.accessory, Math.max(1, totalWorkingDays))),
-        repair: Math.round(safeDiv_(t.repair, Math.max(1, totalWorkingDays))),
-        total: Math.round(safeDiv_(t.total, Math.max(1, totalWorkingDays))),
+        service: Math.round(safeDiv_(balSvc, Math.max(1, remainingWorkingToday))),
+        accessory: Math.round(safeDiv_(balAcc, Math.max(1, remainingWorkingToday))),
+        repair: Math.round(safeDiv_(balRep, Math.max(1, remainingWorkingToday))),
+        total: Math.round(safeDiv_(balSvc + balAcc + balRep, Math.max(1, remainingWorkingToday))),
       },
       // incentive gate details, surfaced in the UI
       repairGate: {
@@ -2284,7 +2289,7 @@ function buildDashboardPage_(data) {
     // ---- page slider: Business (this page) / Performance (new page) ----
     '<div class="tabs" role="tablist">' +
     '<button class="tab-btn active" data-page="business" onclick="switchPage(this)">💼 Business</button>' +
-    '<button class="tab-btn" data-page="performance" onclick="switchPage(this)">📈 Performance</button>' +
+    '<button class="tab-btn" data-page="performance" onclick="switchPage(this)">🛠 Process</button>' +
     "</div>" +
     '<div class="meta" id="meta">' + esc_(bizMeta) + "</div>" +
     '<div class="note" id="note"></div>' +
@@ -2294,7 +2299,7 @@ function buildDashboardPage_(data) {
     "</div></header>" +
     '<main class="wrap" id="content" data-meta="' + esc_(bizMeta) + '">' + sections + "</main>" +
     '<main class="wrap" id="perfContent" data-meta="' + esc_(perfMeta) + '" style="display:none;">' + perfHtml + "</main>" +
-    '<footer class="foot">Business uses the crm / target sheets · Performance uses the walkin / service / advance / comm sheets. Press “Refresh data” to pull the latest values.</footer>' +
+    '<footer class="foot">Business uses the crm / target sheets · the Process page uses the walkin / service / advance / comm sheets. Press “Refresh data” to pull the latest values.</footer>' +
     clientScript +
     "</body></html>"
   );
@@ -2648,8 +2653,13 @@ function getDashboardCss_() {
     "tr.person-band-2 td { background:#f1fbf6; } tr.person-band-2:nth-child(even) td { background:#e9f7f0; }" +
     "tr.person-band-3 td { background:#faf5ff; } tr.person-band-3:nth-child(even) td { background:#f5edfe; }" +
     "tr.person-band-4 td { background:#fef4f9; } tr.person-band-4:nth-child(even) td { background:#fdecf4; }" +
-    "td.val-good { color:#136c34; font-weight:800; }" +
-    "td.val-bad { color:#a81b1b; font-weight:800; }" +
+    // Sensex-style cells: whole cell turns green/red with white text when the
+    // day beats / misses the daily target (not just coloured digits).
+    "td.val-good { background:#16a34a; color:#fff; font-weight:800; }" +
+    "td.val-good .tgt { color:rgba(255,255,255,.9); }" +
+    "td.val-bad { background:#e23b3b; color:#fff; font-weight:800; }" +
+    "td.val-bad .tgt { color:rgba(255,255,255,.9); }" +
+    "td.val-good .cell-tint, td.val-bad .cell-tint { background:transparent; }" +
     // ---- section 7 date-by-date matrix ----
     "table.matrix { font-size:15.5px; border-collapse:separate; border-spacing:0; }" +
     "table.matrix th, table.matrix td { white-space:nowrap; padding:8px 10px; }" +
@@ -2760,14 +2770,13 @@ function renderStoreCards_(data) {
       esc_(value) + '</div><div class="sub">' + esc_(sub || "") + "</div></div>";
   }
   var gr = data.kpi.googleReview;
-  // Google review tile — values come straight from target!A9:C10
+  // Google review tile — REVERSED emphasis: the gained review count is the
+  // big bold number; the current and previous counts sit small beneath it.
   var diffCls = gr.difference > 0 ? "pos" : gr.difference < 0 ? "neg" : "muted";
   var grTile =
     '<div class="card"><div class="label">Google Reviews</div>' +
-    '<div class="value">' + gr.currentMonth +
-    ' <span class="' + diffCls + '" style="font-size:13px">(' +
-    (gr.difference >= 0 ? "+" : "") + gr.difference + ")</span></div>" +
-    '<div class="sub">this month &middot; previous ' + gr.previousMonth + "</div></div>";
+    '<div class="value ' + diffCls + '">' + (gr.difference >= 0 ? "+" : "") + gr.difference + "</div>" +
+    '<div class="sub">' + gr.currentMonth + " this month &middot; previous " + gr.previousMonth + "</div></div>";
 
   return (
     '<div class="cards">' +
@@ -2776,16 +2785,22 @@ function renderStoreCards_(data) {
     card("Unique Invoices", s.uniqueInvoices, "deduped invoice codes") +
     card("Total Revenue", money_(s.total.achieved), s.total.pct + "% of target") +
     card("Gross Profit", money_(s.grossProfit.achieved), s.grossProfit.pct + "% of target") +
-    // Avg value tile with TWO details: revenue per unique invoice, and revenue
-    // per unique walk-in (from the walkin sheet, when available).
-    '<div class="card"><div class="label">Avg Invoice Value</div>' +
-    '<div class="value">' + money_(s.avgInvoiceValue) + "</div>" +
-    '<div class="sub">revenue ÷ ' + s.uniqueInvoices + " unique invoices</div>" +
-    (s.avgPerWalkin
-      ? '<div class="value" style="font-size:24px;margin-top:7px">' + money_(s.avgPerWalkin) + "</div>" +
-        '<div class="sub">revenue ÷ ' + s.uniqueWalkins + " unique walk-ins</div>"
-      : "") +
-    "</div>" +
+    // Avg value tile with THREE details: invoice value against the total
+    // invoice count, total invoice value against total unique walk-ins, and
+    // average gross profit against the total invoice count.
+    (function () {
+      var avgGp = s.totalInvoices > 0 ? Math.round(s.grossProfit.achieved / s.totalInvoices) : 0;
+      return '<div class="card"><div class="label">Avg Invoice Value</div>' +
+        '<div class="value" style="font-size:25px">' + money_(s.avgInvoiceLineValue) + "</div>" +
+        '<div class="sub">invoice value ÷ ' + s.totalInvoices + " total invoices</div>" +
+        (s.avgPerWalkin
+          ? '<div class="value" style="font-size:25px;margin-top:7px">' + money_(s.avgPerWalkin) + "</div>" +
+            '<div class="sub">invoice value ÷ ' + s.uniqueWalkins + " unique walk-ins</div>"
+          : "") +
+        '<div class="value" style="font-size:25px;margin-top:7px">' + money_(avgGp) + "</div>" +
+        '<div class="sub">gross profit ÷ ' + s.totalInvoices + " total invoices</div>" +
+        "</div>";
+    })() +
     grTile +
     "</div>"
   );
@@ -2918,15 +2933,26 @@ function renderKpiSection_(data) {
 
   var rows = allKpis.map(function (k) {
     var pctVal = k.target > 0 ? pct_(k.achieved, k.target) : 0;
-    // Approximate achieved value = achieved count x the per-unit approx value
-    // listed in target!B15:L15 (shown only when that row has a value).
+    // Approx value pairs: what the achieved count is already worth, plus what
+    // is still worth chasing — the BALANCE x the per-unit approx value from
+    // target!B15:L15, so the number to hit next is visible right beside it.
     var approx = k.approxAmount > 0 ? k.achieved * k.approxAmount : 0;
+    var approxBal = k.approxAmount > 0 && k.target > 0 ? k.balance * k.approxAmount : 0;
+    var approxCell;
+    if (k.approxAmount <= 0) {
+      approxCell = '<span class="muted">&mdash;</span>';
+    } else if (approxBal > 0) {
+      approxCell = money_(approx) + '<br><span class="muted" style="font-size:12.5px">' +
+        money_(approxBal) + " to target</span>";
+    } else {
+      approxCell = money_(approx) + '<br><span class="pos" style="font-size:12.5px">target covered</span>';
+    }
     return "<tr><td>" + esc_(k.label) + "</td><td>" + esc_(k.category) + "</td><td>" +
       (k.target > 0 ? k.target : "&mdash;") + "</td><td>" + k.achieved + "</td><td>" +
       (k.target > 0 ? pctBadgeHtml_(pctVal) : '<span class="muted">&mdash;</span>') +
       '</td><td class="' + (k.target > 0 && k.balance === 0 ? "pos" : k.balance > 0 ? "neg" : "muted") + '">' +
       (k.target > 0 ? k.balance : "&mdash;") + "</td><td>" +
-      (approx > 0 ? money_(approx) : '<span class="muted">&mdash;</span>') +
+      approxCell +
       "</td><td>" + money_(k.achievedValue) + "</td><td>" + money_(k.achievedGp) + "</td></tr>";
   }).join("");
 
@@ -2936,7 +2962,7 @@ function renderKpiSection_(data) {
     "<th>Balance</th><th>Approx Value</th><th>Achieved Value</th><th>Achieved GP</th></tr></thead><tbody>" + rows +
     "</tbody></table>" +
     '<p class="muted" style="font-size:12.5px;margin:12px 0 0">Targets read from <b>target!B12:L14</b>. ' +
-    "<b>Approx Value</b> = achieved count × that KPI’s approximate unit value in <b>target!B15:L15</b>.</p>" +
+    "<b>Approx Value</b> = achieved count × that KPI’s approximate unit value in <b>target!B15:L15</b>; the smaller line below is balance count × the same unit value — the amount still to be gained that month.</p>" +
     "</div></section>"
   );
 }
@@ -3139,8 +3165,9 @@ function renderDateWiseTable_(data) {
     '<div class="scroll-x"><table class="matrix collapsed" id="dwTable"><thead>' + head1 + head2 + "</thead><tbody>" +
     body + foot + "</tbody></table></div>" +
     '<p class="muted" style="font-size:12.5px;margin:12px 0 0">' +
-    "Each cell shows <b>achieved / that person's daily target</b> for the revenue type — " +
-    '<span class="pos">green</span> when the day meets or beats the target, <span class="neg">red</span> when it falls short. ' +
+    "Each cell shows <b>achieved / that engineer's daily target</b> for the revenue type — " +
+    "the daily target is the <b>balance needed for the month ÷ working days remaining</b>. " +
+    "Sensex-style cells turn <b>green</b> when the day beats the target and <b>red</b> when it falls short. " +
     "The <b>Store Total</b> column uses the store daily target of " + money_(dailyTarget) + ". " +
     "Collapsed view shows the latest " + CONFIG.COLLAPSED_DAYS + " days; expand for every date.</p>" +
     "</div></section>"
