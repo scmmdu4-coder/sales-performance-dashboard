@@ -21,11 +21,11 @@ var fails=0;
 function check(n,c,x){if(c)console.log("  PASS",n);else{fails++;console.log("  FAIL",n,JSON.stringify(x));}}
 
 // --- scenario 1: over-achieved salesperson -> daily target clamps to 0; negative review diff; approx unit 0 ---
-var T1=[]; for(var i=0;i<20;i++)T1.push(new Array(14).fill(""));
+var T1=[]; for(var i=0;i<20;i++)T1.push(new Array(22).fill(""));
 T1[0]=["Revenue Type","Store Target","SUBHA"];
 T1[1]=["Service",100000,50000]; T1[2]=["Accessories",10000,10000]; T1[3]=["Repair",20000,10000];
 T1[8]=["Prev Month","This Month","Difference"]; T1[9]=[40,35,-5];
-T1[11]=["","AR"]; T1[12]=["","Care+"]; T1[13]=["",10]; T1[14]=["",0];
+T1[12]=["","AR"]; T1[13]=["","Care+"]; T1[14]=["",10]; T1[15]=["",0];
 var crm1=[["InvoiceCode","InvoiceDate","SalesPersonName","RevenueType","ItemDescription","SubCategory","SchemeCode","TaxableAmount","GrossProfit","TranType"],
  ["A1","23-09-2026 10:00","Subha","Service","x","","","60000","2000","SALES"],
  ["A2","23-09-2026 11:00","Subha","Repair","y","","","6000","500","SALES"],

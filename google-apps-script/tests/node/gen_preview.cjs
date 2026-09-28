@@ -51,17 +51,18 @@ for(var i2=0;i2<180;i2++){var dd=(i2%25)+1;if(dd%7===0)dd=1;var m="91999"+String
 var cm=[["CaseId","CreatedDate","Remark"]];for(var i3=0;i3<26;i3++){if(i3%3!==0)cm.push(["C100"+i3,daysAgoStr(i3%6,"11"),"update"]);}
 var av=[["MobileNo","AvailableBalance"]];for(var i4=0;i4<26;i4++)av.push(["9198765432"+("000000"+i4).slice(-3),(i4*137)%1500]);
 var T=[];for(var i5=0;i5<20;i5++)T.push(new Array(18).fill(""));
-T[0]=["Revenue Type","Store Target","SUBHA","DINESH","","Sep 2026","Repair Stage","Target","Achieved","%","Gap","Repair Type","Count"];
+T[0]=["Revenue Type","Store Target","SUBHA","DINESH","","","","","","",
+"FY26P12","MDU4","VERY SATISFIED","SOMEWHAT SATISFIED","VERY DISSATISIFIED","NEITHER SATISFIED NOR DISSATISFIED","-","SOMEWHAT DISSATISFIED","TOTAL","C-SAT","CFI",""];
 T[1]=["Service",900000,520000,380000];T[2]=["Accessories",430000,250000,180000];T[3]=["Repair",500000,300000,200000];T[4]=["Total",1830000,1070000,760000];T[5]=["Gross Profit",450000,270000,180000];
 T[8]=["Prev Month","This Month","Difference"];T[9]=[1475,1494,19];
-T[11]=["","AR","","","","RR","","","","SR","",""];T[12]=["","Care+","Protect+","AMC","Bundle","Display","Battery","Glass","Others","SRD","SHC","ARD"];
-T[13]=["",25,15,40,30,50,45,20,35,60,25,18];T[14]=["",400,600,900,300,250,150,100,0,0,0,0];
-T[15]=["Achivement","","Achivement",""];T[16]=["70-80%","2000","70-80%","1000"];
+T[12]=["","AR","","","","RR","","","","SR","",""];T[13]=["","Care+","Protect+","AMC","Bundle","Display","Battery","Glass","Others","SRD","SHC","ARD"];
+T[14]=["",25,15,40,30,50,45,20,35,60,25,18];
+T[15]=["Achivement",400,600,900,300,"",250,150,100,0,0,0,0];T[16]=["70-80%","2000","70-80%","1000"];
 T[17]=["80-90%","4000","80-90%","2000"];T[18]=["90-100%","6000","90-100%","3000"];
-T[1][6]="Diagnosis Complete";T[1][7]=40;T[1][8]=33;T[1][9]="82.5";T[1][10]=7;T[1][11]="Walk-In Repair";T[1][12]=21;
-T[2][6]="Repair Complete";T[2][7]=80;T[2][8]=71;T[2][9]="88.8";T[2][10]=9;T[2][11]="Carry-In Repair";T[2][12]=14;
-T[3][6]="Quality Check";T[3][7]=60;T[3][8]=52;T[3][9]="86.7";T[3][10]=8;T[3][11]="Mail-In Repair";T[3][12]=6;
-T[4][6]="Ready For Pickup";T[4][7]=70;T[4][8]=64;T[4][9]="91.4";T[4][10]=6;T[4][11]="Software Support";T[4][12]=9;
+T[1][11]="Subha K";T[1][12]=9;T[1][13]=2;T[1][14]=0;T[1][15]=1;T[1][18]=12;T[1][19]="75.00%";T[1][20]="0.00%";
+T[2][11]="Dinesh Kumar";T[2][12]=14;T[2][13]=2;T[2][14]=1;T[2][15]=0;T[2][17]=1;T[2][18]=18;T[2][19]="88.89%";T[2][20]="5.56%";
+T[3][11]="Murugan Mp";T[3][12]=4;T[3][13]=1;T[3][14]=0;T[3][15]=1;T[3][18]=6;T[3][19]="83.33%";T[3][20]="0.00%";
+T[4][11]="TOTAL";T[4][12]=27;T[4][13]=5;T[4][14]=1;T[4][15]=2;T[4][17]=1;T[4][18]=36;T[4][19]="88.89%";T[4][20]="5.56%";
 T[15][5]="incentive per amc";T[16][5]="1-10";T[16][6]="₹150";T[16][8]=5;T[16][9]="₹80";T[17][5]="11-25";T[17][6]="₹250";T[17][8]=12;T[17][9]="₹120";T[15][12]="slab level";T[15][13]=5;T[16][13]=300;
 ALL=[mockSheet("target",T),mockSheet("crm",crm),mockSheet("walkin",wl),mockSheet("service",sv),mockSheet("advance",av),mockSheet("comm",cm)];
 var loaded=loadDashboardData_();

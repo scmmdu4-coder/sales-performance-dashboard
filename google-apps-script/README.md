@@ -98,9 +98,12 @@ adjust `CACHE_SECONDS`.
   recognizable (`InvoiceDate`, `SalesPersonName`, `RevenueType`,
   `ItemDescription`, `SubCategory`, `SchemeCode`, `TaxableAmount`,
   `GrossProfit`, `TranType`).
-- The `target` sheet parser expects the same grid layout as the existing
-  web dashboard (see comments marked `ANCHOR` in the script) — adjust the
-  row/column numbers there if your target sheet layout differs.
+- The `target` sheet layout is anchored (see comments marked `ANCHOR` in
+  the script): salesperson roster = **C1:J1** (only those names get cards
+  and matrix columns — C-SAT labels or store codes elsewhere never show up
+  as people); KPI grid = **B13:L16** (row 13 AR/RR/SR type, row 14 names,
+  row 15 target counts, row 16 approx unit values); C-SAT block = period in
+  **K1**, table in **L1:U5**.
 - `doGet(e)` is what Apps Script calls automatically when someone opens the
   deployed Web App URL — you never call it yourself.
 
@@ -369,3 +372,24 @@ Translating rules applied (no conditions or data touched):
   all pages now fit any screen width via responsive grids, and pivoted
   numbers are right-aligned.
 
+## October refresh v2 — layout corrections (owner-specified)
+
+- **Salesperson roster = target!C1:J1 exactly.** Only those names get
+  performance cards / date-wise columns; empty cells are skipped; CRM-only
+  names (store codes, C-SAT labels such as "Very Satisfied") fall off the
+  page but still count toward store totals.
+- **Store KPI re-anchored:** KPI names fixed at **target!B14:L14**, target
+  numbers at **B15:L15**, approx unit values at **B16:L16**, AR/RR/SR type
+  row at **B13:L13** — TYPE / TARGET / ACHIEVED / % / BALANCE all resolve
+  again (no more collapsed dashes).
+- **C-SAT block:** period title from **target!K1**, grid from **target!L1:U5**
+  — never merged with salesperson data. Rendered as summary chips
+  (responses, satisfied %, C-SAT, CFI, dissatisfied %) plus a cleaned table
+  (junk columns dropped, TOTAL row verified against the people rows).
+- **Repair Validation = one combined table:** product families vertical
+  (iPhone incl. "VIN" exports, iPad, AirPods, Watch, Mac,
+  Accessory–Non-serialized, Other) × coverage codes horizontal
+  (CoverageCodeDescription), counts per intersection, row/column totals and
+  the previous-3-month monthly average strip. Service Non-Repair excluded.
+- Every section carries a one-line **Definition** of what it shows and where
+  the numbers come from.

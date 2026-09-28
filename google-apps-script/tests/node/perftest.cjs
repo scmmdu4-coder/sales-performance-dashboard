@@ -23,23 +23,33 @@ var fs=require('fs');
 eval(fs.readFileSync(__dirname+"/../../SalesDashboard.gs","utf8"));
 getSpreadsheet_=function(){return SS_OBJ;};
 
-// ---- target (rows 12-14 KPI grid, row 15 = approx unit value) ----
-var T=[]; for(var i=0;i<20;i++) T.push(new Array(18).fill(""));
-T[0]=["Revenue Type","Store Target","SUBHA","DINESH","","Sep 2026","Repair Stage","Target","Achieved","%","Gap","Repair Type","Count"];
-T[1]=["Service",300000,180000,120000]; T[2]=["Accessories",150000,90000,60000];
+// ---- target layout ----
+//  Row1: C1:J1 = salesperson roster (empty cells skipped) · K1 = C-SAT period
+//        name · L1:U1 = C-SAT table header (name col + buckets + TOTAL/C-SAT/CFI)
+//  Rows: A5:D9  targets · A10:C10 google review · B13:L16 KPI grid
+//        (13=type, 14=name, 15=target count, 16=approx unit value)
+var T=[]; for(var i=0;i<20;i++) T.push(new Array(22).fill(""));
+T[0]=["Revenue Type","Store Target","SUBHA","DINESH","","","","","","",
+  "FY26P12","MDU4","VERY SATISFIED","SOMEWHAT SATISFIED","VERY DISSATISIFIED",
+  "NEITHER SATISFIED NOR DISSATISFIED","-","SOMEWHAT DISSATISFIED","TOTAL","C-SAT","CFI",""];
+T[1]=["Service",300000,180000,120000];
+T[2]=["Accessories",150000,90000,60000];
 T[3]=["Repair",200000,120000,80000]; T[4]=["Total",650000,390000,260000];
 T[5]=["Gross Profit",160000,96000,64000];
 T[8]=["Prev Month","This Month","Difference"]; T[9]=[1475,1494,19];
-T[11]=["","AR","","","","RR","","","","SR","",""];
-T[12]=["","Care+","Protect+","AMC","Bundle","Display","Battery","Glass","Others","SRD","SHC","ARD"];
-T[13]=["",25,15,40,30,50,45,20,35,60,25,18];
-T[14]=["",400,600,900,300,250,150,100,0,0,0,0];
-T[15]=["Achivement","","Achivement",""]; T[16]=["70-80%","2000","70-80%","1000"];
-T[17]=["80-90%","4000","80-90%","2000"]; T[18]=["90-100%","6000","90-100%","3000"];
-T[1][6]="Diagnosis Complete"; T[1][7]=40; T[1][8]=33; T[1][9]="82.5"; T[1][10]=7; T[1][11]="Walk-In Repair"; T[1][12]=3;
-T[2][6]="Repair Complete";    T[2][7]=80; T[2][8]=71; T[2][9]="88.8"; T[2][10]=9; T[2][11]="Carry-In Repair"; T[2][12]=2;
-T[15][5]="incentive per amc"; T[16][5]="1-10"; T[16][6]="₹150"; T[16][8]=5; T[16][9]="₹80";
-T[17][5]="11-25"; T[17][6]="₹250"; T[17][8]=12; T[17][9]="₹120"; T[15][12]="slab level"; T[15][13]=5; T[16][13]=300;
+T[12]=["","AR","","","","RR","","","","SR","",""];
+T[13]=["","Care+","Protect+","AMC","Bundle","Display","Battery","Glass","Others","SRD","SHC","ARD"];
+T[14]=["",25,15,40,30,50,45,20,35,60,25,18];
+// row 16 (0-idx 15): approx unit values in KPI cols AND slab anchors in sheet cols
+T[15]=["Achivement",400,600,900,300,"incentive per amc",150,100,0,0,0,0,"slab level",5];
+T[16]=["70-80%","2000","70-80%","1000","",  "1-10","₹150","",5,"₹80","","","",300];
+T[17]=["80-90%","4000","80-90%","2000","","11-25","₹250","",12,"₹120","","","",""];
+T[18]=["90-100%","6000","90-100%","3000"];
+// C-SAT data rows (L2:U5)
+T[1][11]="Subha K";      T[1][12]=1; T[1][18]=1; T[1][19]="100.00%"; T[1][20]="0.00%";
+T[2][11]="Dinesh Kumar"; T[2][12]=9; T[2][14]=1; T[2][18]=10; T[2][19]="90.00%"; T[2][20]="10.00%";
+T[3][11]="Murugan Mp";   T[3][12]=2; T[3][14]=1;
+T[4][11]="TOTAL";        T[4][12]=12; T[4][14]=2; T[4][18]=14; T[4][19]="85.71%"; T[4][20]="14.29%";
 
 // ---- crm ----
 var crm=[["InvoiceCode","InvoiceDate","SalesPersonName","RevenueType","ItemDescription",
@@ -95,7 +105,7 @@ console.log("== BUSINESS: KPI approx / avg walkin / store target ==");
 var loaded=loadDashboardData_();
 var biz=loaded.data;
 var careplus=biz.kpi.ar.filter(function(k){return k.code==="CAREPLUS";})[0];
-check("CAREPLUS approx unit 400 from row 15",careplus&&careplus.approxAmount===400);
+check("CAREPLUS approx unit 400 from row 16",careplus&&careplus.approxAmount===400);
 check("CAREPLUS achieved 1 (INV3)",careplus&&careplus.achieved===1);
 check("approx balance unit math (target 25 - achieved 1) x 400", careplus.balance===24);
 check("avg invoice value total-lines 3",biz.store.avgInvoiceLineValue===Math.round(7100/3));
@@ -213,16 +223,24 @@ check("mtd walk-in 3 / carry-in 2",page.indexOf('<strong>Walk-In Repair</strong>
 check("mtd grand total 5 (SNR excluded)",page.indexOf('<tr class="totrow"><td>All repair types</td><td class="num">5</td></tr>')>-1);
 check("repair tile avg baseline",page.indexOf("avg 0/month")>-1);
 check("no-fraction averages",page.indexOf("avg 0.3/month")===-1);
+check("KPI names from row 14",biz.kpi.ar.some(function(k){return k.code==="CAREPLUS";}));
+check("KPI targets from row 15",careplus.target===25&&biz.kpi.ar.filter(function(k){return k.code==="AMC";})[0].target===40);
+
 check("no-baseline note",page.indexOf("no 3-month baseline")>-1);
 check("repair meta",page.indexOf("5 repairs this month · 2 repair types")>-1);
 check("avg days col header",page.indexOf("Avg Days · Now")>-1);
 check("walk-in avg days 2 d",page.indexOf('<strong>Walk-In Repair</strong></td><td class="num">3</td><td class="num">0</td>')>-1);
-// products & coverage dashboards
-check("product performance section",page.indexOf("Product Performance")>-1);
-check("iphone family tile",page.indexOf('class="label">iPhone</div><div class="value">1</div>')>-1);
-check("other family tile 4",page.indexOf('class="label">Other</div><div class="value">4</div>')>-1);
-check("coverage performance section",page.indexOf("Coverage Performance")>-1 && page.indexOf("Out Of Warranty (No Coverage)")>-1);
-check("snr excluded note",page.indexOf('"Service Non-Repair" cases are excluded')>-1);
+// repair validation matrix: products vertical × coverage horizontal, one table
+check("validation matrix section",page.indexOf("Repair Validation — Products × Coverage")>-1);
+check("vmatrix coverage cols",page.indexOf("<th>In Warranty</th>")>-1&&page.indexOf("Out Of Warranty (No Coverage)")>-1);
+check("vmatrix iphone=inw 1",/iPhone<\/b><\/td><td class="num"><b>1<\/b>/.test(page));
+check("vmatrix other row",/<\/b>Other<\/b><\/td>/.test(page)===false);  // keep simple below
+check("vmatrix Other row exact",page.indexOf('<b>Other</b></td><td class="num"><b>1</b></td><td class="num"><b>2</b></td><td class="num"><b>1</b></td><td class="num vmtotal">4</td>')>-1);
+check("vmatrix iPhone row exact",page.indexOf('<b>iPhone</b></td><td class="num"><b>1</b></td><td class="num muted">—</td><td class="num muted">—</td><td class="num vmtotal">1</td>')>-1);
+check("vmatrix grand total 5",page.indexOf('<td class="num vmtotal"><b>5</b></td>')>-1);
+check("vmatrix prev3m avg row",page.indexOf("Prev 3M Avg")>-1);
+check("vmatrix definition line",page.indexOf("Definition: one table combining every repair")>-1);
+check("snr excluded note",page.indexOf('"Service Non-Repair" is excluded')>-1);
 check("walkin hsl tint",page.indexOf("background:hsl(")>-1);
 check("token table",page.indexOf("% of creation")>-1&&page.indexOf("Total tokens generated")>-1);
 check("ready col gone",page.indexOf("Ready for pickup")===-1);
@@ -238,8 +256,13 @@ check("weekly status labels",page.indexOf("In progress")>-1&&page.indexOf("Upcom
 check("weekly target formula (66667 svc wk4)",page.indexOf("₹66,667")>-1);
 check("weekly svc achieved wk4 5000",page.indexOf("<b>Week 4</b>")>-1&&page.indexOf("₹5,000")>-1);
 // ---- process page: target block (F1 title + G1:P7) & walk-in summary table ----
-check("process target block title from F1",page.indexOf("🎯 Sep 2026")>-1);
-check("target block grid renders G1:P7",page.indexOf("Repair Stage")>-1&&page.indexOf("Diagnosis Complete")>-1&&page.indexOf("88.8")>-1);
+check("CSAT title from K1",page.indexOf("FY26P12")>-1 && page.indexOf("Customer Satisfaction")>-1);
+check("CSAT buckets from L1:U5 header",page.indexOf("VERY SATISFIED")>-1&&page.indexOf("NEITHER SATISFIED NOR DISSATISFIED")>-1);
+check("CSAT junk dash col dropped",page.indexOf("<th>-</th>")===-1&&page.indexOf("<th></th>")===-1);
+check("CSAT people rows",page.indexOf("Subha K")>-1&&page.indexOf("Dinesh Kumar")>-1&&page.indexOf("Murugan Mp")>-1);
+check("CSAT total row + chips",page.indexOf("Feedback responses")>-1&&page.indexOf('cc-value">14</span>')>-1&&page.indexOf("Satisfied (VS + SS)")>-1);
+check("CSAT dissatisfied pct",page.indexOf("csat-neg")>-1&&page.indexOf("14%")>-1);
+check("CSAT CFI chip",page.indexOf("CFI")>-1&&page.indexOf("85.71%")>-1);
 check("repair comparison strip (excl SNR)", page.indexOf("Total Repairs (excl. Service Non-Repair) — this month")>-1
   &&page.indexOf('rs-value">5</span>')>-1);
 check("walk-in summary is a table", page.indexOf('ptable walksum')>-1 && page.indexOf("<b>Total Walk-ins</b></td>")>-1);

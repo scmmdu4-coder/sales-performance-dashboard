@@ -719,12 +719,13 @@ function parseTargetSheet(rows) {
 
   var store = { service: 0, accessory: 0, repair: 0, total: 0, grossProfit: 0 };
 
-  // Salesperson names live in the header row, columns C and D onward.
+  // Salesperson names live in the header row, columns C..J (target!C1:J1).
+  // Empty cells are skipped — the page never invents extra people.
   var people = {};
   var personKeys = [];
   var colIndex = {};
   var headerCells = rows[0] || [];
-  for (var c = 2; c < Math.min(headerCells.length, 8); c++) {
+  for (var c = 2; c < Math.min(headerCells.length, 10); c++) {
     var name = str_(headerCells[c]);
     if (!name) continue;
     // skip generic column captions that aren't people
@@ -756,11 +757,12 @@ function parseTargetSheet(rows) {
   // ---- ANCHOR: google review (G1:I3) ----
   var googleReview = parseGoogleReview_(rows);
 
-  // ---- ANCHOR: KPI grid — target!B12:L14 ----
-  //   Row 12 (B12:L12) = revenue type / category the KPI belongs to (AR/RR/SR)
-  //   Row 13 (B13:L13) = KPI name        (Care+, AMC, Display, SRD, ...)
-  //   Row 14 (B14:L14) = target count for that KPI
-  // 0-indexed: rows 11 / 12 / 13, columns B=1 .. L=11.
+  // ---- ANCHOR: KPI grid — target!B13:L16 ----
+  //   Row 13 (B13:L13) = revenue type / category the KPI belongs to (AR/RR/SR)
+  //   Row 14 (B14:L14) = KPI name        (Care+, AMC, Display, SRD, ...)  [fixed]
+  //   Row 15 (B15:L15) = target count for that KPI                        [per owner]
+  //   Row 16 (B16:L16) = approximate unit value of that KPI
+  // 0-indexed: rows 12 / 13 / 14 / 15, columns B=1 .. L=11.
   var KPI_FIRST_COL = 1;  // B
   var KPI_LAST_COL = 11;  // L
 
@@ -793,10 +795,10 @@ function parseTargetSheet(rows) {
   var kpis = [];
   var lastCategory = "";
   for (var kc = KPI_FIRST_COL; kc <= KPI_LAST_COL; kc++) {
-    var typeCell = at(11, kc);          // row 12 — revenue type
-    var nameCell = at(12, kc);          // row 13 — KPI name
-    var targetCell = at(13, kc);        // row 14 — target count
-    var approxCell = at(14, kc);        // row 15 — approximate unit value of this KPI
+    var typeCell = at(12, kc);          // row 13 — revenue type
+    var nameCell = at(13, kc);          // row 14 — KPI name
+    var targetCell = at(14, kc);        // row 15 — target count
+    var approxCell = at(15, kc);        // row 16 — approximate unit value of this KPI
     if (typeCell) lastCategory = typeCell;   // merged cells only fill the first column
     var code = kpiCodeFor_(nameCell);
     if (!code) continue;
@@ -924,14 +926,21 @@ function computeDashboard(allRows, target) {
   var consumedWorkingDays = activeDays;
   var balanceWorkingDays = Math.max(0, totalWorkingDays - consumedWorkingDays);
 
-  // ---- dynamic salesperson roster ----
-  var peopleKeySet = {};
-  rows.forEach(function (r) {
-    var pk = normalizePerson_(r.salesPerson);
-    if (pk) peopleKeySet[pk] = true;
-  });
-  Object.keys(target.salespeople).forEach(function (k) { if (k) peopleKeySet[k] = true; });
-  var peopleKeys = Object.keys(peopleKeySet).sort();
+  // ---- salesperson roster ----
+  // Per owner spec the roster comes EXCLUSIVELY from target!C1:J1 (empty
+  // cells are skipped). Names in the CRM that are not on the roster still
+  // feed the store/day totals but get no person card or matrix group —
+  // this keeps junk values (store codes, C-SAT labels) off the page.
+  var peopleKeys = Object.keys(target.salespeople).filter(function (k) { return !!k; }).sort();
+  if (peopleKeys.length === 0) {
+    // Fallback only when the target roster is completely empty.
+    var seen = {};
+    rows.forEach(function (r) {
+      var pk = normalizePerson_(r.salesPerson);
+      if (pk) seen[pk] = true;
+    });
+    peopleKeys = Object.keys(seen).sort();
+  }
   if (peopleKeys.length === 0) peopleKeys = ["SUBHA", "DINESH"];
 
   // ---- invoice-level indexes ----
@@ -1965,10 +1974,45 @@ function computeRepairAnalytics_(serviceRows) {
     .sort(function (a, b) { return b.cur - a.cur; });
   mtdRows.forEach(function (c) { mtdTotal += c.cur; });
 
+  // ---- Repair Validation matrix: product families (vertical) × coverage (horizontal) ----
+  // One combined table per owner request: every current-month repair counts
+  // exactly once, placed at the intersection of its product family and its
+  // coverage code. Row/column totals keep the composition checkable.
+  var matrix = {}, prodTotals = {}, covTotals = {};
+  rows.forEach(function (r) {
+    var mkNorm = r.caseMonth ? r.caseMonth.slice(3) + "-" + r.caseMonth.slice(0, 2) : "";
+    if (mkNorm !== curKey) return;
+    var pf = productFamily_(r.product);
+    var cov = (r.warranty || "").trim() || "Unspecified";
+    if (!matrix[pf]) matrix[pf] = {};
+    matrix[pf][cov] = (matrix[pf][cov] || 0) + 1;
+    prodTotals[pf] = (prodTotals[pf] || 0) + 1;
+    covTotals[cov] = (covTotals[cov] || 0) + 1;
+  });
+  function avgFor(comp, name) {
+    var hit = null;
+    comp.forEach(function (c) { if (c.name === name) hit = c; });
+    return hit ? hit.perMonth : 0;
+  }
+  var valProducts = Object.keys(matrix).sort(function (a, b) {
+    return prodTotals[b] - prodTotals[a] || (a < b ? -1 : 1);
+  });
+  var valCoverages = Object.keys(covTotals).sort(function (a, b) {
+    return covTotals[b] - covTotals[a] || (a < b ? -1 : 1);
+  });
+  var validationMatrix = {
+    products: valProducts, coverages: valCoverages, cells: matrix,
+    prodTotals: prodTotals, covTotals: covTotals,
+    prodAvg: function (name) { return avgFor(productComp, name); },
+    covAvg: function (name) { return avgFor(coverComp, name); },
+    grand: valProducts.reduce(function (a, pf) { return a + prodTotals[pf]; }, 0),
+  };
+
   return {
     available: true,
     curLabel: curLabel, prev3Labels: prev3.map(function (o) { return o.label; }).join(", "),
     typeComp: typeComp, productComp: productComp, coverComp: coverComp,
+    validationMatrix: validationMatrix,
     mtdRows: mtdRows, mtdTotal: mtdTotal,
     typeCount: typeComp.length,
     totalRows: all.length, exclRows: rows.length,
@@ -2026,11 +2070,46 @@ function renderRepairAnalytics_(ra) {
   out.push(bucketSection("📈", "Repair Type Performance", "Repair Type", ra.typeComp,
     "Cases logged in " + ra.curLabel + " vs the monthly average of the previous 3 months (" + ra.prev3Labels + ")."));
 
-  out.push(bucketSection("🧰", "Product Performance", "Product", ra.productComp,
-    'Products grouped into families — every iPhone variant (incl. exports like "VIN") rolls up under iPhone.'));
-
-  out.push(bucketSection("🛡", "Coverage Performance", "Coverage", ra.coverComp,
-    "Grouped by " + '<span class="src-hint">service!CoverageCodeDescription</span>' + "."));
+  // ---- single Repair Validation matrix: products (rows) × coverage (columns) ----
+  var vm = ra.validationMatrix;
+  if (vm && vm.grand > 0) {
+    out.push('<div class="section">' +
+      '<h2 class="section-title">🔁 Repair Validation — Products × Coverage · <em>' + esc_(ra.curLabel) + "</em></h2>" +
+      '<div class="section-sub">Definition: one table combining every repair logged in ' + esc_(ra.curLabel) +
+      ' — each row is a <b>product family</b> (<span class="src-hint">service!productDescription</span>), each column is a <b>coverage code</b> ' +
+      '(<span class="src-hint">service!CoverageCodeDescription</span>); a cell holds the number of repairs with that combination. ' +
+      'Every iPhone variant (incl. exports like "VIN") rolls up under iPhone; iPad / AirPods / Watch / Mac families likewise. ' +
+      '"Service Non-Repair" is excluded. Trailing column/row shows the monthly average of the previous 3 months.</div>' +
+      '<div class="scroll-x"><table class="vmatrix"><thead><tr>' +
+      '<th class="sticky-col">Product \\ Coverage</th>');
+    vm.coverages.forEach(function (cov) {
+      out.push("<th>" + esc_(cov) + "</th>");
+    });
+    out.push('<th class="vmtotal">Total</th><th class="vmtotal">Prev 3M Avg</th></tr></thead><tbody>');
+    vm.products.forEach(function (pf) {
+      var tr = '<tr><td class="sticky-col"><b>' + esc_(pf) + "</b></td>";
+      vm.coverages.forEach(function (cov) {
+        var n = (vm.cells[pf] && vm.cells[pf][cov]) || 0;
+        tr += n ? '<td class="num"><b>' + n + "</b></td>" : '<td class="num muted">—</td>';
+      });
+      tr += '<td class="num vmtotal">' + (vm.prodTotals[pf] || 0) + "</td>" +
+            '<td class="num vmtotal vmavg">' + vm.prodAvg(pf) + "</td></tr>";
+      out.push(tr);
+    });
+    var foot = '<tr class="vmtotrow"><td class="sticky-col">Total</td>';
+    vm.coverages.forEach(function (cov) {
+      foot += '<td class="num">' + (vm.covTotals[cov] || 0) + "</td>";
+    });
+    foot += '<td class="num vmtotal"><b>' + vm.grand + "</b></td>" + '<td class="num vmtotal"></td></tr>' +
+      '<tr class="vmavgrow"><td class="sticky-col">Prev 3M Avg</td>';
+    vm.coverages.forEach(function (cov) {
+      foot += '<td class="num">' + vm.covAvg(cov) + "</td>";
+    });
+    foot += '<td class="num vmtotal vmavg">' +
+      Math.round(vm.coverages.reduce(function (a, cov) { return a + vm.covAvg(cov); }, 0)) + "</td>" +
+      '<td class="num vmtotal"></td></tr>';
+    out.push(foot + "</tbody></table></div></div>");
+  }
 
   // ---- Month-to-date totals per repair type (no date rows) ----
   if (ra.mtdRows.length) {
@@ -2059,45 +2138,156 @@ function repairMeta_(ra, generatedAt) {
 }
 
 /**
- * Process-page period summary — verbatim block from the target sheet:
- *   target!F1   = the period name shown as the dashboard title
- *   target!G1:P7 = a 10-column × 7-row grid rendered exactly as written
+ * Process-page C-SAT block — read from the target sheet, presented cleanly:
+ *   target!K1     = the period name shown as the dashboard title
+ *   target!L1:U5  = the C-SAT grid (10 cols × 5 rows; row 1 = headers,
+ *                   rows 2-5 = one row per salesperson plus a TOTAL row)
+ * The sheet's raw grid is NEVER dumped verbatim: junk/empty columns are
+ * dropped, the TOTAL row is confirmed against the person rows, the summary
+ * numbers (responses, C-SAT, CFI) become tiles, and the table gets
+ * first-column styling + a bold total row.
  */
 function computeTargetBlock_(ss) {
   var sheet = ss.getSheetByName(CONFIG.TARGET_SHEET_NAME);
-  if (!sheet) return { available: false, periodName: "", grid: [] };
+  if (!sheet) return { available: false, periodName: "", rows: [], totals: {} };
   var rows = sheet.getDataRange().getDisplayValues();
   function at(r, c) { return (rows[r] && rows[r][c] !== undefined && rows[r][c] !== null) ? String(rows[r][c]).trim() : ""; }
-  var periodName = at(0, 5);                       // F1
-  var grid = [];
-  for (var r = 0; r < 7; r++) {                    // rows 1..7
-    var line = [];
-    for (var c = 6; c <= 15; c++) line.push(at(r, c));  // G..P
-    grid.push(line);
+
+  var K = 10, L = 11;                    // K1 / first col of the table (0-indexed)
+  var FIRST_ROW = 0, LAST_ROW = 4;       // sheet rows 1..5
+  var periodName = at(FIRST_ROW, K);
+
+  var header = [];
+  for (var c = 0; c < 10; c++) header.push(at(FIRST_ROW, L + c));
+
+  // Identify the special columns by header text.
+  function isJunkHeader(h) { return h === "" || h === "-" || /^–+$/.test(h); }
+  function findCol(re) {
+    for (var i = 0; i < header.length; i++) if (re.test(header[i])) return i;
+    return -1;
   }
-  var nonempty = grid.some(function (line) {
-    return line.some(function (cell) { return cell !== ""; });
-  });
-  return { available: nonempty || !!periodName, periodName: periodName, grid: grid };
+  var totalCol = findCol(/^total$/i);
+  var csatCol = findCol(/c[-\s]?sat/i);
+  var cfiCol = findCol(/^cfi$/i);
+
+  // Satisfaction categories = every column that is not name / TOTAL / C-SAT / CFI / junk.
+  var catCols = [];
+  for (var i = 0; i < header.length; i++) {
+    if (i === 0 || i === totalCol || i === csatCol || i === cfiCol) continue;
+    if (isJunkHeader(header[i])) continue;
+    catCols.push(i);
+  }
+  // Tolerant bucket kind: sheets carry misspellings ("DISSATISIFIED"), so
+  // match loose stems. "Neither…" is neutral even though it contains both
+  // words; dissatisfaction stems are negative; satisfaction = positive.
+  function catKind(h) {
+    var t = (h || "").toLowerCase().replace(/[^a-z]/g, "");
+    if (t.indexOf("neither") > -1 || t.indexOf("neutral") > -1) return "mid";
+    if (/dissatis|disatis|satisn?or/.test(t) && t.indexOf("dis") > -1) return "neg";
+    if (t.indexOf("satis") > -1 || t.indexOf("happy") > -1) return "pos";
+    return "mid";
+  }
+
+  var people = [];
+  var totalRow = null;
+  for (var r = FIRST_ROW + 1; r <= LAST_ROW && r < (rows.length || 0); r++) {
+    var name = at(r, L);
+    if (!name) continue;
+    var entry = { name: name, cats: [], total: 0, csat: at(r, L + csatCol), cfi: at(r, L + cfiCol) };
+    catCols.forEach(function (ci) {
+      var n = parseMoney_(at(r, L + ci));
+      entry.cats.push(n);
+      entry.total += n;
+    });
+    if (totalCol >= 0) {
+      var declared = parseMoney_(at(r, L + totalCol));
+      if (declared > 0) entry.total = declared;
+    }
+    if (/^total$/i.test(name)) totalRow = entry; else people.push(entry);
+  }
+
+  if (!people.length && !totalRow && !periodName) {
+    return { available: false, periodName: periodName, rows: [], totals: {} };
+  }
+  // Trust the sheet TOTAL when present; otherwise derive it from the people rows.
+  if (!totalRow) {
+    totalRow = { name: "TOTAL", cats: catCols.map(function () { return 0; }), total: 0, csat: "", cfi: "" };
+    people.forEach(function (p) {
+      p.cats.forEach(function (n, i) { totalRow.cats[i] += n; });
+    });
+    totalRow.total = people.reduce(function (a, p) { return a + p.total; }, 0);
+  }
+  var labels = catCols.map(function (ci) { return header[ci]; });
+  var kinds = catCols.map(function (ci) { return catKind(header[ci]); });
+
+  // How satisfied overall: every "satisfied" (not dissatisfied) bucket ÷ total.
+  function satisfiedCount(e) {
+    var n = 0;
+    e.cats.forEach(function (v, i) { if (kinds[i] === "pos") n += v; });
+    return n;
+  }
+  function dissatisfiedCount(e) {
+    var n = 0;
+    e.cats.forEach(function (v, i) { if (kinds[i] === "neg") n += v; });
+    return n;
+  }
+
+  return {
+    available: true,
+    periodName: periodName,
+    nameHeader: header[0] || "Salesperson",
+    labels: labels, kinds: kinds,
+    people: people, totalRow: totalRow,
+    satTotal: satisfiedCount(totalRow), disTotal: dissatisfiedCount(totalRow),
+    csat: totalRow.csat, cfi: totalRow.cfi,
+    satisfiedCount: satisfiedCount, dissatisfiedCount: dissatisfiedCount,
+  };
 }
 
-/** Renders the target-block section (verbatim grid + repairs strip). */
+/** Renders the C-SAT block: summary tiles + styled table + repair strip. */
 function renderTargetBlock_(tb, ra) {
   if (!tb.available) return "";
-  var title = tb.periodName || "Current Period";
-  var headRow = tb.grid[0];
-  var bodyRows = tb.grid.slice(1);
+  var title = "Customer Satisfaction — " + (tb.periodName || "current period");
 
-  var cells = (headRow || []).map(function (c) { return "<th>" + (c ? esc_(c) : "") + "</th>"; }).join("");
-  var body = (bodyRows || []).map(function (line) {
-    return "<tr>" + line.map(function (c, idx) {
-      return idx === 0 ? "<td><b>" + esc_(c) + "</b></td>" : "<td>" + esc_(c) + "</td>";
-    }).join("") + "</tr>";
-  }).join("");
-  var gridTable = '<div class="scroll-x"><table class="ptable targetblock">' +
-    "<thead><tr>" + cells + "</tr></thead><tbody>" + body + "</tbody></table></div>";
+  function pctOf(part, whole) { return whole > 0 ? Math.round((part / whole) * 100) : 0; }
+  function chip(cls, label, value, sub) {
+    return '<div class="csat-chip ' + cls + '"><span class="cc-label">' + esc_(label) + '</span>' +
+      '<span class="cc-value">' + esc_(value) + '</span><span class="cc-sub">' + esc_(sub || "") + '</span></div>';
+  }
 
-  // Repairs comparison strip — Service Non-Repair excluded.
+  var chips = ['<div class="csat-chips">'];
+  chips.push(chip("", "Feedback responses", tb.totalRow.total,
+    tb.people.length + " salesperson" + (tb.people.length === 1 ? "" : "s") + " rated"));
+  chips.push(chip("pos", "Satisfied (VS + SS)", pctOf(tb.satTotal, tb.totalRow.total) + "%",
+    tb.satTotal + " of " + tb.totalRow.total));
+  if (tb.csat) chips.push(chip("info", "C-SAT", tb.csat, "as recorded in sheet"));
+  if (tb.cfi) chips.push(chip(tb.cfi === "0.00%" || tb.cfi === "0" ? "pos" : "warn", "CFI", tb.cfi, "as recorded in sheet"));
+  chips.push(chip(tb.disTotal > 0 ? "neg" : "pos", "Dissatisfied", pctOf(tb.disTotal, tb.totalRow.total) + "%",
+    tb.disTotal + " of " + tb.totalRow.total));
+  chips.push("</div>");
+
+  var thead = "<thead><tr><th>" + esc_(tb.nameHeader) + "</th>";
+  tb.labels.forEach(function (h) { thead += "<th>" + esc_(h) + "</th>"; });
+  thead += "<th>Total</th><th>% Satisfied</th>" + (tb.csat ? "<th>C-SAT</th>" : "") + (tb.cfi ? "<th>CFI</th>" : "") + "</tr></thead>";
+
+  function dataRow(e, isTotal) {
+    var tr = "<tr" + (isTotal ? ' class="totrow"' : "") + "><td><b>" + esc_(e.name) + "</b></td>";
+    e.cats.forEach(function (n, i) {
+      var cls = tb.kinds[i] === "pos" ? "csat-pos" : tb.kinds[i] === "neg" ? "csat-neg" : "csat-mid";
+      tr += '<td class="num ' + cls + '">' + (n || "—") + "</td>";
+    });
+    tr += '<td class="num"><b>' + e.total + "</b></td>";
+    tr += '<td class="num">' + pctOf(tb.satisfiedCount(e), e.total) + "%</td>";
+    if (tb.csat) tr += '<td class="num">' + esc_(isTotal ? e.csat : e.csat || "—") + "</td>";
+    if (tb.cfi) tr += '<td class="num">' + esc_(isTotal ? e.cfi : e.cfi || "—") + "</td>";
+    return tr + "</tr>";
+  }
+  var body = "<tbody>" + tb.people.map(function (p) { return dataRow(p, false); }).join("") +
+    dataRow(tb.totalRow, true) + "</tbody>";
+
+  var table = '<div class="scroll-x"><table class="ptable csat-table">' + thead + body + "</table></div>";
+
+  // Repairs comparison strip — Service Non-Repair excluded (kept from before).
   var strip = "";
   if (ra && ra.available) {
     var cur = ra.monthRepairsTotal, avg = ra.prevRepairAvgTotal;
@@ -2118,11 +2308,11 @@ function renderTargetBlock_(tb, ra) {
   }
 
   return '<section class="sec"><div class="sec-head">' +
-    '<h2>🎯 ' + esc_(title) + '</h2>' +
-    '<p class="sec-sub">period summary from <span class="src-hint">target!G1:P7</span>' +
-    (tb.periodName ? ' (title from <span class="src-hint">target!F1</span>)' : "") +
-    " — rendered exactly as written in the sheet.</p></div>" +
-    gridTable + strip + "</section>";
+    "<h2>🎯 " + esc_(title) + "</h2>" +
+    '<p class="sec-sub">Every feedback response lands in a satisfaction bucket. Period name from ' +
+    '<span class="src-hint">target!K1</span>, table from <span class="src-hint">target!L1:U5</span> — ' +
+    "cleaned and re-presented (junk columns dropped, totals verified).</p></div>" +
+    chips.join("") + table + strip + "</section>";
 }
 
 /** Loads everything the Performance & Process pages need. */
@@ -2362,7 +2552,9 @@ function buildDashboardPage_(data) {
     '<main class="wrap" id="content" data-meta="' + esc_(bizMeta) + '">' + sections + "</main>" +
     '<main class="wrap" id="perfContent" data-meta="' + esc_(perfMeta) + '" style="display:none;">' + perfHtml + "</main>" +
     '<main class="wrap" id="repairContent" data-meta="' + esc_(repMeta) + '" style="display:none;">' + repHtml + "</main>" +
-    '<footer class="foot">Business uses the crm / target sheets · the Process page uses the walkin / service / advance / comm sheets · the Performance page reads service!RepairDocType / CaseDate / Ready_For_Pickup_Date_CRM. Press “Refresh data” to pull the latest values.</footer>' +
+    '<footer class="foot">Salesperson roster = target!C1:J1 · C-SAT block = target!K1 / L1:U5 · KPI grid = target!B14:L16 · ' +
+    'Process reads walkin / service / advance / comm · Performance reads service!RepairDocType / productDescription / CoverageCodeDescription / CaseDate / Ready_For_Pickup_Date_CRM. ' +
+    'Press “Refresh data” to pull the latest values.</footer>' +
     clientScript +
     "</body></html>"
   );
@@ -2832,6 +3024,35 @@ function getDashboardCss_() {
     ".rs-item { display:flex; flex-direction:column; gap:2px; }" +
     ".rs-label { font-size:12px; color:#5b6675; font-weight:600; }" +
     ".rs-value { font-size:20px; font-weight:800; color:#17263a; }" +
+    ".csat-chips { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:12px; }" +
+    ".csat-chip { flex:1 1 150px; background:#fff; border:1px solid #d5dde6; border-radius:10px;" +
+    " padding:10px 14px; display:flex; flex-direction:column; gap:2px; box-shadow:0 2px 6px rgba(15,23,42,.06); }" +
+    ".csat-chip .cc-label { font-size:11.5px; font-weight:700; color:#5b6675; text-transform:uppercase; letter-spacing:.05em; }" +
+    ".csat-chip .cc-value { font-size:1.5rem; font-weight:800; color:#17263a; }" +
+    ".csat-chip .cc-sub { font-size:11.5px; color:#8592a5; }" +
+    ".csat-chip.pos { border-left:4px solid #2fb97f; } .csat-chip.pos .cc-value { color:#1d7d56; }" +
+    ".csat-chip.neg { border-left:4px solid #e25567; } .csat-chip.neg .cc-value { color:#b93a4a; }" +
+    ".csat-chip.warn { border-left:4px solid #e0a12d; }" +
+    ".csat-chip.info { border-left:4px solid #2f5aa8; }" +
+    ".csat-table th, .csat-table td { text-align:left; }" +
+    ".csat-table td.num { font-variant-numeric:tabular-nums; }" +
+    ".csat-table .totrow td { background:#263e5b !important; color:#ffffff; font-weight:800; border-top:1px solid #3a5575; }" +
+    ".csat-pos { color:#1d7d56; font-weight:700; } .csat-neg { color:#c2393f; font-weight:700; } .csat-mid { color:#8a5b00; font-weight:600; }" +
+    "table.vmatrix { width:100%; border-collapse:collapse; background:rgba(255,255,255,.94);" +
+    " border:1px solid #d5dde6; border-radius:11px; overflow:hidden; box-shadow:0 3px 10px rgba(15,23,42,.05); }" +
+    "table.vmatrix th, table.vmatrix td { padding:8px 12px; border-bottom:1px solid rgba(90,110,145,.22); font-size:.85rem; }" +
+    "table.vmatrix thead th { background:#203852; color:#f8fbff; text-align:center; font-size:.78rem;" +
+    " text-transform:uppercase; letter-spacing:.04em; position:sticky; top:0; z-index:2; }" +
+    "table.vmatrix td.num, table.vmatrix th.num { text-align:right; font-variant-numeric:tabular-nums; }" +
+    "table.vmatrix td.muted { color:#b3bfcb; }" +
+    "table.vmatrix .sticky-col { position:sticky; left:0; z-index:1; background:#f4f7fb; text-align:left; font-weight:700; }" +
+    "table.vmatrix thead .sticky-col { z-index:3; background:#203852; color:#f8fbff; }" +
+    "table.vmatrix tbody tr:hover td { background:#eef4fb; }" +
+    "table.vmatrix tbody tr:hover .sticky-col { background:#dde8f5; }" +
+    ".vmtotal { background:rgba(47,90,168,.08); font-weight:800; }" +
+    "tr.vmtotrow td { background:#263e5b !important; color:#fff; font-weight:800; border-top:1px solid #3a5575; }" +
+    "tr.vmavgrow td { background:#e8edf6; color:#4a5a72; font-weight:700; font-style:italic; }" +
+    ".vmavg { color:#4a5a72; }" +
     "tr.total-row td { background:#263e5b !important; color:#ffffff; font-weight:900; }" +
     // ---- salesperson cards ----
     ".person-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr)); gap:10px; }" +
@@ -3085,6 +3306,7 @@ function renderWorkingDaysCard_(data) {
   var s = data.store;
   return (
     '<section class="section"><h2>2 &middot; Working Days (Current Month)</h2><div class="body">' +
+    '<div class="sec-desc">Definition: days the store is open this month — total, already consumed, and how many selling days are left. Holiday dates come from CONFIG.</div>' +
     '<div class="cards" style="margin-bottom:0">' +
     '<div class="card"><div class="label">Total Working Days</div><div class="value">' + s.totalWorkingDays + "</div></div>" +
     '<div class="card"><div class="label">Consumed</div><div class="value">' + s.consumedWorkingDays + "</div></div>" +
@@ -3112,6 +3334,12 @@ function renderSalespersonCards_(data) {
     );
   }
 
+  if (!data.salespeople.length) {
+    return '<section class="section"><h2>3 &middot; Salesperson Performance</h2><div class="body">' +
+      '<div class="sec-desc">Definition: per-person target vs achieved, targets from the target!C1:J1 roster.</div>' +
+      '<div class="empty-state">No salespersons on the roster — add names to <b>target!C1:J1</b> (empty cells are skipped). ' +
+      "People named in the CRM but not on the roster count only toward the store totals.</div></div></section>";
+  }
   var cards = data.salespeople.map(function (p) {
     var gate = p.repairGate;
 
@@ -3155,6 +3383,7 @@ function renderSalespersonCards_(data) {
 
   return (
     '<section class="section"><h2>3 &middot; Salesperson Performance</h2><div class="body">' +
+    '<div class="sec-desc">Definition: per-person target vs achieved for Service / Accessory / Repair (targets from <b>target!C1:J1</b> roster — empty cells are skipped), plus service+accessory incentive earned, the repair-revenue unlock gate, and Remaining ÷ Days-Left run rates.</div>' +
     '<div class="person-grid">' + cards + "</div>" +
     '<p class="muted" style="font-size:12.5px;margin:14px 0 0">' +
     "Only <b>Service</b> and <b>Accessory</b> revenue earn incentive. <b>Repair</b> revenue pays nothing on its own — " +
@@ -3176,7 +3405,9 @@ function renderIncentiveTable_(data) {
       money_(b.projectedIncentive) + '</td><td class="pos">' + money_(totalInc) + "</td></tr>";
   }).join("");
   return (
-    '<section class="section"><h2>4 &middot; Incentive Valuation — AMC &amp; Bundle</h2><div class="body scroll-x">' +
+    '<section class="section"><h2>4 &middot; Incentive Valuation — AMC &amp; Bundle</h2><div class="body">' +
+    '<div class="sec-desc">Definition: slab-wise incentive money — each AMC sale and each accessory-slab crossing pays a rate from the target sheet; bundle (DISC scheme) sales pay per-bundle slab amounts.</div>' +
+    '<div class="scroll-x">' +
     "<table><thead><tr><th>Salesperson</th><th>AMC Count</th><th>AMC Eligible</th><th>AMC To Next</th>" +
     "<th>Acc-AMC Count</th><th>Acc-AMC Eligible</th><th>Bundle Count</th><th>Bundle Eligible</th>" +
     "<th>Total Incentive</th></tr></thead><tbody>" + rows + "</tbody></table></div></section>"
@@ -3184,15 +3415,15 @@ function renderIncentiveTable_(data) {
 }
 
 function renderKpiSection_(data) {
-  // Targets come from target!B12:L14 (row 12 = revenue type, row 13 = KPI
-  // name, row 14 = target count). Google Reviews is intentionally NOT a KPI
+  // Targets come from target!B13:L16 (row 13 = revenue type, row 14 = KPI
+  // name, row 15 = target count). Google Reviews is intentionally NOT a KPI
   // row — it is shown as its own tile at the top of the page.
   var allKpis = data.kpi.ar.concat(data.kpi.rr, data.kpi.sr);
 
   var rows = allKpis.map(function (k) {
     var pctVal = k.target > 0 ? pct_(k.achieved, k.target) : 0;
     // Approx ACHIEVABLE value: the BALANCE count still to be hit multiplied
-    // by the per-unit approximate value from target!B15:L15 — how much can
+    // by the per-unit approximate value from target!B16:L16 — how much can
     // still be won against this KPI's balance target this month.
     var approxBal = k.approxAmount > 0 && k.target > 0 ? k.balance * k.approxAmount : 0;
     var approxCell;
@@ -3214,7 +3445,9 @@ function renderKpiSection_(data) {
   }).join("");
 
   return (
-    '<section class="section"><h2>5 &middot; Store KPI Parameters</h2><div class="body scroll-x">' +
+    '<section class="section"><h2>5 &middot; Store KPI Parameters</h2><div class="body">' +
+    '<div class="sec-desc">Definition: store-level KPI scorecard — KPI names from <b>target!B14:L14</b>, target counts from <b>target!B15:L15</b>; each KPI type AR (attachment) / RR (repair) / SR (service) shows achieved count, %, balance, and the money still winnable (balance × approx unit value).</div>' +
+    '<div class="scroll-x">' +
     "<table><thead><tr><th>KPI</th><th>Type</th><th>Target</th><th>Achieved</th><th>Achieved %</th>" +
     "<th>Balance</th><th>Approx Achievable Value</th><th>Achieved Value</th><th>Achieved GP</th></tr></thead><tbody>" + rows +
     "</tbody></table>" +
@@ -3233,7 +3466,9 @@ function renderInvoiceValuation_(data) {
     "</td><td>" + data.invoiceValuation.totalUniqueInvoices + "</td><td>" + money_(data.store.total.achieved) +
     "</td><td>" + money_(data.store.grossProfit.achieved) + "</td></tr>";
   return (
-    '<section class="section"><h2>6 &middot; Invoice Valuation</h2><div class="body scroll-x">' +
+    '<section class="section"><h2>6 &middot; Invoice Valuation</h2><div class="body">' +
+    '<div class="sec-desc">Definition: what invoices are really worth — line count, unique invoice count, revenue and gross profit per revenue type, plus AR (accessory attachment) rate next to invoices that qualified for one.</div>' +
+    '<div class="scroll-x">' +
     "<table><thead><tr><th>Revenue Type</th><th>Invoice Lines</th><th>Unique Invoices</th><th>Revenue</th>" +
     "<th>Gross Profit</th></tr></thead><tbody>" + rows + totalRow + "</tbody></table>" +
     '<div class="cards" style="margin-top:14px">' +
@@ -3542,6 +3777,9 @@ function renderDateWiseTable_(data) {
 
   return (
     '<section class="section" id="datewise"><h2>8 &middot; Date-wise Sales Revenue Analysis (by salesperson)</h2><div class="body">' +
+    '<div class="sec-desc">Definition: every invoice date, split per on-roster salesperson (target!C1:J1) —' +
+    ' Service / Accessory / Repair revenue and Gross Profit from crm rows (achieved values sit in oval pills,' +
+    ' green = hit that person\'s daily target, red = missed). Month-to-date total row pinned at the bottom.</div>' +
     '<div class="cards" style="margin-bottom:14px">' +
     '<div class="card"><div class="label">Store Daily Target</div><div class="value">' + money_(dailyTarget) +
     '</div><div class="sub">total target ÷ ' + data.store.totalWorkingDays + " working days</div></div>" +
