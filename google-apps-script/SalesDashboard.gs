@@ -2,21 +2,14 @@
  * ============================================================================
  *  SALES PERFORMANCE DASHBOARD — Google Apps Script
  * ============================================================================
- *  This script gives you TWO ways to see the dashboard — pick either or use
- *  both:
+ *  This script renders the dashboard as a real, standalone web page.
+ *  (The old in-sheet "Dashboard" tab writer was removed — the script no
+ *  longer creates any tab inside your spreadsheet.)
  *
- *  MODE A — a tab inside the spreadsheet (no deployment needed)
+ *  HOW TO DEPLOY
  *  --------------------------------------------------------------
  *   1. Open your Google Sheet (the one with the "crm" and "target" tabs).
  *   2. Extensions → Apps Script, paste this whole file in, save.
- *   3. Run the function "buildDashboard" once from the editor (▶) and
- *      accept the authorization prompt.
- *   4. Reload the spreadsheet — a "📊 Sales Dashboard" menu appears. Use
- *      "Build / Refresh Dashboard" any time crm/target data changes.
- *
- *  MODE B — a real, standalone web page (a "script page" / Web App)
- *  --------------------------------------------------------------
- *   1. Do steps 1–2 from Mode A (paste the script in, save).
  *   2. Click "Deploy" (top-right) → "New deployment".
  *   3. Click the gear icon next to "Select type" → choose "Web app".
  *   4. Fill in:
@@ -123,28 +116,9 @@ var CONFIG = {
  * MENU
  * ========================================================================= */
 
-function onOpen() {
-  SpreadsheetApp.getUi()
-    .createMenu("📊 Sales Dashboard")
-    .addItem("Build / Refresh Dashboard (sheet tab)", "buildDashboard")
-    .addItem("How do I get the Web App page?", "showWebAppHelp_")
-    .addToUi();
-}
 
-function showWebAppHelp_() {
-  var html = HtmlService.createHtmlOutput(
-    "<div style='font:14px Arial,sans-serif;line-height:1.5;padding:4px 8px'>" +
-      "<p><b>To open the dashboard as a standalone web page:</b></p>" +
-      "<ol>" +
-      "<li>In the Apps Script editor, click <b>Deploy</b> (top-right) → <b>New deployment</b>.</li>" +
-      "<li>Click the gear icon next to \"Select type\" → choose <b>Web app</b>.</li>" +
-      "<li>Execute as: <b>Me</b>. Who has access: <b>Anyone with the link</b>.</li>" +
-      "<li>Click <b>Deploy</b>, authorize, then copy the Web app URL.</li>" +
-      "<li>Open that URL in any browser — it always shows live data from this sheet.</li>" +
-      "</ol></div>",
-  ).setWidth(420).setHeight(280);
-  SpreadsheetApp.getUi().showModalDialog(html, "Web App Dashboard — Setup");
-}
+
+
 
 /* ============================================================================
  * ENTRY POINTS
@@ -357,17 +331,7 @@ function loadDashboardData_() {
 }
 
 /** MODE A: writes/refreshes the "Dashboard" tab inside the spreadsheet. */
-function buildDashboard() {
-  var loaded = loadDashboardData_();
-  writeDashboard(loaded.ss, loaded.data);
 
-  SpreadsheetApp.getActiveSpreadsheet().toast(
-    "Dashboard rebuilt: " + loaded.data.store.totalInvoices + " SALES rows, " +
-      loaded.data.store.uniqueInvoices + " unique invoices.",
-    "Sales Dashboard",
-    6,
-  );
-}
 
 /**
  * MODE B: the Web App entry point. Apps Script calls this automatically
@@ -1651,8 +1615,10 @@ var SERVICE_SPEC = {
   // Two extra repair-status columns: GSX's own status and the CRM repair status.
   gsxStatus: [/^gsxrepairstatusdescription$/i, /^gsxrepairstatus/i, /gsx.*repair.*status/i, /gsx.*status/i, /^gsx/i],
   crmRepairStatus: [/^crm_jobstatusdesc$/i, /crm.*job.*status/i, /crm.*repair.*status/i, /^crm_?job/i, /job.*status.*desc/i, /part.*used.*desc/i, /part.*used/i],
-  // Warranty classification per case — service!GSXWarrantyStatusDesc.
-  warranty: [/^gsxwarrantystatusdesc$/i, /gsx.*warranty.*status.*desc/i, /gsx.*warranty/i, /warranty.*status/i, /warranty/i],
+  // Warranty / coverage classification per case — service!CoverageCodeDescription
+  // (GSXWarrantyStatusDesc kept only as a legacy fallback).
+  warranty: [/^coveragecodedescription$/i, /coverage.*code.*desc/i, /coverage/i,
+    /^gsxwarrantystatusdesc$/i, /gsx.*warranty/i, /warranty.*status/i, /warranty/i],
   // Repair-type classification — service!RepairDocType (also drives the
   // repair analytics on the Performance page).
   repairDocType: [/^repairdoctype$/i, /repair.*doc.*type/i, /repair.*type/i, /doc.*type/i],
@@ -1689,14 +1655,16 @@ function computeJobManagement_(ss) {
   var advanceByMobile = {};
   var advanceSheet = getSheetByNames_(ss, CONFIG.ADVANCE_SHEET_NAMES);
   var advanceDirectCol = read.col.advanceDirect === undefined ? -1 : read.col.advanceDirect;
+  var advanceByCase = {};
   var advanceByMobileCount = 0;
   if (advanceSheet) {
     var adv = readSheetRows_(advanceSheet, ADVANCE_SPEC, []);
     adv.rows.forEach(function (a) {
       var key = mobileKey_(a.mobile);
-      if (!key) return;
-      // Same customer can appear more than once — keep the running total.
-      advanceByMobile[key] = (advanceByMobile[key] || 0) + num_(a.availableBalance);
+      if (key) advanceByMobile[key] = (advanceByMobile[key] || 0) + num_(a.availableBalance);
+      var cid = str_(a.caseId);
+      // Advance rows can carry a case id — keep a parallel lookup by case.
+      if (cid) advanceByCase[cid] = (advanceByCase[cid] || 0) + num_(a.availableBalance);
     });
   }
   advanceByMobileCount = Object.keys(advanceByMobile).length;
@@ -1774,6 +1742,24 @@ function computeJobManagement_(ss) {
     var isUnclaimed = (gsxStatus + " " + crmRepairStatus).toLowerCase()
       .indexOf(CONFIG.UNCLAIMED_KEYWORD.toLowerCase()) > -1;
 
+    // --- conditional rules -------------------------------------------
+    var warrantyTxt = str_(r.warranty);
+    var repairTypeTxt = str_(r.repairDocType);
+    var isSNR = /service\s*non[\s-]*repair/i.test(repairTypeTxt);
+    // (a) Service Non-Repair + CRM "ready for pickup" → GSX reads "Completed".
+    var gsxCompleted = isSNR && /ready.*for.*pickup/i.test(crmRepairStatus);
+    // (b) Non-SNR with NO repair-created date and a case older than 2 days →
+    // the whole row is highlighted (nothing has physically started).
+    var noRepairLate = !isSNR && !repair.valid && created.valid &&
+      (todayMid - created.ts) > 2 * 86400000;
+    // (c) Out Of Warranty (No Coverage) with NO advance anywhere for this
+    // case or the customer mobile → highlight the line (money at risk).
+    var isOOWNoCov = /out\s*of\s*warranty.*no\s*coverage/i.test(warrantyTxt);
+    var advanceCaseTotal = advanceByCase[caseId] || 0;
+    var anyAdvance = (advance > 0) || (advanceCaseTotal > 0) ||
+      (!advanceByMobileCount && advanceDirectCol !== -1 && num_(r.advanceDirect) > 0);
+    var oowNoAdvance = isOOWNoCov && !anyAdvance;
+
     var name = str_(r.firstName);
     if (str_(r.lastName)) name = (name + " " + str_(r.lastName)).trim();
 
@@ -1793,8 +1779,13 @@ function computeJobManagement_(ss) {
       commTs: comm ? comm.ts : 0,
       gsxStatus: gsxStatus || "—",
       crmRepairStatus: crmRepairStatus || "—",
-      warranty: str_(r.warranty) || "—",
-      repairType: str_(r.repairDocType) || "—",
+      warranty: warrantyTxt || "—",
+      repairType: repairTypeTxt || "—",
+      isSNR: isSNR,
+      gsxCompleted: gsxCompleted,
+      noRepairLate: noRepairLate,
+      oowNoAdvance: oowNoAdvance,
+      repairMissing: !repair.valid,
       isUnclaimed: isUnclaimed,
       // Communication freshness: days since the latest comm for this case.
       commAgeDays: comm ? Math.floor((Date.now() - comm.ts) / 86400000) : -1,
@@ -1839,6 +1830,7 @@ function computeJobManagement_(ss) {
       status: str_(r.status),
       repairType: str_(r.repairDocType) || "",
       warranty: str_(r.warranty) || "",
+      product: str_(r.product) || "",
     };
   });
 
@@ -1866,23 +1858,45 @@ function computeJobManagement_(ss) {
 }
 
 /**
- * Repair-type analytics for the PERFORMANCE tab.
+ * Repair / product / coverage analytics for the PERFORMANCE tab.
  *
  * Sources (per unique CaseId, all statuses):
- *   - repair type classification: service!RepairDocType
- *   - date of the repair:         service!CaseDate
- *   - turnaround time:            service!CaseDate → service!Ready_For_Pickup_Date_CRM
- *
- * Produces per repair type:
- *   - count for the current calendar month,
- *   - average monthly repairs created over the past 3 full months,
- *   - average days from case creation to ready-for-pickup (this month vs the
- *     past-3-month window),
- * plus a date × repair-type pivot for the current month.
+ *   - repair type:   service!RepairDocType      ("Service Non-Repair" excluded)
+ *   - product:       service!ProductDescription → collapsed into families
+ *                    (iPhone — incl. model variants & the bare "VIN" export,
+ *                    iPad, AirPods, Watch, Mac, Accessory / Non-serialized,
+ *                    everything else → Other)
+ *   - coverage:      service!CoverageCodeDescription
+ *   - date:          service!CaseDate (current month vs the previous 3)
+ *   - turnaround:    service!CaseDate → service!Ready_For_Pickup_Date_CRM
  */
+function productFamily_(desc) {
+  var t = (desc || "").toLowerCase();
+  if (/iphone/i.test(t) || /\bvin\b/i.test(t)) return "iPhone";
+  if (/ipad/i.test(t)) return "iPad";
+  if (/airpod/i.test(t)) return "AirPods";
+  if (/watch/i.test(t)) return "Watch";
+  if (/mac(book)?/i.test(t)) return "Mac";
+  if (/accessor|non[\s-]*serial/.test(t)) return "Accessory (Non-serialized)";
+  return "Other";
+}
+
+function isSNRType_(t) { return /service\s*non[\s-]*repair/i.test(t || ""); }
+
 function computeRepairAnalytics_(serviceRows) {
-  var rows = (serviceRows || []).filter(function (r) { return r.caseTs > 0; });
-  if (!rows.length) return { available: false, types: [], tiles: [], pivot: null, comparison: [] };
+  var all = (serviceRows || []).filter(function (r) { return r.caseTs > 0; });
+  if (!all.length) return { available: false };
+  // Same sheet cleanliness rules as Job Management: keep the latest CaseDate
+  // row per CaseId so duplicate exports never double-count.
+  var bestByCase = {}, order = [];
+  all.forEach(function (r, idx) {
+    var k = r.caseId ? r.caseId : ("_row" + idx);
+    if (!bestByCase[k]) { bestByCase[k] = r; order.push(k); }
+    else if (r.caseTs > bestByCase[k].caseTs) { bestByCase[k] = r; }
+  });
+  all = order.map(function (k) { return bestByCase[k]; });
+  // Service Non-Repair cases are excluded from every analytic on this page.
+  var rows = all.filter(function (r) { return !isSNRType_(r.repairType); });
 
   var now = new Date();
   function pad2(x) { return (x < 10 ? "0" : "") + x; }
@@ -1891,8 +1905,6 @@ function computeRepairAnalytics_(serviceRows) {
 
   var curKey = mkeyOf(now.getFullYear(), now.getMonth());
   var curLabel = monthAbbr(now.getMonth()) + " " + now.getFullYear();
-
-  // The three full months that came before the current one.
   var prev3 = [];
   for (var k = 3; k >= 1; k--) {
     var dd = new Date(now.getFullYear(), now.getMonth() - k, 1);
@@ -1902,494 +1914,256 @@ function computeRepairAnalytics_(serviceRows) {
   var prev3Keys = {};
   prev3.forEach(function (o) { prev3Keys[o.key] = true; });
 
-  function typeOf(r) { var t = (r.repairType || "").trim(); return t || "Unspecified"; }
-
-  var types = [];
-  var typeSet = {};
-  rows.forEach(function (r) { var t = typeOf(r);
-    if (!typeSet[t]) { typeSet[t] = true; types.push(t); } });
-  types.sort();
-
-  var stat = {};
-  types.forEach(function (t) {
-    stat[t] = { cur: 0, byMonth: {}, curDurs: [], prevDurs: [] };
-  });
-  var dayMap = {};  // current-month pivot days
-
-  rows.forEach(function (r) {
-    // r.caseMonth is "mm-yyyy" (slice of "dd-mm-yyyy"); normalise to "yyyy-mm".
-    var mkNorm = r.caseMonth ? r.caseMonth.slice(3) + "-" + r.caseMonth.slice(0, 2) : "";
-    var t = typeOf(r);
-    var st = stat[t];
-    var dur = (r.readyTs && r.readyTs >= r.caseTs)
-      ? Math.round((r.readyTs - r.caseTs) / 86400000) : -1;
-
-    if (mkNorm === curKey) {
-      st.cur++;
-      var dr = dayMap[r.caseDay] || (dayMap[r.caseDay] = { ts: r.caseTs, total: 0, perType: {} });
-      dr.total++;
-      dr.perType[t] = (dr.perType[t] || 0) + 1;
-      if (dur >= 0) st.curDurs.push(dur);
-    } else if (prev3Keys[mkNorm]) {
-      st.byMonth[mkNorm] = (st.byMonth[mkNorm] || 0) + 1;
-      if (dur >= 0) st.prevDurs.push(dur);
-    }
-  });
-
-  function avg1(arr) {
+  // Round integers only on this page, as requested.
+  function avgInt(arr) {
     if (!arr.length) return { avg: null, n: 0 };
     var sum = 0; arr.forEach(function (x) { sum += x; });
-    return { avg: Math.round((sum / arr.length) * 10) / 10, n: arr.length };
+    return { avg: Math.round(sum / arr.length), n: arr.length };
   }
 
-  var comparison = types.map(function (t) {
-    var st = stat[t];
-    var prevTotal = 0;
-    prev3.forEach(function (o) { prevTotal += st.byMonth[o.key] || 0; });
-    var perMonth = Math.round((prevTotal / 3) * 10) / 10;
-    var deltaPct = perMonth > 0 ? Math.round(((st.cur - perMonth) / perMonth) * 100) : null;
-    var c = avg1(st.curDurs), pv = avg1(st.prevDurs);
-    return {
-      type: t, cur: st.cur, perMonth: perMonth, deltaPct: deltaPct,
-      curDaysAvg: c.avg, curDaysN: c.n, prevDaysAvg: pv.avg, prevDaysN: pv.n,
-    };
+  // One comparison block per dimension (repair type / product / coverage).
+  function dimensionAnalysis(keyFn) {
+    var stat = {};
+    rows.forEach(function (r) {
+      var t = keyFn(r);
+      var st = stat[t] || (stat[t] = { cur: 0, byMonth: {}, curDurs: [], prevDurs: [] });
+      var mkNorm = r.caseMonth ? r.caseMonth.slice(3) + "-" + r.caseMonth.slice(0, 2) : "";
+      var dur = (r.readyTs && r.readyTs >= r.caseTs)
+        ? Math.round((r.readyTs - r.caseTs) / 86400000) : -1;
+      if (mkNorm === curKey) {
+        st.cur++;
+        if (dur >= 0) st.curDurs.push(dur);
+      } else if (prev3Keys[mkNorm]) {
+        st.byMonth[mkNorm] = (st.byMonth[mkNorm] || 0) + 1;
+        if (dur >= 0) st.prevDurs.push(dur);
+      }
+    });
+    var names = Object.keys(stat).sort();
+    return names.map(function (t) {
+      var st = stat[t];
+      var prevTotal = 0;
+      prev3.forEach(function (o) { prevTotal += st.byMonth[o.key] || 0; });
+      var perMonth = Math.round(prevTotal / 3);
+      var deltaPct = perMonth > 0 ? Math.round(((st.cur - perMonth) / perMonth) * 100) : null;
+      var c = avgInt(st.curDurs), pv = avgInt(st.prevDurs);
+      return { name: t, cur: st.cur, perMonth: perMonth, deltaPct: deltaPct,
+        curDaysAvg: c.avg, curDaysN: c.n, prevDaysAvg: pv.avg, prevDaysN: pv.n };
+    });
+  }
+
+  var typeComp = dimensionAnalysis(function (r) {
+    return (r.repairType || "").trim() || "Unspecified";
+  });
+  var productComp = dimensionAnalysis(function (r) { return productFamily_(r.product); });
+  var coverComp = dimensionAnalysis(function (r) {
+    return (r.warranty || "").trim() || "Unspecified";
   });
 
-  // Pivot: most recent date first.
-  var daysArr = Object.keys(dayMap).map(function (k) {
-    var d = dayMap[k]; d.dayKey = k; return d;
-  }).sort(function (a, b) { return b.ts - a.ts; });
-  var totals = {}; types.forEach(function (t) { totals[t] = 0; });
-  daysArr.forEach(function (d) {
-    types.forEach(function (t) { totals[t] += d.perType[t] || 0; });
-  });
-  var grand = types.reduce(function (a, t) { return a + totals[t]; }, 0);
-
-  var tiles = comparison.map(function (c) {
-    return { type: c.type, cur: c.cur, perMonth: c.perMonth, deltaPct: c.deltaPct,
-      curDaysAvg: c.curDaysAvg, prevDaysAvg: c.prevDaysAvg };
-  });
+  // Month-to-date totals per repair type (no date rows, as requested).
+  var mtdTotal = 0;
+  var mtdRows = typeComp.filter(function (c) { return c.cur > 0; })
+    .sort(function (a, b) { return b.cur - a.cur; });
+  mtdRows.forEach(function (c) { mtdTotal += c.cur; });
 
   return {
     available: true,
-    types: types, curLabel: curLabel, prev3Labels: prev3.map(function (o) { return o.label; }).join(", "),
-    tiles: tiles,
-    pivot: { rows: daysArr, totals: totals, grand: grand },
-    comparison: comparison,
-    totalRows: rows.length,
+    curLabel: curLabel, prev3Labels: prev3.map(function (o) { return o.label; }).join(", "),
+    typeComp: typeComp, productComp: productComp, coverComp: coverComp,
+    mtdRows: mtdRows, mtdTotal: mtdTotal,
+    typeCount: typeComp.length,
+    totalRows: all.length, exclRows: rows.length,
+    monthRepairsTotal: typeComp.reduce(function (a, c) { return a + c.cur; }, 0),
+    prevRepairAvgTotal: typeComp.reduce(function (a, c) { return a + c.perMonth; }, 0),
   };
 }
 
-/** Renders the PERFORMANCE tab (repair tiles, comparison, date pivot). */
+/** Renders the PERFORMANCE tab: repair-type, product & coverage analytics. */
 function renderRepairAnalytics_(ra) {
-  if (!ra || !ra.available) {
-    return '<section class="sec"><div class="sec-head"><h2>📈 Repair Type Performance</h2>' +
-      '<p class="sec-sub">needs the service sheet with CaseDate, RepairDocType and Ready_For_Pickup_Date_CRM columns.</p>' +
-      "</div>" +
-      '<div class="empty-perf">No dated service cases found.</div></section>';
+  if (!ra.available) {
+    return '<div id="performance" class="tab-page"><div class="section"><h2 class="section-title">🔧 Repair Analytics</h2>' +
+      '<div class="empty-state">No service data available yet.</div></div></div>';
+  }
+  var out = ['<div id="performance" class="tab-page active">'];
+
+  function deltaPill(c) {
+    if (c.deltaPct == null) return '<span class="pill pill-benchmark" title="No repairs logged in the previous 3 months">no 3-month baseline</span>';
+    var cls = c.deltaPct > 0 ? "pill-positive" : (c.deltaPct < 0 ? "pill-negative" : "pill-benchmark");
+    var sign = c.deltaPct > 0 ? "+" : "";
+    return '<span class="pill ' + cls + '" title="This month (to date) vs the 3-month monthly average">' +
+      sign + c.deltaPct + "% vs 3-mo avg</span>";
+  }
+  function daysCell(avg) { return avg == null ? "—" : avg + " d"; }
+
+  function bucketSection(icon, title, labelCol, comp, note) {
+    if (!comp.length) return "";
+    var o = ['<div class="section">' +
+      '<h2 class="section-title">' + icon + " " + esc_(title) + " · <em>" + esc_(ra.curLabel) + "</em></h2>" +
+      '<div class="section-sub">' + esc_(note) + ' Counts are whole numbers. "Service Non-Repair" cases are excluded.</div>' +
+      '<div class="tile-grid">'];
+    comp.forEach(function (c) {
+      o.push('<div class="tile"><div class="label">' + esc_(c.name) + "</div>" +
+        '<div class="value">' + c.cur + "</div>" +
+        '<div class="sub">avg ' + c.perMonth + "/month · prev 3 months</div>" +
+        deltaPill(c) + "</div>");
+    });
+    o.push('</div><div class="table-wrap"><table aria-label="' + esc_(title) + '"><thead><tr>' +
+      "<th>" + esc_(labelCol) + "</th>" +
+      '<th class="num">This Month</th><th class="num">Avg / Month · Prev 3M</th><th class="num">Change</th>' +
+      '<th class="num">Avg Days · Now</th><th class="num">Avg Days · Prev 3M</th>' +
+      "</tr></thead><tbody>");
+    comp.forEach(function (c) {
+      o.push("<tr><td><strong>" + esc_(c.name) + "</strong></td>" +
+        '<td class="num">' + c.cur + "</td>" +
+        '<td class="num">' + c.perMonth + "</td>" +
+        '<td class="num">' + deltaPill(c) + "</td>" +
+        '<td class="num">' + daysCell(c.curDaysAvg) + "</td>" +
+        '<td class="num">' + daysCell(c.prevDaysAvg) + "</td></tr>");
+    });
+    o.push("</tbody></table></div></div>");
+    return o.join("");
   }
 
-  // ---- tiles: one per repair type ----
-  var tiles = '<div class="cards">' + ra.tiles.map(function (t) {
-    var deltaTxt = t.deltaPct === null ? " · <span class=\"muted\">no 3-month baseline</span>"
-      : " · <span class=\"" + (t.deltaPct >= 0 ? "pos" : "neg") + "\">" +
-        (t.deltaPct >= 0 ? "+" : "") + t.deltaPct + "% vs 3-mo avg</span>";
-    return '<div class="card"><div class="label">' + esc_(t.type) + "</div>" +
-      '<div class="value">' + t.cur + "</div>" +
-      '<div class="sub">avg ' + t.perMonth + "/month · prev 3 months" + deltaTxt +
-      (t.curDaysAvg !== null ? "<br>avg ready time " + t.curDaysAvg + " d this month" : "") +
-      "</div></div>";
-  }).join("") + "</div>";
+  out.push(bucketSection("📈", "Repair Type Performance", "Repair Type", ra.typeComp,
+    "Cases logged in " + ra.curLabel + " vs the monthly average of the previous 3 months (" + ra.prev3Labels + ")."));
 
-  // ---- comparison table: this month vs the past-3-month average ----
-  var totalCur = 0, totalPrevSum = 0;
-  ra.comparison.forEach(function (c) { totalCur += c.cur; totalPrevSum += c.perMonth; });
-  function fmtDays(avg, n) { return avg === null ? '<span class="muted">—</span>' : avg + ' d <span class="muted">(' + n + ")</span>"; }
-  function fmtDelta(d) {
-    if (d === null) return '<span class="muted">—</span>';
-    return '<span class="' + (d >= 0 ? "comm-yes" : "age-crit") + '">' + (d >= 0 ? "+" : "") + d + "%</span>";
+  out.push(bucketSection("🧰", "Product Performance", "Product", ra.productComp,
+    'Products grouped into families — every iPhone variant (incl. exports like "VIN") rolls up under iPhone.'));
+
+  out.push(bucketSection("🛡", "Coverage Performance", "Coverage", ra.coverComp,
+    "Grouped by " + '<span class="src-hint">service!CoverageCodeDescription</span>' + "."));
+
+  // ---- Month-to-date totals per repair type (no date rows) ----
+  if (ra.mtdRows.length) {
+    out.push('<div class="section">' +
+      '<h2 class="section-title">🗓 Repair Types — Till Date · <em>' + esc_(ra.curLabel) + "</em></h2>" +
+      '<div class="section-sub">One composition row per repair type for the whole of ' + esc_(ra.curLabel) +
+      ' — no per-date split. "Service Non-Repair" excluded.</div>' +
+      '<div class="table-wrap"><table aria-label="Repair types till date"><thead><tr>' +
+      "<th>Repair Type</th>" + '<th class="num">Repairs Till Date · ' + esc_(ra.curLabel) + "</th>" +
+      "</tr></thead><tbody>");
+    ra.mtdRows.forEach(function (r) {
+      out.push("<tr><td><strong>" + esc_(r.name) + "</strong></td>" + '<td class="num">' + r.cur + "</td></tr>");
+    });
+    out.push('<tr class="totrow"><td>All repair types</td><td class="num">' + ra.mtdTotal + "</td></tr>");
+    out.push("</tbody></table></div></div>");
   }
-  var cmpRows = ra.comparison.map(function (c) {
-    return "<tr><td>" + esc_(c.type) + '</td><td class="num">' + c.cur + '</td><td class="num">' + c.perMonth +
-      '</td><td class="num">' + fmtDelta(c.deltaPct) + '</td><td class="num">' + fmtDays(c.curDaysAvg, c.curDaysN) +
-      '</td><td class="num">' + fmtDays(c.prevDaysAvg, c.prevDaysN) + "</td></tr>";
-  }).join("") +
-    '<tr class="totrow"><td>Total</td><td class="num">' + totalCur + '</td><td class="num">' +
-    (Math.round(totalPrevSum * 10) / 10) + '</td><td class="num"></td><td class="num"></td><td class="num"></td></tr>';
-
-  var cmpTable =
-    '<div class="scroll-x"><table class="ptable"><thead><tr>' +
-    '<th>Repair Type</th><th class="num">This month</th><th class="num">Avg / month (last 3 months)</th>' +
-    '<th class="num">Δ %</th><th class="num">Avg days to ready · this month</th>' +
-    '<th class="num">Avg days to ready · last 3 months</th>' +
-    "</tr></thead><tbody>" + cmpRows + "</tbody></table></div>";
-
-  // ---- pivot: dates (current month) × repair types ----
-  var pv = ra.pivot;
-  var pivHead = "<tr><th>Date</th>" + ra.types.map(function (t) {
-    return '<th class="num">' + esc_(t) + "</th>";
-  }).join("") + '<th class="num">Total</th></tr>';
-  var pivBody = pv.rows.map(function (d) {
-    return "<tr><td>" + esc_(d.dayKey) + "</td>" + ra.types.map(function (t) {
-      var n = d.perType[t] || 0;
-      return '<td class="num">' + (n || '<span class="muted">0</span>') + "</td>";
-    }).join("") + '<td class="num"><b>' + d.total + "</b></td></tr>";
-  }).join("");
-  var pivFoot = '<tr class="totrow"><td>Total</td>' + ra.types.map(function (t) {
-    return '<td class="num"><b>' + pv.totals[t] + "</b></td>";
-  }).join("") + '<td class="num"><b>' + pv.grand + "</b></td></tr>";
-
-  var pivotTable =
-    '<div class="scroll-x"><table class="ptable"><thead>' + pivHead + "</thead><tbody>" +
-    pivBody + pivFoot + "</tbody></table></div>";
-
-  return (
-    '<section class="sec"><div class="sec-head">' +
-    "<h2>📈 Repair Type Performance — tiles &amp; monthly comparison</h2>" +
-    '<p class="sec-sub">Classification from <b>service!RepairDocType</b>, dates from <b>service!CaseDate</b> on unique case ids. ' +
-    "Current month = <b>" + esc_(ra.curLabel) + "</b>; comparison average spans the previous 3 months (<b>" +
-    esc_(ra.prev3Labels) + "</b>). Turnaround = CaseDate → Ready_For_Pickup_Date_CRM.</p></div>" +
-    tiles + cmpTable + "</section>" +
-    '<section class="sec"><div class="sec-head">' +
-    "<h2>🗓 Repair Types by Date — " + esc_(ra.curLabel) + "</h2>" +
-    '<p class="sec-sub">One row per date (newest first), one column per repair type, current month only.</p></div>' +
-    pivotTable + "</section>"
-  );
+  out.push("</div>");
+  return out.join("");
 }
 
-/** Tab subtitle for the repair/performance page. */
 function repairMeta_(ra, generatedAt) {
-  var total = 0;
-  (ra && ra.comparison ? ra.comparison : []).forEach(function (c) { total += c.cur; });
-  return total + " repairs this month · " +
-    (ra && ra.types ? ra.types.length : 0) + " repair types · updated " +
+  var m = ra && ra.available ? ra.monthRepairsTotal : 0;
+  var types = ra && ra.typeComp ? ra.typeComp.filter(function (c) { return c.cur > 0; }).length : 0;
+  return m + " repairs this month · " + types + " repair types · updated " +
     Utilities.formatDate(generatedAt, Session.getScriptTimeZone(), "dd-MM-yyyy HH:mm");
+}
+
+/**
+ * Process-page period summary — verbatim block from the target sheet:
+ *   target!F1   = the period name shown as the dashboard title
+ *   target!G1:P7 = a 10-column × 7-row grid rendered exactly as written
+ */
+function computeTargetBlock_(ss) {
+  var sheet = ss.getSheetByName(CONFIG.TARGET_SHEET_NAME);
+  if (!sheet) return { available: false, periodName: "", grid: [] };
+  var rows = sheet.getDataRange().getDisplayValues();
+  function at(r, c) { return (rows[r] && rows[r][c] !== undefined && rows[r][c] !== null) ? String(rows[r][c]).trim() : ""; }
+  var periodName = at(0, 5);                       // F1
+  var grid = [];
+  for (var r = 0; r < 7; r++) {                    // rows 1..7
+    var line = [];
+    for (var c = 6; c <= 15; c++) line.push(at(r, c));  // G..P
+    grid.push(line);
+  }
+  var nonempty = grid.some(function (line) {
+    return line.some(function (cell) { return cell !== ""; });
+  });
+  return { available: nonempty || !!periodName, periodName: periodName, grid: grid };
+}
+
+/** Renders the target-block section (verbatim grid + repairs strip). */
+function renderTargetBlock_(tb, ra) {
+  if (!tb.available) return "";
+  var title = tb.periodName || "Current Period";
+  var headRow = tb.grid[0];
+  var bodyRows = tb.grid.slice(1);
+
+  var cells = (headRow || []).map(function (c) { return "<th>" + (c ? esc_(c) : "") + "</th>"; }).join("");
+  var body = (bodyRows || []).map(function (line) {
+    return "<tr>" + line.map(function (c, idx) {
+      return idx === 0 ? "<td><b>" + esc_(c) + "</b></td>" : "<td>" + esc_(c) + "</td>";
+    }).join("") + "</tr>";
+  }).join("");
+  var gridTable = '<div class="scroll-x"><table class="ptable targetblock">' +
+    "<thead><tr>" + cells + "</tr></thead><tbody>" + body + "</tbody></table></div>";
+
+  // Repairs comparison strip — Service Non-Repair excluded.
+  var strip = "";
+  if (ra && ra.available) {
+    var cur = ra.monthRepairsTotal, avg = ra.prevRepairAvgTotal;
+    var pill;
+    if (avg > 0) {
+      var delta = Math.round(((cur - avg) / avg) * 100);
+      pill = '<span class="pill ' + (delta >= 0 ? "pill-positive" : "pill-negative") + '">' +
+        (delta >= 0 ? "+" : "") + delta + "% vs 3-mo avg</span>";
+    } else {
+      pill = '<span class="pill pill-benchmark">no 3-month baseline</span>';
+    }
+    strip = '<div class="repair-strip">' +
+      '<div class="rs-item"><span class="rs-label">Total Repairs (excl. Service Non-Repair) — this month</span>' +
+        '<span class="rs-value">' + cur + "</span></div>" +
+      '<div class="rs-item"><span class="rs-label">3-month monthly average</span>' +
+        '<span class="rs-value">' + avg + "</span></div>" +
+      '<div class="rs-item">' + pill + "</div></div>";
+  }
+
+  return '<section class="sec"><div class="sec-head">' +
+    '<h2>🎯 ' + esc_(title) + '</h2>' +
+    '<p class="sec-sub">period summary from <span class="src-hint">target!G1:P7</span>' +
+    (tb.periodName ? ' (title from <span class="src-hint">target!F1</span>)' : "") +
+    " — rendered exactly as written in the sheet.</p></div>" +
+    gridTable + strip + "</section>";
 }
 
 /** Loads everything the Performance & Process pages need. */
 function loadPerformanceData_() {
   var ss = getSpreadsheet_();
   var jm = computeJobManagement_(ss);
+  var ra = computeRepairAnalytics_(jm.serviceRows || []);
   return {
     walkin: computeWalkinAnalysis_(ss),
     jobs: jm,
-    repair: computeRepairAnalytics_(jm.serviceRows || []),
+    repair: ra,
+    targetBlock: computeTargetBlock_(ss),
     generatedAt: new Date(),
   };
 }
 
-/* ============================================================================
- * DASHBOARD SHEET WRITER  (colorful, formatted output)
- * ========================================================================= */
 
-var COLORS = {
-  headerBg: "#1f2a44", headerFg: "#ffffff",
-  sectionBg: "#2563eb", sectionFg: "#ffffff",
-  subHeaderBg: "#dbeafe", subHeaderFg: "#1e3a8a",
-  good: "#16a34a", warn: "#d97706", bad: "#dc2626",
-  stripe: "#f8fafc", border: "#cbd5e1",
-  totalBg: "#e2e8f0",
-};
 
 function money_(n) { return "₹" + Math.round(n || 0).toLocaleString("en-IN"); }
 
-function writeDashboard(ss, data) {
-  var sheet = ss.getSheetByName(CONFIG.DASHBOARD_SHEET_NAME);
-  if (sheet) ss.deleteSheet(sheet);
-  sheet = ss.insertSheet(CONFIG.DASHBOARD_SHEET_NAME, 0);
-  sheet.setHiddenGridlines(true);
 
-  var row = 1;
 
-  // ---- Title banner ----
-  sheet.getRange(row, 1, 1, 10).merge().setValue("📊  SALES PERFORMANCE DASHBOARD")
-    .setFontSize(16).setFontWeight("bold").setFontColor(COLORS.headerFg)
-    .setBackground(COLORS.headerBg).setHorizontalAlignment("center").setVerticalAlignment("middle");
-  sheet.setRowHeight(row, 34);
-  row++;
-  sheet.getRange(row, 1, 1, 10).merge()
-    .setValue("Generated " + Utilities.formatDate(data.generatedAt, Session.getScriptTimeZone(), "dd MMM yyyy, HH:mm") +
-      "  ·  " + data.store.totalInvoices + " SALES rows  ·  " + data.store.uniqueInvoices + " unique invoices")
-    .setFontStyle("italic").setFontColor("#475569").setHorizontalAlignment("center");
-  row += 2;
 
-  row = writeStoreSection_(sheet, row, data);
-  row = writeWorkingDaysSection_(sheet, row, data);
-  row = writeSalespersonSection_(sheet, row, data);
-  row = writeIncentiveSection_(sheet, row, data);
-  row = writeKpiSection_(sheet, row, data);
-  row = writeInvoiceValuationSection_(sheet, row, data);
-  row = writeDateWiseSection_(sheet, row, data);
 
-  sheet.setFrozenRows(2);
-  // Section 7 is the widest block: Date + Store Total + 3 columns per person.
-  var maxCols = Math.max(12, 2 + data.salespeople.length * 3);
-  for (var c = 1; c <= maxCols; c++) sheet.autoResizeColumn(c);
-  sheet.setColumnWidth(1, 190);
-  ss.setActiveSheet(sheet);
-  sheet.getRange(1, 1).activate();
-}
 
-function sectionHeader_(sheet, row, title, span) {
-  var rng = sheet.getRange(row, 1, 1, span || 8);
-  rng.merge().setValue(title).setBackground(COLORS.sectionBg).setFontColor(COLORS.sectionFg)
-    .setFontWeight("bold").setFontSize(12).setVerticalAlignment("middle");
-  sheet.setRowHeight(row, 26);
-  return row + 1;
-}
 
-function tableHeaderRow_(sheet, row, headers) {
-  var rng = sheet.getRange(row, 1, 1, headers.length);
-  rng.setValues([headers]).setBackground(COLORS.subHeaderBg).setFontColor(COLORS.subHeaderFg)
-    .setFontWeight("bold").setHorizontalAlignment("center");
-  return row + 1;
-}
 
-function pctColor_(pctVal) {
-  if (pctVal >= 100) return COLORS.good;
-  if (pctVal >= 70) return "#2563eb";
-  if (pctVal >= 40) return COLORS.warn;
-  return COLORS.bad;
-}
 
-function writeStoreSection_(sheet, row, data) {
-  row = sectionHeader_(sheet, row, "1 · STORE TARGET vs ACHIEVEMENT", 6);
-  row = tableHeaderRow_(sheet, row, ["Revenue Type", "Target", "Achieved", "Achieved %", "Balance", "Req / Day"]);
-  var s = data.store;
-  var buckets = [["Total Revenue", s.total], ["Service", s.service], ["Accessories", s.accessory],
-    ["Repair", s.repair], ["Gross Profit", s.grossProfit]];
-  buckets.forEach(function (pair) {
-    var label = pair[0], b = pair[1];
-    var r = sheet.getRange(row, 1, 1, 6);
-    r.setValues([[label, money_(b.target), money_(b.achieved), b.pct + "%", money_(b.balance), money_(b.requiredPerDay)]]);
-    sheet.getRange(row, 4).setFontColor(pctColor_(b.pct)).setFontWeight("bold");
-    sheet.getRange(row, 1, 1, 6).setBackground(row % 2 === 0 ? COLORS.stripe : "#ffffff");
-    row++;
-  });
-  // Google review — read from target!A9:C10
-  var gr = data.kpi.googleReview;
-  sheet.getRange(row, 1, 1, 6).setValues([["Google Reviews", "prev month: " + gr.previousMonth,
-    "this month: " + gr.currentMonth, (gr.difference >= 0 ? "+" : "") + gr.difference, "", ""]]);
-  sheet.getRange(row, 1).setFontWeight("bold");
-  sheet.getRange(row, 4).setFontWeight("bold").setFontColor(gr.difference >= 0 ? COLORS.good : COLORS.bad);
-  sheet.getRange(row, 1, 1, 6).setBackground("#eef2f9");
-  row++;
-  return row + 1;
-}
 
-function writeWorkingDaysSection_(sheet, row, data) {
-  row = sectionHeader_(sheet, row, "2 · WORKING DAYS (CURRENT MONTH)", 4);
-  row = tableHeaderRow_(sheet, row, ["Total Working Days", "Consumed", "Balance", "Days Elapsed / In Month"]);
-  var s = data.store;
-  sheet.getRange(row, 1, 1, 4).setValues([[s.totalWorkingDays, s.consumedWorkingDays, s.balanceWorkingDays,
-    s.daysElapsed + " / " + s.daysInMonth]]);
-  sheet.getRange(row, 3).setFontColor(s.balanceWorkingDays > 0 ? COLORS.warn : COLORS.good).setFontWeight("bold");
-  row++;
-  return row + 1;
-}
 
-function writeSalespersonSection_(sheet, row, data) {
-  row = sectionHeader_(sheet, row, "3 · SALESPERSON PERFORMANCE (per revenue type)", 8);
-  row = tableHeaderRow_(sheet, row,
-    ["Salesperson", "Type", "Target", "Achieved", "Achieved %", "Balance", "Incentive", "Invoices"]);
-  data.salespeople.forEach(function (p, idx) {
-    var types = [["Total", p.total], ["Service", p.service], ["Accessory", p.accessory], ["Repair", p.repair]];
-    types.forEach(function (pair, ti) {
-      var label = pair[0], b = pair[1];
-      var incTxt;
-      if (label === "Repair") incTxt = "— (gate only)";
-      else if (label === "Total") incTxt = money_(p.payableIncentive) + (p.repairGate.met ? "" : " (locked)");
-      else incTxt = b.incentive ? money_(b.incentive) : "—";
-      var vals = [ti === 0 ? p.name : "", label, money_(b.target), money_(b.achieved), b.pct + "%",
-        money_(b.balance), incTxt, ti === 0 ? p.invoiceCount : ""];
-      sheet.getRange(row, 1, 1, 8).setValues([vals]);
-      sheet.getRange(row, 5).setFontColor(pctColor_(b.pct)).setFontWeight("bold");
-      sheet.getRange(row, 1, 1, 8).setBackground(idx % 2 === 0 ? COLORS.stripe : "#ffffff");
-      if (ti === 0) sheet.getRange(row, 1).setFontWeight("bold");
-      row++;
-    });
-  });
-  // Repair incentive gate summary
-  var gateLines = data.salespeople.map(function (p) {
-    return p.name + ": repair " + p.repairGate.achievedPct.toFixed(1) + "% of target" +
-      (p.repairGate.met ? " — incentive unlocked (" + money_(p.payableIncentive) + ")"
-        : " — LOCKED, needs " + money_(p.repairGate.shortfall) + " more");
-  }).join("   |   ");
-  sheet.getRange(row, 1, 1, 8).merge()
-    .setValue("Incentive gate (" + CONFIG.REPAIR_INCENTIVE_GATE_PCT + "% repair target): " + gateLines)
-    .setFontSize(9).setFontStyle("italic").setFontColor("#475569").setWrap(true);
-  row++;
-  return row + 1;
-}
 
-function writeIncentiveSection_(sheet, row, data) {
-  row = sectionHeader_(sheet, row, "4 · INCENTIVE VALUATION — AMC & BUNDLE", 9);
-  row = tableHeaderRow_(sheet, row,
-    ["Salesperson", "AMC Count", "AMC Eligible", "AMC To Next Slab", "Acc-AMC Count", "Acc-AMC Eligible",
-      "Bundle Count", "Bundle Eligible", "Total Incentive"]);
-  var bundleByKey = {};
-  data.bundle.forEach(function (b) { bundleByKey[b.key] = b; });
-  data.amc.forEach(function (a, idx) {
-    var b = bundleByKey[a.key] || { count: 0, projectedIncentive: 0 };
-    var totalInc = a.projectedIncentive + b.projectedIncentive;
-    sheet.getRange(row, 1, 1, 9).setValues([[a.name, a.amcCount, money_(a.amcEligible),
-      a.amcNextSlab ? a.amcRemaining + " more" : "top slab", a.accessoryCount, money_(a.accessoryEligible),
-      b.count, money_(b.projectedIncentive), money_(totalInc)]]);
-    sheet.getRange(row, 1, 1, 9).setBackground(idx % 2 === 0 ? COLORS.stripe : "#ffffff");
-    sheet.getRange(row, 9).setFontWeight("bold").setFontColor(COLORS.good);
-    row++;
-  });
-  return row + 1;
-}
 
-function writeKpiSection_(sheet, row, data) {
-  // Targets come from target!B12:L14. Google Reviews is NOT listed here —
-  // it is reported separately from target!A9:C10.
-  row = sectionHeader_(sheet, row, "5 · STORE KPI PARAMETERS (target!B12:L14)", 6);
-  row = tableHeaderRow_(sheet, row, ["KPI", "Type", "Target", "Achieved", "Balance", "Achieved Value / GP"]);
-  var allKpis = data.kpi.ar.concat(data.kpi.rr, data.kpi.sr);
-  allKpis.forEach(function (k, idx) {
-    sheet.getRange(row, 1, 1, 6).setValues([[k.label, k.category, k.target || "—", k.achieved, k.target > 0 ? k.balance : "—",
-      money_(k.achievedValue) + " / " + money_(k.achievedGp)]]);
-    sheet.getRange(row, 5).setFontColor(k.target > 0 && k.balance === 0 ? COLORS.good : COLORS.warn).setFontWeight("bold");
-    sheet.getRange(row, 1, 1, 6).setBackground(idx % 2 === 0 ? COLORS.stripe : "#ffffff");
-    row++;
-  });
-  return row + 1;
-}
 
-function writeInvoiceValuationSection_(sheet, row, data) {
-  row = sectionHeader_(sheet, row, "6 · INVOICE VALUATION", 6);
-  row = tableHeaderRow_(sheet, row, ["Revenue Type", "Invoice Lines", "Unique Invoices", "Revenue", "Gross Profit", ""]);
-  data.revenueTypes.forEach(function (rt, idx) {
-    sheet.getRange(row, 1, 1, 5).setValues([[rt.label, rt.invoiceLines, rt.uniqueInvoices, money_(rt.revenue), money_(rt.gp)]]);
-    sheet.getRange(row, 1, 1, 5).setBackground(idx % 2 === 0 ? COLORS.stripe : "#ffffff");
-    row++;
-  });
-  sheet.getRange(row, 1, 1, 5).setValues([["Overall", data.invoiceValuation.totalInvoiceLines,
-    data.invoiceValuation.totalUniqueInvoices, money_(data.store.total.achieved), money_(data.store.grossProfit.achieved)]])
-    .setBackground(COLORS.totalBg).setFontWeight("bold");
-  row++;
-  sheet.getRange(row, 1, 1, 4).setValues([["Bundle unique invoices (SchemeCode starts DISC)",
-    data.invoiceValuation.bundleUniqueInvoices, "AMC unique invoices (SubCategory has AMC)",
-    data.invoiceValuation.amcUniqueInvoices]]);
-  row += 2;
-  return row;
-}
 
-function writeDateWiseSection_(sheet, row, data) {
-  var people = data.salespeople;
-  var TYPES = [["service", "Service"], ["accessory", "Accessory"], ["repair", "Repair"], ["grossProfit", "Gross Profit"]];
-  var width = 2 + people.length * TYPES.length;
 
-  row = sectionHeader_(sheet, row, "7 · DATE-WISE SALES REVENUE ANALYSIS (by salesperson)", width);
 
-  var dailyTarget = data.store.dailyTarget;
-  sheet.getRange(row, 1, 1, 4).setValues([["Store daily target (total ÷ working days)", money_(dailyTarget),
-    "Working days", data.store.totalWorkingDays]]).setFontWeight("bold");
-  row++;
-  // Per-person daily targets, so the /target figures in the grid are explained.
-  people.forEach(function (p) {
-    sheet.getRange(row, 1, 1, 4).setValues([[p.name + " daily targets",
-      "Service " + money_(p.dailyTargets.service),
-      "Accessory " + money_(p.dailyTargets.accessory),
-      "Repair " + money_(p.dailyTargets.repair)]]);
-    sheet.getRange(row, 1).setFontWeight("bold");
-    row++;
-  });
-  row++;
 
-  // ---- two-row banded header: salesperson group over revenue types ----
-  var tints = ["#eaf1ff", "#fdefe2", "#e6f6ee", "#f3eafe", "#fce9f2"];
-  var hdr1 = ["Date", "Store Total"];
-  var hdr2 = ["", ""];
-  people.forEach(function (p) {
-    TYPES.forEach(function (pair, ti) {
-      hdr1.push(ti === 0 ? p.name : "");
-      hdr2.push(pair[1]);
-    });
-  });
-  sheet.getRange(row, 1, 1, width).setValues([hdr1])
-    .setBackground(COLORS.headerBg).setFontColor(COLORS.headerFg)
-    .setFontWeight("bold").setHorizontalAlignment("center");
-  people.forEach(function (p, i) {
-    var c = 3 + i * TYPES.length;
-    sheet.getRange(row, c, 1, TYPES.length).merge()
-      .setBackground(COLORS.headerBg).setFontColor(COLORS.headerFg)
-      .setFontWeight("bold").setHorizontalAlignment("center").setValue(p.name);
-  });
-  row++;
-  sheet.getRange(row, 1, 1, width).setValues([hdr2])
-    .setBackground(COLORS.subHeaderBg).setFontColor(COLORS.subHeaderFg)
-    .setFontWeight("bold").setHorizontalAlignment("center");
-  sheet.getRange(row - 1, 1, 2, 1).merge().setValue("Date")
-    .setBackground(COLORS.headerBg).setFontColor(COLORS.headerFg)
-    .setFontWeight("bold").setVerticalAlignment("middle");
-  sheet.getRange(row - 1, 2, 2, 1).merge().setValue("Store Total")
-    .setBackground(COLORS.headerBg).setFontColor(COLORS.headerFg)
-    .setFontWeight("bold").setVerticalAlignment("middle").setHorizontalAlignment("center");
-  row++;
 
-  // ---- one row per date, newest first ----
-  var orderedDays = data.days.slice().sort(function (a, b) { return b.sortKey - a.sortKey; });
-  orderedDays.forEach(function (d) {
-    var byKey = {};
-    (d.people || []).forEach(function (pp) { byKey[pp.key] = pp; });
 
-    var vals = [d.undated ? "No date" : (d.dateKey + (d.weekday ? "  " + d.weekday : "") + (d.holiday ? "  🔶" : "")),
-      money_(d.totalRevenue)];
-    people.forEach(function (p) {
-      var pd = byKey[p.key];
-      var typeMap = {};
-      if (pd) pd.types.forEach(function (t) { typeMap[t.type] = t; });
-      TYPES.forEach(function (pair) {
-        var tk = pair[0];
-        var achieved = typeMap[tk] ? typeMap[tk].value : 0;
-        vals.push(money_(achieved) + " / " + money_(p.dailyTargets[tk] || 0));
-      });
-    });
-    sheet.getRange(row, 1, 1, width).setValues([vals]);
 
-    // Date column keeps the store-total rule.
-    sheet.getRange(row, 1).setFontWeight("bold");
-    sheet.getRange(row, 2).setFontWeight("bold")
-      .setFontColor(d.totalRevenue >= dailyTarget ? COLORS.good : COLORS.bad);
-    if (d.holiday) sheet.getRange(row, 1, 1, 2).setBackground("#fdf0d5");
 
-    // Each person's cells: tinted group + green/red vs their own daily target.
-    people.forEach(function (p, i) {
-      var pd = byKey[p.key];
-      var typeMap = {};
-      if (pd) pd.types.forEach(function (t) { typeMap[t.type] = t; });
-      TYPES.forEach(function (pair, ti) {
-        var tk = pair[0];
-        var achieved = tk === "grossProfit"
-          ? (pd ? pd.grossProfit : 0)
-          : (typeMap[tk] ? typeMap[tk].value : 0);
-        var tgt = p.dailyTargets[tk] || 0;
-        var c = 3 + i * TYPES.length + ti;
-        sheet.getRange(row, c).setBackground(tints[i % tints.length]);
-        if (tgt > 0) {
-          sheet.getRange(row, c).setFontColor(achieved >= tgt ? COLORS.good : COLORS.bad).setFontWeight("bold");
-        }
-      });
-    });
-    row++;
-  });
-
-  // ---- month-to-date footer ----
-  var footer = ["Month to date", money_(data.store.total.achieved)];
-  people.forEach(function (p) {
-    TYPES.forEach(function (pair) {
-      footer.push(money_(p[pair[0]].achieved) + " / " + money_(p[pair[0]].target));
-    });
-  });
-  sheet.getRange(row, 1, 1, width).setValues([footer])
-    .setBackground(COLORS.totalBg).setFontWeight("bold");
-  row++;
-
-  return row + 1;
-}
 
 /* ============================================================================
  * WEB APP HTML RENDERER  (Mode B — the standalone "script page")
@@ -2426,6 +2200,7 @@ function renderSectionsHtml_(data) {
   body += renderIncentiveTable_(data);
   body += renderKpiSection_(data);
   body += renderInvoiceValuation_(data);
+  body += renderWeeklyAnalysis_(data);
   body += renderDateWiseTable_(data);
   return body;
 }
@@ -2622,18 +2397,22 @@ function renderWalkinAnalysis_(wl) {
       "Add a tab named `" + CONFIG.WALKIN_SHEET_NAMES[0] + "` with columns MobileNo, TokenDate, VisitPurposeDesc, CaseId, InvoiceCode and **Remark.");
   }
   var t = wl.totals;
-  function card(label, value, sub, cls) {
-    return '<div class="card"><div class="label">' + esc_(label) + '</div><div class="value' +
-      (cls ? " " + cls : "") + '">' + esc_(value) + '</div><div class="sub">' + esc_(sub || "") + "</div></div>";
-  }
+  // Summary rendered as ONE table (was a row of tiles) — one row per metric.
   var head =
-    '<div class="cards">' +
-    card("Total Walk-ins", t.walkins, t.activeDays + " active days") +
-    card("Cases Created", t.cases, t.caseRate + "% case conversion") +
-    card("Invoices Created", t.invoices, t.invoiceRate + "% invoice conversion") +
-    card("Remarks Updated", t.remarks, "rows carrying a remark") +
-    card("Dead Leads", t.deadLeads, t.deadRate + "% — no case, no invoice, no remark", t.deadLeads > 0 ? "neg" : "") +
-    "</div>";
+    '<div class="scroll-x" style="margin-bottom:14px"><table class="ptable walksum">' +
+    "<thead><tr><th>Metric</th>" + '<th class="num">Value</th>' +
+    "<th>Reading</th></tr></thead><tbody>" +
+    "<tr><td><b>Total Walk-ins</b></td>" + '<td class="num"><b>' + t.walkins + "</b></td>" +
+      "<td>" + esc_(t.activeDays + " active days") + "</td></tr>" +
+    "<tr><td><b>Cases Created</b></td>" + '<td class="num"><b>' + t.cases + "</b></td>" +
+      "<td>" + esc_(t.caseRate + "% case conversion") + "</td></tr>" +
+    "<tr><td><b>Invoices Created</b></td>" + '<td class="num"><b>' + t.invoices + "</b></td>" +
+      "<td>" + esc_(t.invoiceRate + "% invoice conversion") + "</td></tr>" +
+    "<tr><td><b>Remarks Updated</b></td>" + '<td class="num"><b>' + t.remarks + "</b></td>" +
+      "<td>rows carrying a remark</td></tr>" +
+    '<tr class="deadsum"><td><b>Dead Leads</b></td>' + '<td class="num dead"><b>' + t.deadLeads + "</b></td>" +
+      "<td>" + esc_(t.deadRate + "% — no case, no invoice, no remark") + "</td></tr>" +
+    "</tbody></table></div>";
 
   function c0(n) { return n ? ('<td class="num">' + n + "</td>") : '<td class="num muted">—</td>'; }
 
@@ -2776,7 +2555,37 @@ function renderJobManagement_(jm) {
     return "<td>" + esc_(s) + "</td>";
   }
 
-  var rows = jm.jobs.map(function (j) {
+  // ---- club the jobs by CRM repair status (bucket-wise) -------------
+  // Buckets are alphabetical; within a bucket the oldest job stays first so
+  // the longest-waiting cases in each status sit at the top of their block.
+  var grouped = jm.jobs.slice().sort(function (a, b) {
+    var ga = (a.crmRepairStatus || "—").toLowerCase();
+    var gb = (b.crmRepairStatus || "—").toLowerCase();
+    if (ga < gb) return -1;
+    if (ga > gb) return 1;
+    return b.jobAge - a.jobAge;
+  });
+
+  var NCOLS = 14;
+  var prevGroup = null;
+  var rowParts = [];
+  for (var gi = 0; gi < grouped.length; gi++) {
+    var j = grouped[gi];
+    var grp = j.crmRepairStatus || "—";
+    if (grp !== prevGroup) {
+      prevGroup = grp;
+      var bucketCount = grouped.filter(function (x) {
+        return (x.crmRepairStatus || "—") === grp;
+      }).length;
+      rowParts.push('<tr class="grphead"><td colspan="' + NCOLS + '">' + esc_(grp) +
+        '<span class="grphead-count">' + bucketCount + " open case" + (bucketCount === 1 ? "" : "s") +
+        "</span></td></tr>");
+    }
+    rowParts.push(buildRow_(j));
+  }
+  var rows = rowParts.join("");
+
+  function buildRow_(j) {
     var comm = j.communicated
       ? '<span class="comm-yes">Yes</span>'
       : '<span class="comm-no">No</span>';
@@ -2790,16 +2599,26 @@ function renderJobManagement_(jm) {
     } else {
       commDate = '<td class="comm-pos">' + esc_(j.commDate) + " ✓</td>";
     }
-    var rowCls = j.isUnclaimed ? "unclaimed-row" : "";
-    return "<tr" + (rowCls ? ' class="' + rowCls + '"' : "") + ">" +
+    // Rule (a): Service Non-Repair + CRM ready-for-pickup → GSX = Completed.
+    var gsxDisplay = j.gsxCompleted ? '<td><span class="badge completed">Completed</span></td>'
+      : repairStatusCell(j.gsxStatus);
+    var rowClses = [];
+    if (j.isUnclaimed) rowClses.push("unclaimed-row");
+    // Rule (b): physical repair never started and the case is 2+ days old.
+    if (j.noRepairLate) rowClses.push("norepair-row");
+    // Rule (c): Out Of Warranty (No Coverage) with no advance anywhere.
+    if (j.oowNoAdvance) rowClses.push("oow-nopay-row");
+    return "<tr" + (rowClses.length ? ' class="' + rowClses.join(" ") + '"' : "") + ">" +
       '<td class="sticky-col"><b>' + esc_(j.caseId) + "</b>" +
-        (j.isUnclaimed ? ' <span class="badge-unclaimed sm">⚠ Unclaimed</span>' : "") + "</td>" +
+        (j.isUnclaimed ? ' <span class="badge-unclaimed sm">⚠ Unclaimed</span>' : "") +
+        (j.noRepairLate ? ' <span class="badge-norepair sm">⚠ No repair started</span>' : "") +
+        (j.oowNoAdvance ? ' <span class="badge-oow sm">⚠ OOW · no advance</span>' : "") + "</td>" +
       "<td>" + esc_(j.name) + "</td>" +
       "<td>" + esc_(j.mobile) + "</td>" +
       "<td>" + esc_(j.product) + "</td>" +
       "<td>" + esc_(j.warranty) + "</td>" +
       "<td>" + esc_(j.repairType) + "</td>" +
-      repairStatusCell(j.gsxStatus) +
+      gsxDisplay +
       repairStatusCell(j.crmRepairStatus) +
       "<td>" + esc_(j.createdDate) + "</td>" +
       "<td>" + esc_(j.repairDate) + "</td>" +
@@ -2808,7 +2627,7 @@ function renderJobManagement_(jm) {
       "<td>" + comm + "</td>" +
       commDate +
       "</tr>";
-  }).join("");
+  }
 
   var table =
     '<div class="scroll-x"><table class="ptable jobtable">' +
@@ -2841,6 +2660,8 @@ function renderJobManagement_(jm) {
 function renderPerformanceHtml_(pd) {
   var wl = pd.walkin, jm = pd.jobs;
 
+  var secTarget = renderTargetBlock_(pd.targetBlock, pd.repair);
+
   var secWalkin =
     '<section class="sec"><div class="sec-head">' +
     '<h2>🚶 Walk-in Analysis</h2>' +
@@ -2858,10 +2679,13 @@ function renderPerformanceHtml_(pd) {
     '<h2>🔧 Job Management — Open Jobs</h2>' +
     '<p class="sec-sub">source: ' + esc_(jm.sheetName) + '. One row per <b>unique CaseId</b> (repeated rows are merged, latest case date wins' +
     (jm.totals.duplicatesMerged ? ' — ' + jm.totals.duplicatesMerged + " duplicate row(s) merged" : "") +
-    '). Only cases whose <b>JobStatus is “open”</b> are listed. Warranty Type comes from <b>GSXWarrantyStatusDesc</b>, Repair Type from <b>RepairDocType</b>. Advance is matched on the customer mobile with the advance sheet. Communicated = Yes when a comm record matches the case id — the latest update shows <span style="color:#15803d;font-weight:700">green</span> when within ' + CONFIG.COMM_STALE_DAYS + ' days of today, <span style="color:#b91c1c;font-weight:700">red</span> when older or “Not updated”. “Unclaimed Device” rows are highlighted amber.</p>' +
+    '). Rows are clubbed by <b>CRM repair status</b>. Only cases whose <b>JobStatus is “open”</b> are listed. Warranty Type comes from <b>CoverageCodeDescription</b>, Repair Type from <b>RepairDocType</b>. Service Non-Repair cases that are ready for pickup show GSX as <b>Completed</b>. Highlights: no repair date + case &gt; 2 days (rose), <b>Out Of Warranty (No Coverage)</b> with no advance (violet), Unclaimed Device (amber). Advance is matched on the customer mobile with the advance sheet. Communicated = Yes when a comm record matches the case id — the latest update shows <span style="color:#15803d;font-weight:700">green</span> when within ' + CONFIG.COMM_STALE_DAYS + ' days of today, <span style="color:#b91c1c;font-weight:700">red</span> when older or “Not updated”. “Unclaimed Device” rows are highlighted amber.</p>' +
     "</div>" + renderJobManagement_(jm) + "</section>";
 
-  return secWalkin + secToken + secJobs;
+  var pieces = [];
+  if (secTarget) pieces.push(secTarget);
+  pieces.push(secWalkin, secToken, secJobs);
+  return pieces.join("");
 }
 
 function getDashboardCss_() {
@@ -2993,6 +2817,21 @@ function getDashboardCss_() {
     "tbody tr:last-child td { border-bottom:none; }" +
     "tbody tr:hover td { background:rgba(69,217,245,.06); }" +
     "tr.holiday td { background:rgba(255,212,119,.10) !important; }" +
+    ".status-chip { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:700; }" +
+    ".status-chip.ok { background:rgba(99,230,183,.28); color:#0f7a52; }" +
+    ".status-chip.warn { background:rgba(255,212,119,.30); color:#8a5b00; }" +
+    ".status-chip.muted-chip { background:rgba(120,130,150,.16); color:#5b6675; }" +
+    ".src-hint { font-family:ui-monospace,Consolas,monospace; font-size:12px; background:rgba(120,130,150,.14);" +
+    " padding:1px 6px; border-radius:6px; }" +
+    ".walksum { max-width:640px; }" +
+    ".walksum td:not(.num) { text-align:left; }" +
+    ".walksum tr.deadsum td { background:rgba(255,157,167,.10); }" +
+    ".targetblock th, .targetblock td { text-align:left; }" +
+    ".repair-strip { display:flex; flex-wrap:wrap; gap:18px; align-items:center; margin-top:12px;" +
+    " padding:12px 16px; border:1px solid #d5dde6; border-radius:10px; background:#f6f9fd; }" +
+    ".rs-item { display:flex; flex-direction:column; gap:2px; }" +
+    ".rs-label { font-size:12px; color:#5b6675; font-weight:600; }" +
+    ".rs-value { font-size:20px; font-weight:800; color:#17263a; }" +
     "tr.total-row td { background:#263e5b !important; color:#ffffff; font-weight:900; }" +
     // ---- salesperson cards ----
     ".person-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr)); gap:10px; }" +
@@ -3003,6 +2842,21 @@ function getDashboardCss_() {
     " color:var(--white); font-size:.82rem; font-weight:600; font-variant-numeric:tabular-nums; }" +
     ".row-line .muted { color:var(--muted); }" +
     ".scroll-x { overflow-x:auto; border-radius:11px; }" +
+    // Performance-page tile row: one navy card per bucket, fits any width.
+    ".tile-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr)); gap:10px; margin-bottom:14px; }" +
+    ".tile { background:linear-gradient(145deg,rgba(23,49,84,.98),rgba(11,25,47,.98));" +
+    " border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 20px rgba(0,0,0,.18);" +
+    " min-width:0; overflow:hidden; padding:13px; }" +
+    ".tile .label { color:var(--muted); display:block; font-size:.6rem; font-weight:800;" +
+    " letter-spacing:.06em; line-height:1.15; text-transform:uppercase; white-space:nowrap;" +
+    " overflow:hidden; text-overflow:ellipsis; }" +
+    ".tile .value { display:block; margin-top:4px; color:var(--white); font-size:1.35rem; font-weight:800; }" +
+    ".tile .sub { display:block; margin:4px 0 6px; color:var(--muted); font-size:.72rem; font-weight:500; }" +
+    // Pivoted matrices keep numbers right-aligned and columns tight when space allows.
+    "table.matrix td, table.matrix th { text-align:right; }" +
+    "table.matrix td.sticky-col, table.matrix th.sticky-col, table.matrix td:first-child { text-align:left; }" +
+    "table.ptable { width:100%; border-collapse:collapse; }" +
+    "table.ptable th.num, table.ptable td.num { text-align:right; }" +
     ".foot { text-align:center; color:#64748b; font-size:.74rem; padding:14px 0 26px; font-weight:500; }" +
     // ---- incentive gate notes inside person cards ----
     ".gate { margin-top:10px; padding:9px 11px; border-radius:8px; font-size:.78rem; line-height:1.45; }" +
@@ -3132,6 +2986,18 @@ function getDashboardCss_() {
     " font-size:.78rem; color:#6b5410; margin-bottom:12px; font-weight:500; }" +
     ".empty-perf { background:rgba(255,255,255,.92); border:1px dashed #cbd5e1; border-radius:9px; padding:22px;" +
     " text-align:center; font-size:.82rem; color:#64748b; font-weight:500; }" +
+    ".grphead td { background:#203852 !important; color:var(--white); font-weight:850; font-size:.68rem;" +
+    " letter-spacing:.06em; text-transform:uppercase; padding:7px 10px; border-bottom:1px solid var(--line); }" +
+    ".grphead-count { float:right; color:var(--target); font-weight:800; text-transform:none; letter-spacing:0; }" +
+    ".norepair-row td { background:rgba(255,157,167,.12) !important; }" +
+    ".norepair-row .sticky-col { box-shadow:inset 4px 0 0 var(--danger); }" +
+    ".badge-norepair { display:inline-block; background:rgba(255,157,167,.20); color:var(--danger); font-weight:850;" +
+    " font-size:.62rem; padding:2px 7px; border-radius:999px; white-space:nowrap; }" +
+    ".oow-nopay-row td { background:rgba(223,178,255,.13) !important; }" +
+    ".oow-nopay-row .sticky-col { box-shadow:inset 4px 0 0 var(--percent); }" +
+    ".badge-oow { display:inline-block; background:rgba(223,178,255,.20); color:var(--percent); font-weight:850;" +
+    " font-size:.62rem; padding:2px 7px; border-radius:999px; white-space:nowrap; }" +
+    ".badge.completed { background:rgba(97,239,187,.17); color:var(--achieved); }" +
     ".map-line { font-size:.68rem; color:#64748b; margin:0 0 10px; font-weight:500; line-height:1.6; }" +
     ".map-line b { color:#17263a; font-weight:750; }" +
     ".map-missing { color:#c2393f; font-weight:800; }" +
@@ -3440,6 +3306,136 @@ function renderArAttachment_(data) {
  * The date column itself keeps the original rule: the STORE total for that
  * day, green when it meets or beats the store daily target, red when not.
  */
+/** Weekly revenue analysis — weeks of the current month, per revenue type. */
+function computeWeeklyAnalysis_(data) {
+  var now = new Date();
+  var curMonth = now.getMonth() + 1, curYear = now.getFullYear();
+  var monthName = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][curMonth - 1] +
+    " " + curYear;
+  var daysInMonth = daysInCurrentMonth_();
+  var TYPES = [
+    { key: "service", label: "Service", monthTarget: data.store.service.target },
+    { key: "accessory", label: "Accessory", monthTarget: data.store.accessory.target },
+    { key: "repair", label: "Repair", monthTarget: data.store.repair.target },
+    { key: "grossProfit", label: "Gross Profit", monthTarget: data.store.grossProfit.target },
+  ];
+
+  // Week chunks of the month: 1–7, 8–14, 15–21, 22–28, 29–end.
+  var weeks = [];
+  for (var start = 1; start <= daysInMonth; start += 7) {
+    var end = Math.min(daysInMonth, start + 6);
+    var w = { start: start, end: end, workingDays: 0, achieved: {}, tgt: {}, idx: weeks.length + 1 };
+    for (var d = start; d <= end; d++) if (isWorkingDay_(d)) w.workingDays++;
+    TYPES.forEach(function (t) { w.achieved[t.key] = 0; });
+    weeks.push(w);
+  }
+  var totalWorkingDays = 0;
+  weeks.forEach(function (w) { totalWorkingDays += w.workingDays; });
+
+  // Weekly target = month target × this week's working days ÷ total working days.
+  weeks.forEach(function (w) {
+    TYPES.forEach(function (t) {
+      w.tgt[t.key] = Math.round(t.monthTarget * w.workingDays / Math.max(1, totalWorkingDays));
+    });
+  });
+
+  // Achieved per week: only current-month CRM dates count.
+  (data.days || []).forEach(function (d) {
+    if (d.undated || d.month !== curMonth || d.year !== curYear || !d.day) return;
+    var w = weeks[Math.floor((d.day - 1) / 7)];
+    if (!w) return;
+    w.achieved.service += d.serviceRevenue || 0;
+    w.achieved.accessory += d.accessoryRevenue || 0;
+    w.achieved.repair += d.repairRevenue || 0;
+    w.achieved.grossProfit += d.grossProfit || 0;
+  });
+
+  var monthTotals = {};
+  TYPES.forEach(function (t) {
+    monthTotals[t.key] = 0;
+    weeks.forEach(function (w) {
+      w.achieved[t.key] = Math.round(w.achieved[t.key]);
+      monthTotals[t.key] += w.achieved[t.key];
+    });
+  });
+
+  var daysElapsed = data.store.daysElapsed;
+  weeks.forEach(function (w) {
+    w.status = daysElapsed > w.end ? "Completed"
+      : (daysElapsed >= w.start ? "In progress" : "Upcoming");
+  });
+
+  return { monthName: monthName, weeks: weeks, totalWorkingDays: totalWorkingDays,
+    types: TYPES, monthTotals: monthTotals };
+}
+
+/** Renders section 7 — weekly achieved vs weekly target per revenue type. */
+function renderWeeklyAnalysis_(data) {
+  var wa = computeWeeklyAnalysis_(data);
+  var TYPES = wa.types;
+
+  var head1 = '<tr><th rowspan="2" class="sticky-col">Week</th><th rowspan="2">Wrk Days</th><th rowspan="2">Status</th>';
+  var head2 = "<tr>";
+  TYPES.forEach(function (t, i) {
+    head1 += '<th colspan="3" class="grp grp-' + (i % 5) + '">' + esc_(t.label) + "</th>";
+    head2 += '<th class="grp grp-' + (i % 5) + '">Achieved</th>' +
+      '<th class="grp grp-' + (i % 5) + '">Week Target</th>' +
+      '<th class="grp grp-' + (i % 5) + '">Balance</th>';
+  });
+  head1 += "</tr>";
+  head2 += "</tr>";
+
+  var body = "";
+  wa.weeks.forEach(function (w) {
+    var tr = "<tr>" +
+      '<td class="sticky-col"><b>Week ' + w.idx + "</b> " +
+      '<span class="muted">(' + w.start + "–" + w.end + " " + esc_(wa.monthName).split(" ")[0] + ")</span></td>" +
+      '<td style="text-align:center">' + w.workingDays + "</td>" +
+      '<td><span class="muted">' + esc_(w.status) + "</span></td>";
+    TYPES.forEach(function (t, i) {
+      var tk = t.key;
+      var ach = w.achieved[tk], tgt = w.tgt[tk];
+      var bal = Math.max(0, tgt - ach);
+      var pill = tgt > 0
+        ? '<span class="apill ' + (ach >= tgt ? "ok" : "no") + '">' + money_(ach) + "</span>"
+        : '<span class="muted">' + money_(ach) + "</span>";
+      tr += '<td class="cell-' + (i % 5) + '">' + pill + "</td>" +
+        '<td class="cell-' + (i % 5) + '"><span class="tgt">' + money_(tgt) + "</span></td>" +
+        '<td class="cell-' + (i % 5) + '">' + (bal > 0
+          ? '<span class="muted">' + money_(bal) + "</span>"
+          : '<span class="apill ok">done</span>') + "</td>";
+    });
+    body += tr + "</tr>";
+  });
+
+  var foot = '<tr class="total-row"><td class="sticky-col">Month</td><td style="text-align:center">' +
+    wa.totalWorkingDays + "</td><td></td>";
+  TYPES.forEach(function (t, i) {
+    var tk = t.key;
+    var ach = wa.monthTotals[tk], tgt = t.monthTarget;
+    var bal = Math.max(0, tgt - ach);
+    foot += '<td class="cell-' + (i % 5) + '"><b>' + money_(ach) + "</b></td>" +
+      '<td class="cell-' + (i % 5) + '"><span class="tgt">' + money_(tgt) + "</span></td>" +
+      '<td class="cell-' + (i % 5) + '">' + money_(bal) + "</td>";
+  });
+  foot += "</tr>";
+
+  return (
+    '<section class="section" id="weekly"><h2>7 &middot; Weekly Revenue Analysis — ' +
+      esc_(wa.monthName) + '</h2><div class="body">' +
+    '<div class="sec-desc">Current month split into ' + wa.weeks.length + ' weeks — achieved vs weekly target, per revenue type</div>' +
+    '<div class="scroll-x" style="margin-top:12px"><table class="matrix">' +
+      "<thead>" + head1 + head2 + "</thead><tbody>" + body + foot + "</tbody></table></div>" +
+    '<p class="muted" style="font-size:12.5px;margin:12px 0 0">' +
+    "Each <b> week's target</b> = month target × that week's <b>working days</b> ÷ the month's total working days (" +
+    wa.totalWorkingDays + "). " +
+    "Achieved values come from <b>crm!TaxableAmount</b> (and <b>crm!GrossProfit</b>) for " + esc_(wa.monthName) +
+    " dates only. Pills turn <b>green</b> once a week clears its target.</p>" +
+    "</div></section>"
+  );
+}
+
+/** Renders section 8 — the date-wise per-salesperson matrix. */
 function renderDateWiseTable_(data) {
   var dailyTarget = data.store.dailyTarget;
   var people = data.salespeople;
@@ -3459,8 +3455,7 @@ function renderDateWiseTable_(data) {
   var hiddenCount = data.days.length - Math.min(dated.length, CONFIG.COLLAPSED_DAYS);
 
   // ---- header: two banded rows, one per salesperson group ----
-  var head1 = '<tr><th rowspan="2" class="sticky-col">Date</th>' +
-    '<th rowspan="2">Store Total</th>';
+  var head1 = '<tr><th rowspan="2" class="sticky-col">Date</th>';
   var head2 = "<tr>";
   people.forEach(function (p, i) {
     head1 += '<th colspan="' + TYPES.length + '" class="grp grp-' + (i % 5) + '">' + esc_(p.name) + "</th>";
@@ -3485,10 +3480,6 @@ function renderDateWiseTable_(data) {
     tr += '<td class="sticky-col"><b>' + esc_(d.undated ? "No date" : d.dateKey) + "</b>" +
       (d.weekday ? ' <span class="muted">' + esc_(d.weekday) + "</span>" : "") +
       (d.holiday ? ' <span class="muted">🔶</span>' : "") + "</td>";
-    // Oval pill around the achieved figure (green = met the store daily
-    // target, red = missed) — same condition, new presentation.
-    tr += '<td><span class="apill ' + (d.totalRevenue >= dailyTarget ? "ok" : "no") + '">' +
-      money_(d.totalRevenue) + "</span></td>";
 
     people.forEach(function (p, i) {
       var pd = byKey[p.key];
@@ -3497,7 +3488,11 @@ function renderDateWiseTable_(data) {
 
       TYPES.forEach(function (pair) {
         var tk = pair[0];
-        var achieved = typeMap[tk] ? typeMap[tk].value : 0;
+        // Gross profit uses the flat per-day total (it has no invoice-line
+        // type rows); revenue types use their type row. Same condition.
+        var achieved = tk === "grossProfit"
+          ? (pd ? pd.grossProfit : 0)
+          : (typeMap[tk] ? typeMap[tk].value : 0);
         var tgt = p.dailyTargets[tk] || 0;
         // Pill around the achieved number only; the daily target stays small
         // underneath. The met/missed condition is unchanged.
@@ -3517,8 +3512,7 @@ function renderDateWiseTable_(data) {
   undated.forEach(function (d) { body += dayRow(d); });
 
   // ---- footer: month-to-date totals per person/type (always visible) ----
-  var foot = '<tr class="total-row"><td class="sticky-col">Month to date</td>' +
-    '<td>' + money_(data.store.total.achieved) + "</td>";
+  var foot = '<tr class="total-row"><td class="sticky-col">Month to date</td>';
   people.forEach(function (p, i) {
     TYPES.forEach(function (pair) {
       var tk = pair[0];
@@ -3547,7 +3541,7 @@ function renderDateWiseTable_(data) {
     : "";
 
   return (
-    '<section class="section" id="datewise"><h2>7 &middot; Date-wise Sales Revenue Analysis (by salesperson)</h2><div class="body">' +
+    '<section class="section" id="datewise"><h2>8 &middot; Date-wise Sales Revenue Analysis (by salesperson)</h2><div class="body">' +
     '<div class="cards" style="margin-bottom:14px">' +
     '<div class="card"><div class="label">Store Daily Target</div><div class="value">' + money_(dailyTarget) +
     '</div><div class="sub">total target ÷ ' + data.store.totalWorkingDays + " working days</div></div>" +
@@ -3565,7 +3559,6 @@ function renderDateWiseTable_(data) {
     "the daily target is the <b>balance needed for the month ÷ working days remaining</b>. " +
     "Achieved values sit inside <b>oval pills</b> that turn <b>green</b> when the day meets the target " +
     "and <b>red</b> when it falls short. " +
-    "The <b>Store Total</b> column uses the store daily target of " + money_(dailyTarget) + ". " +
     "Collapsed view shows the latest " + CONFIG.COLLAPSED_DAYS + " days; expand for every date.</p>" +
     "</div></section>"
   );

@@ -24,8 +24,8 @@ eval(fs.readFileSync(__dirname+"/../../SalesDashboard.gs","utf8"));
 getSpreadsheet_=function(){return SS_OBJ;};
 
 // ---- target (rows 12-14 KPI grid, row 15 = approx unit value) ----
-var T=[]; for(var i=0;i<20;i++) T.push(new Array(14).fill(""));
-T[0]=["Revenue Type","Store Target","SUBHA","DINESH"];
+var T=[]; for(var i=0;i<20;i++) T.push(new Array(18).fill(""));
+T[0]=["Revenue Type","Store Target","SUBHA","DINESH","","Sep 2026","Repair Stage","Target","Achieved","%","Gap","Repair Type","Count"];
 T[1]=["Service",300000,180000,120000]; T[2]=["Accessories",150000,90000,60000];
 T[3]=["Repair",200000,120000,80000]; T[4]=["Total",650000,390000,260000];
 T[5]=["Gross Profit",160000,96000,64000];
@@ -36,6 +36,8 @@ T[13]=["",25,15,40,30,50,45,20,35,60,25,18];
 T[14]=["",400,600,900,300,250,150,100,0,0,0,0];
 T[15]=["Achivement","","Achivement",""]; T[16]=["70-80%","2000","70-80%","1000"];
 T[17]=["80-90%","4000","80-90%","2000"]; T[18]=["90-100%","6000","90-100%","3000"];
+T[1][6]="Diagnosis Complete"; T[1][7]=40; T[1][8]=33; T[1][9]="82.5"; T[1][10]=7; T[1][11]="Walk-In Repair"; T[1][12]=3;
+T[2][6]="Repair Complete";    T[2][7]=80; T[2][8]=71; T[2][9]="88.8"; T[2][10]=9; T[2][11]="Carry-In Repair"; T[2][12]=2;
 T[15][5]="incentive per amc"; T[16][5]="1-10"; T[16][6]="₹150"; T[16][8]=5; T[16][9]="₹80";
 T[17][5]="11-25"; T[17][6]="₹250"; T[17][8]=12; T[17][9]="₹120"; T[15][12]="slab level"; T[15][13]=5; T[16][13]=300;
 
@@ -68,16 +70,16 @@ var cm=[["CaseId","CreatedDate","Remark"],
 // ---- service ----
 var sv=[["CaseId","FirstName","LastName","MobileNo","ProductDescription","CaseDate",
  "RepairCreatedDate","JobAge","Status","DeliveredDate","GSXRepairStatusDescription","CRM_JobStatusDesc",
- "GSXWarrantyStatusDesc","RepairDocType","Ready_For_Pickup_Date_CRM"],
+ "CoverageCodeDescription","RepairDocType","Ready_For_Pickup_Date_CRM"],
  // duplicate of C1003 with an OLDER case date placed BEFORE the real row —
  // the merger must keep the later (real) row instead.
  ["C1003","Mani","Kandan","919876543212","Different Phone",daysAgoStr(5,"10"),"",5,"Open","","Diagnosis In Progress","","In Warranty","Walk-In Repair",""],
  ["C1001","Ravi","Kumar","919876543210","iPhone 13",daysAgoStr(14,"10"),daysAgoStr(13,"11"),14,"Open","","Repair Complete","Original Display Used","In Warranty","Walk-In Repair",daysAgoStr(12,"10")],
  ["C1002","Anita","Devi","919876543211","Samsung S23",daysAgoStr(4,"09"),daysAgoStr(3,"14"),4,"Open","","Unclaimed Device","Part Used","Out of Warranty","Carry-In Repair",daysAgoStr(1,"12")],
- ["C1003","Mani","Kandan","919876543212","OnePlus 11",daysAgoStr(2,"10"),"",2,"Open","","Diagnosis In Progress","Device Unclaimed Device due","In Warranty","Walk-In Repair",""],
- ["C1004","Peela","Dass","919876543217","Realme 12",daysAgoStr(1,"08"),"",1,"Open","","Repair In Progress","","In Warranty","Mail-In Repair",""],
+ ["C1003","Mani","Kandan","919876543212","OnePlus 11",daysAgoStr(2,"10"),"",2,"Open","","Diagnosis In Progress","Device Unclaimed Device due","Out Of Warranty (No Coverage)","Walk-In Repair",""],
+ ["C1004","Peela","Dass","919876543217","Realme 12",daysAgoStr(1,"08"),"",1,"Open","","Repair In Progress","Ready For Pickup","In Warranty","Service Non-Repair",""],
  ["C1005","Old","Closed","919876543218","Pixel 7",daysAgoStr(55,"09"),daysAgoStr(54,"10"),55,"Delivered",daysAgoStr(50,"10"),"Repair Complete","Part Used","In Warranty","Carry-In Repair",daysAgoStr(50,"10")],
- ["C1006","Age","Fallback","919876543219","Moto G",daysAgoStr(20,"09"),"","","Open","","Waiting for Part","","Out of Warranty","Walk-In Repair",""],
+ ["C1006","Age","Fallback","919876543219","Moto G",daysAgoStr(20,"09"),"","","Open","","Waiting for Part","","Out Of Warranty (No Coverage)","Walk-In Repair",""],
  ["C1007","Can","Cell","919876543220","Nokia",daysAgoStr(2,"09"),"",2,"Cancelled","","Aborted","","In Warranty","Carry-In Repair",""]];
 
 // ---- advance ----
@@ -141,7 +143,7 @@ check("map Case ID <- CaseId",j.sources.caseId==="CaseId",j.sources.caseId);
 check("map Mobile <- MobileNo",j.sources.mobile==="MobileNo",j.sources.mobile);
 check("map GSX <- GSXRepairStatusDescription",j.sources.gsxStatus==="GSXRepairStatusDescription",j.sources.gsxStatus);
 check("map CRM <- CRM_JobStatusDesc",j.sources.crmRepairStatus==="CRM_JobStatusDesc",j.sources.crmRepairStatus);
-check("map Warranty <- GSXWarrantyStatusDesc",j.sources.warranty==="GSXWarrantyStatusDesc",j.sources.warranty);
+check("map Warranty <- CoverageCodeDescription",j.sources.warranty==="CoverageCodeDescription",j.sources.warranty);
 check("map RepairType <- RepairDocType",j.sources.repairDocType==="RepairDocType",j.sources.repairDocType);
 check("map Open filter <- Status",j.sources.status==="Status",j.sources.status);
 var c1001=j.jobs.find(function(o){return o.caseId==="C1001";});
@@ -187,20 +189,63 @@ check("date-wise GP column",page.indexOf('class="grp grp-0">Gross Profit</th>')>
 check("legend shows GP daily target",page.indexOf("Gross Profit "+"₹"+subha.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
 check("GP daily target in legend for Dinesh",page.indexOf("Gross Profit "+"₹"+dinesh.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
 check("jobs warranty column",page.indexOf("<th>Warranty Type</th>")>-1);
+// ---- job rules ----
+var c1004=j.jobs.find(function(o){return o.caseId==="C1004";});
+check("SNR ready-for-pickup flags gsxCompleted",c1004.gsxCompleted===true);
+check("C1006 no-repair 20d flags",j.jobs.find(function(o){return o.caseId==="C1006";}).noRepairLate===true);
+check("C1003 2d old no repair -> NOT flagged",j.jobs.find(function(o){return o.caseId==="C1003";}).noRepairLate===false);
+check("C1003 OOW no advance flagged",j.jobs.find(function(o){return o.caseId==="C1003";}).oowNoAdvance===true);
+check("C1006 OOW with advance NOT flagged",j.jobs.find(function(o){return o.caseId==="C1006";}).oowNoAdvance===false);
+check("gsx Completed badge renders",page.indexOf('class="badge completed">Completed')>-1);
+check("grphead buckets render",page.indexOf('class="grphead"')>-1);
+var grpOrder=[page.indexOf('>Device Unclaimed Device due<'),page.indexOf('>Original Display Used<'),page.indexOf('>Ready For Pickup<'),page.indexOf('>Waiting for Part<')];
+check("buckets alphabetical",grpOrder.every(function(x){return x>-1;})&&grpOrder[0]<grpOrder[1]&&grpOrder[1]<grpOrder[2]&&grpOrder[2]<grpOrder[3],grpOrder);
+check("bucket count chip",page.indexOf('grphead-count">1 open case')>-1);
+check("highlight rows render",page.indexOf("norepair-row")>-1&&page.indexOf("oow-nopay-row")>-1);
 check("jobs repair type column",page.indexOf("<th>Repair Type</th>")>-1);
 check("jobs warranty value renders",page.indexOf("Out of Warranty")>-1);
 check("repair tab section",page.indexOf("Repair Type Performance")>-1);
-check("repair pivot has type column",page.indexOf('<th class="num">Mail-In Repair</th>')>-1);
-check("repair tile avg baseline",page.indexOf("avg 0.3/month")>-1);
+// month-to-date composition (no date rows) + integers only
+check("till-date composition table",page.indexOf("Till Date ·")>-1&&page.indexOf("All repair types")>-1);
+check("no per-date pivot",page.indexOf("Repair Types by Date")===-1);
+check("mtd walk-in 3 / carry-in 2",page.indexOf('<strong>Walk-In Repair</strong></td><td class="num">3</td>')>-1
+  &&page.indexOf('<strong>Carry-In Repair</strong></td><td class="num">2</td>')>-1);
+check("mtd grand total 5 (SNR excluded)",page.indexOf('<tr class="totrow"><td>All repair types</td><td class="num">5</td></tr>')>-1);
+check("repair tile avg baseline",page.indexOf("avg 0/month")>-1);
+check("no-fraction averages",page.indexOf("avg 0.3/month")===-1);
 check("no-baseline note",page.indexOf("no 3-month baseline")>-1);
-check("repair meta",page.indexOf("6 repairs this month · 3 repair types")>-1);
-check("avg days to ready col",page.indexOf("Avg days to ready · this month")>-1);
+check("repair meta",page.indexOf("5 repairs this month · 2 repair types")>-1);
+check("avg days col header",page.indexOf("Avg Days · Now")>-1);
+check("walk-in avg days 2 d",page.indexOf('<strong>Walk-In Repair</strong></td><td class="num">3</td><td class="num">0</td>')>-1);
+// products & coverage dashboards
+check("product performance section",page.indexOf("Product Performance")>-1);
+check("iphone family tile",page.indexOf('class="label">iPhone</div><div class="value">1</div>')>-1);
+check("other family tile 4",page.indexOf('class="label">Other</div><div class="value">4</div>')>-1);
+check("coverage performance section",page.indexOf("Coverage Performance")>-1 && page.indexOf("Out Of Warranty (No Coverage)")>-1);
+check("snr excluded note",page.indexOf('"Service Non-Repair" cases are excluded')>-1);
 check("walkin hsl tint",page.indexOf("background:hsl(")>-1);
 check("token table",page.indexOf("% of creation")>-1&&page.indexOf("Total tokens generated")>-1);
 check("ready col gone",page.indexOf("Ready for pickup")===-1);
 check("comm pos/neg present",page.indexOf("comm-pos")>-1&&page.indexOf("comm-neg")>-1);
 check("mapping line on page",page.indexOf('class="map-line"')>-1&&page.indexOf("Mobile ← <b>MobileNo</b>")>-1);
 check("business sections intact",page.indexOf("Invoice Valuation")>-1&&page.indexOf("Date-wise")>-1);
+// ---- weekly revenue analysis (section 7) + date-wise renumbered to 8 ----
+check("weekly section is #7",page.indexOf("7 &middot; Weekly Revenue Analysis")>-1);
+check("date-wise renumbered #8",page.indexOf("8 &middot; Date-wise")>-1);
+check("Store Total column removed",page.indexOf("Store Total</th>")===-1);
+check("week rows 1-7 etc",page.indexOf("<b>Week 1</b>")>-1&&page.indexOf("(1–7")>-1&&page.indexOf("<b>Week 5</b>")>-1);
+check("weekly status labels",page.indexOf("In progress")>-1&&page.indexOf("Upcoming")>-1&&page.indexOf("Completed")>-1);
+check("weekly target formula (66667 svc wk4)",page.indexOf("₹66,667")>-1);
+check("weekly svc achieved wk4 5000",page.indexOf("<b>Week 4</b>")>-1&&page.indexOf("₹5,000")>-1);
+// ---- process page: target block (F1 title + G1:P7) & walk-in summary table ----
+check("process target block title from F1",page.indexOf("🎯 Sep 2026")>-1);
+check("target block grid renders G1:P7",page.indexOf("Repair Stage")>-1&&page.indexOf("Diagnosis Complete")>-1&&page.indexOf("88.8")>-1);
+check("repair comparison strip (excl SNR)", page.indexOf("Total Repairs (excl. Service Non-Repair) — this month")>-1
+  &&page.indexOf('rs-value">5</span>')>-1);
+check("walk-in summary is a table", page.indexOf('ptable walksum')>-1 && page.indexOf("<b>Total Walk-ins</b></td>")>-1);
+
+check("weekly wd wk2=7 (no holiday)",page.indexOf("(8–14 Sep)</span></td><td style=\"text-align:center\">7</td>")>-1);
+check("weekly wd wk5=2",page.indexOf("(29–30 Sep)</span></td><td style=\"text-align:center\">2</td>")>-1);
 
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);

@@ -20,22 +20,26 @@ var NAMES=["Ravi","Anita","Mani","Peela","Kumar","Divya","Suresh","Rekha","Arjun
 var LAST=["Kumar","Devi","Kandan","Dass"];
 var GSX=["Diagnosis In Progress","Repair In Progress","Repair Complete","Waiting for Part","Quality Check"];
 var CRMS=["Part Used","Original Display Used","Device Unclaimed Device due",""];
-var RTYPES=["Walk-In Repair","Carry-In Repair","Mail-In Repair","Screen Replacement"];
-var WARR=["In Warranty","Out of Warranty"];
+var RTYPES=["Walk-In Repair","Carry-In Repair","Service Non-Repair","Screen Replacement"];
+var WARR=["In Warranty","Out Of Warranty (No Coverage)","Consumer Warranty","AppleCare Coverage"];
 var SVC=[];
 for(var i=0;i<26;i++){var age=(i%28)+1;
   // every third case is already ready for pickup (2-6 day turnaround)
-  var ready=(i%3===0)?daysAgoStr(Math.max(0,age-(1+i%5)),"11"):"";
+  var ready=(i%3===0)?daysAgoStr(Math.max(0,age-(1+(i%5))),"11"):"";
+  var rt=RTYPES[i%4];
+  var cms=rt==="Service Non-Repair"?"Ready For Pickup":CRMS[i%4];
+  // every 5th case has no repair-created date yet (rule-b highlight when older than 2 days)
+  var repCreated=(i%5===0)?"":daysAgoStr(Math.max(0,age-1),"12");
   // 16 fields, aligned to the 16-column header below.
-  SVC.push(["C100"+i,NAMES[i%16],LAST[i%4],"9198765432"+("000000"+i).slice(-3),"iPhone 13",daysAgoStr(age,"10"),age,age,"Open","",GSX[i%5],CRMS[i%4],(i%3===0?200:(i*50)%900),WARR[i%2],RTYPES[i%4],ready]);}
+  SVC.push(["C100"+i,NAMES[i%16],LAST[i%4],"9198765432"+("000000"+i).slice(-3),"iPhone "+(10+i%7),daysAgoStr(age,"10"),repCreated,age,"Open","",GSX[i%5],cms,(i%3===0?200:(i*50)%900),WARR[i%4],rt,ready]);}
 // a few older cases across the previous months for the 3-month comparison
 for(var mo=1;mo<=3;mo++){for(var j=0;j<3+mo;j++){var a=30*mo+(j*6);
-  SVC.push(["C5"+mo+""+j,"Old"+j,LAST[j%4],"919876640000"+mo+j,"Pixel 7",daysAgoStr(a,"10"),a,a,"Delivered",daysAgoStr(a-4,"10"),"Repair Complete","Part Used",0,WARR[j%2],RTYPES[(j+mo)%4],daysAgoStr(a-4,"10")]);}}
+  SVC.push(["C5"+mo+""+j,"Old"+j,LAST[j%4],"919876640000"+mo+j,"Pixel 7",daysAgoStr(a,"10"),a,a,"Delivered",daysAgoStr(a-4,"10"),"Repair Complete","Part Used",0,WARR[j%4],RTYPES[(j+mo)%4],daysAgoStr(a-4,"10")]);}}
 // one duplicated case row (older case date) — the page must merge it away
 SVC.unshift(["C1005","Kumar","Devi","919876543205","Different Phone",daysAgoStr(9,"10"),9,9,"Open","",GSX[0],"Part Used",0,"In Warranty","Walk-In Repair",""]);
 
 SVC.push(["C4001","Old","Closed","919876640001","Pixel 7",daysAgoStr(55,"10"),54,55,"Delivered",daysAgoStr(50,"10"),"Repair Complete","Part Used",0]);
-var sv=[["CaseId","FirstName","LastName","MobileNo","ProductDescription","CaseDate","RepairCreatedDate","JobAge","Status","DeliveredDate","GSXRepairStatusDescription","CRM_JobStatusDesc","AvailableBalance","GSXWarrantyStatusDesc","RepairDocType","Ready_For_Pickup_Date_CRM"]].concat(SVC);
+var sv=[["CaseId","FirstName","LastName","MobileNo","ProductDescription","CaseDate","RepairCreatedDate","JobAge","Status","DeliveredDate","GSXRepairStatusDescription","CRM_JobStatusDesc","AvailableBalance","CoverageCodeDescription","RepairDocType","Ready_For_Pickup_Date_CRM"]].concat(SVC);
 var RND=mulberry(42);function mulberry(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;}}
 var kpiProb=[4,2,1,0,2,1,3];
 var rev=["Service","Accessories","Repair"];
@@ -46,14 +50,18 @@ var wl=[["MobileNo","TokenDate","VisitPurposeDesc","CaseId","InvoiceCode","Remar
 for(var i2=0;i2<180;i2++){var dd=(i2%25)+1;if(dd%7===0)dd=1;var m="91999"+String(100000+i2).slice(-6);var pur=["Repair Submission","Collection","General/Sales Enquiry"][i2%3];var hasCase=i2%4!==0;wl.push([m,"2026-09-"+("0"+dd).slice(-2)+" 10:00:00",pur,hasCase?"C100"+(i2%26):"",i2%2?"IV"+(i2%25)+"0":"",i2%6===0?"Follow up":"",i2%3?"Subha":"Dinesh"]);}
 var cm=[["CaseId","CreatedDate","Remark"]];for(var i3=0;i3<26;i3++){if(i3%3!==0)cm.push(["C100"+i3,daysAgoStr(i3%6,"11"),"update"]);}
 var av=[["MobileNo","AvailableBalance"]];for(var i4=0;i4<26;i4++)av.push(["9198765432"+("000000"+i4).slice(-3),(i4*137)%1500]);
-var T=[];for(var i5=0;i5<20;i5++)T.push(new Array(14).fill(""));
-T[0]=["Revenue Type","Store Target","SUBHA","DINESH"];
+var T=[];for(var i5=0;i5<20;i5++)T.push(new Array(18).fill(""));
+T[0]=["Revenue Type","Store Target","SUBHA","DINESH","","Sep 2026","Repair Stage","Target","Achieved","%","Gap","Repair Type","Count"];
 T[1]=["Service",900000,520000,380000];T[2]=["Accessories",430000,250000,180000];T[3]=["Repair",500000,300000,200000];T[4]=["Total",1830000,1070000,760000];T[5]=["Gross Profit",450000,270000,180000];
 T[8]=["Prev Month","This Month","Difference"];T[9]=[1475,1494,19];
 T[11]=["","AR","","","","RR","","","","SR","",""];T[12]=["","Care+","Protect+","AMC","Bundle","Display","Battery","Glass","Others","SRD","SHC","ARD"];
 T[13]=["",25,15,40,30,50,45,20,35,60,25,18];T[14]=["",400,600,900,300,250,150,100,0,0,0,0];
 T[15]=["Achivement","","Achivement",""];T[16]=["70-80%","2000","70-80%","1000"];
 T[17]=["80-90%","4000","80-90%","2000"];T[18]=["90-100%","6000","90-100%","3000"];
+T[1][6]="Diagnosis Complete";T[1][7]=40;T[1][8]=33;T[1][9]="82.5";T[1][10]=7;T[1][11]="Walk-In Repair";T[1][12]=21;
+T[2][6]="Repair Complete";T[2][7]=80;T[2][8]=71;T[2][9]="88.8";T[2][10]=9;T[2][11]="Carry-In Repair";T[2][12]=14;
+T[3][6]="Quality Check";T[3][7]=60;T[3][8]=52;T[3][9]="86.7";T[3][10]=8;T[3][11]="Mail-In Repair";T[3][12]=6;
+T[4][6]="Ready For Pickup";T[4][7]=70;T[4][8]=64;T[4][9]="91.4";T[4][10]=6;T[4][11]="Software Support";T[4][12]=9;
 T[15][5]="incentive per amc";T[16][5]="1-10";T[16][6]="₹150";T[16][8]=5;T[16][9]="₹80";T[17][5]="11-25";T[17][6]="₹250";T[17][8]=12;T[17][9]="₹120";T[15][12]="slab level";T[15][13]=5;T[16][13]=300;
 ALL=[mockSheet("target",T),mockSheet("crm",crm),mockSheet("walkin",wl),mockSheet("service",sv),mockSheet("advance",av),mockSheet("comm",cm)];
 var loaded=loadDashboardData_();

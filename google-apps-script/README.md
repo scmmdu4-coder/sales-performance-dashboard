@@ -5,34 +5,19 @@ same metrics logic as `src/lib/metrics.ts` (TranType = "SALES" filter,
 TaxableAmount as achieved value, dynamic salesperson roster, AMC/bundle
 slabs, KPI grid, invoice valuation, date-wise analysis).
 
-It supports **two output modes** from the same script — pick either, or use
-both:
+## The web app — a real, standalone page ("script page")
 
-## Mode A — a tab inside the spreadsheet
-
-1. Open the Google Sheet that has your `crm` and `target` tabs.
-2. `Extensions → Apps Script`.
-3. Delete any placeholder code and paste in the full contents of
-   `SalesDashboard.gs`.
-4. Save the project.
-5. Run the `buildDashboard` function once from the editor (▶ button) and
-   accept the authorization prompt — it only touches this spreadsheet.
-6. Reload the spreadsheet. A **📊 Sales Dashboard** menu appears; use
-   "Build / Refresh Dashboard (sheet tab)" any time the `crm`/`target` data
-   changes.
-
-This writes a formatted **Dashboard** tab with cells/colors inside the
-spreadsheet itself.
-
-## Mode B — a real, standalone web page ("script page")
+> **Sheet-writer removed:** this script no longer creates a "Dashboard" tab
+> inside your spreadsheet on deploy. The ONLY output is the standalone web
+> page below.
 
 This is the mode to use if you want a dedicated URL you can open in any
 browser, share with people who shouldn't need spreadsheet edit access, or
 put in a bookmark / TV display, instead of a tab inside the sheet.
 
-1. Do the paste-and-save step from Mode A (steps 1–4 above).
-2. In the Apps Script editor, click **Deploy** (top-right) → **New
-   deployment**.
+1. Open your Google Sheet → `Extensions → Apps Script`, delete any
+   placeholder code, paste the full `SalesDashboard.gs`, and save.
+2. Click **Deploy** (top-right) → **New deployment**.
 3. Click the gear icon next to "Select type" → choose **Web app**.
 4. Fill in:
    - Description: `Sales Dashboard`
@@ -49,10 +34,8 @@ put in a bookmark / TV display, instead of a tab inside the sheet.
    pencil icon → **New version** → **Deploy**, so the URL picks up the
    change (Web app URLs are pinned to a specific deployed version).
 
-The `onOpen()` menu also has a **"How do I get the Web App page?"** item
-that shows these steps again as a quick reminder inside the sheet.
 
-## What it computes (same for both modes)
+## What it computes
 
 1. Store target vs achievement vs balance, per revenue type
 2. Working days: total / consumed / balance for the current month
@@ -118,17 +101,13 @@ adjust `CACHE_SECONDS`.
 - The `target` sheet parser expects the same grid layout as the existing
   web dashboard (see comments marked `ANCHOR` in the script) — adjust the
   row/column numbers there if your target sheet layout differs.
-- Mode B's `doGet(e)` is what Apps Script calls automatically when someone
-  opens the deployed Web App URL — you never call it yourself. If you
-  previously saw a "Script function not found: doGet" error, that was
-  because the editor's function selector dropdown was set to `doGet`
-  instead of `buildDashboard`; that only matters for Mode A, not Mode B.
+- `doGet(e)` is what Apps Script calls automatically when someone opens the
+  deployed Web App URL — you never call it yourself.
 
 ## Performance page (second tab)
 
-The dashboard's top bar has a **Business / Performance** slider. Business is
-the original page (unchanged). Performance is a second page that reads four
-extra tabs. All four are looked up by tab name (case-insensitive, a few
+The dashboard's top bar has **Business / Process / Performance** tabs.
+Business is the original page. Process reads four extra tabs. All four are looked up by tab name (case-insensitive, a few
 spellings accepted) — see `CONFIG.WALKIN_SHEET_NAMES`, `SERVICE_SHEET_NAMES`,
 `ADVANCE_SHEET_NAMES`, `COMM_SHEET_NAMES`. If a tab is missing, that section
 simply shows guidance instead of breaking.
@@ -341,3 +320,52 @@ Translating rules applied (no conditions or data touched):
   the case is within 48 h (COMM_STALE_DAYS = 2) of now, red otherwise or
   when missing. Only `JobStatus` containing "open" is listed, on unique
   `service!CaseId` rows.
+
+## October refresh — what changed & new sections
+
+**Job Management (Process page)**
+
+- Rows are **clubbed by CRM repair status** — bucket headers show
+  `N open cases`, sorted alphabetically, oldest first inside each bucket.
+- **Service Non-Repair + "ready for pickup"** ⇒ the GSX cell displays
+  `Completed` (badge) even if the raw GSX status says otherwise.
+- Non-SNR cases with **no repair-created date** and a **job-created date
+  older than 2 days** — the whole row is highlighted rose.
+- **Out Of Warranty (No Coverage)** warranty (`service!CoverageCodeDescription`)
+  with **no advance** matched by case id OR customer mobile — highlighted violet.
+- Warranty Type column now reads **service!CoverageCodeDescription**
+  (was `GSXWarrantyStatusDesc`), with fallback to the old names.
+- Advance is matched BOTH by `advance!MobileNo` **and** `advance!CaseId`
+  (`advance!AvailableBalance` is summed per case).
+
+**Performance page (repair analytics)** — "Service Non-Repair" excluded everywhere.
+
+- Round **whole numbers only**; every tile shows `avg N/month · prev 3 months`
+  and a delta pill vs the 3-month monthly average.
+- Two new dashboards: **🧰 Product Performance** (families: every iPhone
+  variant incl. the bare "VIN" export → iPhone; iPad/AirPods/Watch/Mac;
+  Accessory–Non-serialized; else Other) and **🛡 Coverage Performance**
+  (grouped by `service!CoverageCodeDescription`). Both keep the
+  3-month-average comparison table with rounded average days-to-ready.
+- "Repair Types by Date" replaced by **🗓 Repair Types — Till Date**: one
+  composition row per type for the running month (no per-date rows).
+
+**Process page**
+
+- New **🎯 period summary** at the top: title from `target!F1`, grid rendered
+  verbatim from `target!G1:P7`, plus a repairs comparison strip
+  (this month vs 3-month average, Service Non-Repair excluded).
+- Walk-in Analysis summary is now **one table** (was a five-tile row).
+
+**Business page**
+
+- Section 7 GP fix: gross profit now comes from `crm!GrossProfit` per
+  `crm!InvoiceDate` and `crm!SalesPersonName` (cells were rendering ₹0).
+- New **§7 · Weekly Revenue Analysis** above the date-wise matrix
+  (date-wise became §8): weeks of the current month, per revenue type
+  achieved vs weekly target (= month target × week working days ÷ total
+  working days) plus balance and a month totals row.
+- **Store Total column removed** from the date-wise matrix; tiles across
+  all pages now fit any screen width via responsive grids, and pivoted
+  numbers are right-aligned.
+
