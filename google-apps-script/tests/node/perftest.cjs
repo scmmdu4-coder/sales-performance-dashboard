@@ -256,7 +256,8 @@ check("vmatrix grand total 5",page.indexOf('<td class="num vmtotal"><b>5</b></td
 check("vmatrix prev3m avg row",page.indexOf("Prev 3M Avg")>-1);
 check("vmatrix definition line",page.indexOf("Definition: one table combining every repair")>-1);
 check("snr excluded note",page.indexOf('"Service Non-Repair" is excluded')>-1);
-check("walkin hsl tint var",page.indexOf("--tint:hsl(")>-1&&page.indexOf("background:hsl(")===-1);
+check("walkin two-tint rows only",page.indexOf("--tint:#")>-1&&page.indexOf("--tint:hsl(")===-1
+  &&page.indexOf("background:hsl(")===-1);
 check("token table",page.indexOf("% of creation")>-1&&page.indexOf("Total tokens generated")>-1);
 check("ready col gone",page.indexOf("Ready for pickup")===-1);
 check("comm pos/neg present",page.indexOf("comm-pos")>-1&&page.indexOf("comm-neg")>-1);
@@ -314,11 +315,29 @@ check("blue-glow header skin", page.indexOf("#5b7bff 0%,#4360e0")>-1);
 check("3d bar styling", page.indexOf("--barc")>-1&&page.indexOf("barShine")>-1
   &&page.indexOf(".bar-fill::before")>-1);
 check("index page pane", page.indexOf('data-pane="index"')>-1&&page.indexOf("index-hero")>-1);
-check("index tiles built (12)", (page.match(/glass-tile /g)||[]).length>=12,
-  (page.match(/glass-tile /g)||[]).length);
+check("index tiles built (12)", (page.match(/class="glass-tile"/g)||[]).length>=12,
+  (page.match(/class="glass-tile"/g)||[]).length);
 check("tile group heads", page.indexOf("tile-group-head")>-1);
 check("seven panes incl index", (page.match(/data-pane=/g)||[]).length===7,
   (page.match(/data-pane=/g)||[]).length);
+
+console.log("== TASK 20 polish ==");
+check("person repair shows own win", page.indexOf('class="rr-val"')>-1&&page.indexOf("won by you")>-1);
+check("store target scoped to gate", page.indexOf("used <b>only inside the incentive calculation</b>")>-1
+  &&subha.repairGate.requiredValue===160000);
+check("kpi pair layout", page.indexOf('class="kpi-pair"')>-1&&page.indexOf('class="kp-right"')>-1);
+check("incentive split categories", page.indexOf("Category 1 · AMC")>-1
+  &&page.indexOf("Category 2 · Bundle (DISC scheme)")>-1);
+check("incentive totals rows", (page.match(/All salespersons/g)||[]).length===2);
+check("deep header applied", (page.match(/hdr-deep/g)||[]).length>=3&&page.indexOf('class="hdr-deep"')>-1);
+check("csat flex", page.indexOf("csat-flex")>-1&&page.indexOf("csat-right")>-1);
+check("liquid glass css", page.indexOf("backdrop-filter:blur(14px)")>-1&&page.indexOf("tile-sparkle")>-1);
+check("glitter animation", page.indexOf("tileTwinkle")>-1);
+check("pie per group", (page.match(/svg class="gpie"/g)||[]).length>=6,
+  (page.match(/svg class="gpie"/g)||[]).length);
+check("horizontal board", page.indexOf("tile-board")>-1&&page.indexOf("tile-col")>-1);
+check("freshness line", page.indexOf("Latest records per sheet")>-1&&page.indexOf("fresh-chip")>-1);
+check("tile counts", (page.match(/class="glass-tile"/g)||[]).length>=12);
 
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);

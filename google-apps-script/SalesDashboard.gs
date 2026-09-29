@@ -2262,7 +2262,7 @@ function renderTargetBlock_(tb, ra) {
       '<span class="cc-value">' + esc_(value) + '</span><span class="cc-sub">' + esc_(sub || "") + '</span></div>';
   }
 
-  var chips = ['<div class="csat-chips">'];
+  var chips = [];
   chips.push(chip("", "Feedback responses", tb.totalRow.total,
     tb.people.length + " salesperson" + (tb.people.length === 1 ? "" : "s") + " rated"));
   chips.push(chip("pos", "Satisfied (VS + SS)", pctOf(tb.satTotal, tb.totalRow.total) + "%",
@@ -2271,7 +2271,6 @@ function renderTargetBlock_(tb, ra) {
   if (tb.cfi) chips.push(chip(tb.cfi === "0.00%" || tb.cfi === "0" ? "pos" : "warn", "CFI", tb.cfi, "as recorded in sheet"));
   chips.push(chip(tb.disTotal > 0 ? "neg" : "pos", "Dissatisfied", pctOf(tb.disTotal, tb.totalRow.total) + "%",
     tb.disTotal + " of " + tb.totalRow.total));
-  chips.push("</div>");
 
   var thead = "<thead><tr><th>" + esc_(tb.nameHeader) + "</th>";
   tb.labels.forEach(function (h) { thead += "<th>" + esc_(h) + "</th>"; });
@@ -2292,7 +2291,10 @@ function renderTargetBlock_(tb, ra) {
   var body = "<tbody>" + tb.people.map(function (p) { return dataRow(p, false); }).join("") +
     dataRow(tb.totalRow, true) + "</tbody>";
 
-  var table = '<div class="scroll-x"><table class="ptable csat-table">' + thead + body + "</table></div>";
+  // Owner layout: table shrunk and left-aligned; the summary chips stack in a
+  // column immediately to the table's right.
+  var table = '<div class="csat-flex"><div class="scroll-x csat-left"><table class="ptable csat-table">' + thead + body +
+    '</table></div><div class="csat-right">' + chips.join("") + "</div></div>";
 
   // Repairs comparison strip — Service Non-Repair excluded (kept from before).
   var strip = "";
@@ -2319,7 +2321,7 @@ function renderTargetBlock_(tb, ra) {
     '<p class="sec-sub">Every feedback response lands in a satisfaction bucket. Period name from ' +
     '<span class="src-hint">target!K1</span>, table from <span class="src-hint">target!L1:U5</span> — ' +
     "cleaned and re-presented (junk columns dropped, totals verified).</p></div>" +
-    chips.join("") + table + strip + "</section>";
+    table + strip + "</section>";
 }
 
 /** Loads everything the Performance & Process pages need. */
@@ -2327,11 +2329,30 @@ function loadPerformanceData_() {
   var ss = getSpreadsheet_();
   var jm = computeJobManagement_(ss);
   var ra = computeRepairAnalytics_(jm.serviceRows || []);
+
+  // Freshness: the newest dated row of each sheet, surfaced on the index page.
+  function latestDateKey_(names, spec, field) {
+    var sheet = getSheetByNames_(ss, names);
+    if (!sheet) return null;
+    var rd = readSheetRows_(sheet, spec, [field]);
+    var ts = 0, key = "";
+    rd.rows.forEach(function (r) {
+      var d = parseAnyDate_(r[field]);
+      if (d.valid && d.ts > ts) { ts = d.ts; key = d.dayKey; }
+    });
+    return key || "no rows";
+  }
+  var freshness = {
+    comm: latestDateKey_(CONFIG.COMM_SHEET_NAMES, { createdDate: COMM_SPEC.createdDate }, "createdDate") || "no comm sheet",
+    advance: "no date column",
+  };
+
   return {
     walkin: computeWalkinAnalysis_(ss),
     jobs: jm,
     repair: ra,
     targetBlock: computeTargetBlock_(ss),
+    freshness: freshness,
     generatedAt: new Date(),
   };
 }
@@ -2407,9 +2428,10 @@ function renderGpHtml_(data) {
 
 /** KPI page: KPI target · Incentive · Salesperson performance · AR attachment. */
 function renderKpiHtml_(data) {
-  var body = "";
-  body += renderKpiSection_(data);
-  body += renderIncentiveTable_(data);
+  // KPI table sizes to its CONTENT, and the incentive tables compress into
+  // the free space on its right instead of leaving a wide empty band.
+  var body = '<div class="kpi-pair"><div class="kp-left">' + renderKpiSection_(data) + "</div>" +
+    '<div class="kp-right">' + renderIncentiveTable_(data) + "</div></div>";
   body += renderSalespersonCards_(data);
   body += renderArSection_(data);
   return body;
@@ -2518,6 +2540,57 @@ function refreshDashboardSections() {
  *   GP / KPI / WALKIN / Operation / OPEN JOBS / DATE.
  * ========================================================================= */
 
+/* ---------------------------------------------------------------------------
+ * Small inline-SVG donut used under each index group title — one pie per
+ * group, combining that group's sub-title values into a single chart.
+ * segments: [[label, value, color], ...]
+ * ------------------------------------------------------------------------- */
+var PIE_PALETTE = ["#3f5ce0","#63e6b7","#ffd477","#ff9da7","#8fc7ff","#dfb2ff"];
+function pieSvgHtml_(segments, cx, cy, radius, thick) {
+  cx = cx || 60; cy = cy || 60; radius = radius || 44; thick = thick || 16;
+  var segs = (segments || []).filter(function (sg) { return sg[1] > 0; });
+  var total = 0;
+  segs.forEach(function (sg) { total += sg[1]; });
+  if (total <= 0) {
+    return '<div class="gpie gpie-empty"><span class="gpie-note">no data yet</span></div>';
+  }
+  var k = { "cx": cx, "cy": cy, "r": radius, "fill": "none", "stroke-width": thick };
+  var circ = 2 * Math.PI * radius;
+  var acc = -circ / 4; // start at 12 o'clock
+  var parts = ['<svg class="gpie" width="' + (cx * 2) + '" height="' + (cy * 2) +
+    '" viewBox="0 0 ' + (cx * 2) + " " + (cy * 2) + '" role="img">'];
+  parts.push('<circle cx="' + cx + '" cy="' + cy + '" r="' + (radius - thick / 2 - 2) +
+    '" fill="rgba(12,29,53,.92)" />');
+  segs.forEach(function (sg) {
+    var frac = sg[1] / total;
+    var len = Math.max(0.01, frac * (circ - segs.length * 2));
+    parts.push('<circle cx="' + cx + '" cy="' + cy + '" r="' + radius +
+      '" fill="none" stroke="' + sg[2] + '" stroke-width="' + thick +
+      '" stroke-dasharray="' + len.toFixed(2) + " " + (circ - len).toFixed(2) +
+      '" stroke-dashoffset="' + (-acc).toFixed(2) +
+      '" stroke-linecap="butt" transform="rotate(0 ' + cx + " " + cy + ')" />');
+    acc += frac * circ;
+  });
+  parts.push("</svg>");
+  return parts.join("");
+}
+
+function pieBlockHtml_(title, segments) {
+  var legend = (segments || []).map(function (sg) {
+    return '<div class="gpie-leg-item"><span class="gpie-dot" style="background:' + sg[2] + '"></span>' +
+      '<span class="gpie-leg-lbl">' + esc_(sg[0]) + '</span><b class="gpie-leg-val">' + esc_(String(sg[1])) + "</b></div>";
+  }).join("");
+  return '<div class="gpie-wrap"><div class="gpie-title">' + esc_(title) + "</div>" +
+    '<div class="gpie-body">' + pieSvgHtml_(segments) + '<div class="gpie-leg">' + legend + "</div></div></div>";
+}
+
+/* ============================================================================
+ * INDEX LANDING PAGE — liquid-glass tiles laid out HORIZONTALLY by group,
+ * each group's sub-title tiles stacked one below the other, and a donut pie
+ * under every group title combining that group's sub-title numbers.
+ * Hover: the glass brightens and a golden glitter shimmer plays over it.
+ * ========================================================================= */
+
 function renderIndexHtml_(data, perfData) {
   var s = data.store;
   function p1(x) { return (x || 0).toFixed(1) + "%"; }
@@ -2526,7 +2599,7 @@ function renderIndexHtml_(data, perfData) {
   var csatT = perfData && perfData.targetBlock && perfData.targetBlock.available ? perfData.targetBlock : null;
   var ra = perfData && perfData.repair && perfData.repair.available ? perfData.repair : null;
 
-  function tile(page, icon, title, blurb, stats, flags) {
+  function tile(page, icon, title, blurb, stats) {
     var statHtml = stats && stats.length
       ? '<div class="tile-data">' + stats.map(function (st) {
           return '<div class="tile-stat"><span>' + esc_(st[0]) + "</span><b>" + esc_(String(st[1])) + "</b></div>";
@@ -2534,8 +2607,9 @@ function renderIndexHtml_(data, perfData) {
       : '<div class="tile-data"><div class="tile-soon">⏳ Content coming soon</div>' +
         "<div class=\"tile-soon-sub\">reserved by the owner for this module</div></div>";
     return (
-      '<button type="button" class="glass-tile ' + (flags || "") + '" data-page="' + esc_(page) +
+      '<button type="button" class="glass-tile" data-page="' + esc_(page) +
       '" onclick="gotoPage(\'' + esc_(page) + "', this)\" aria-label=\"" + esc_(title) + "\">" +
+      '<span class="tile-sparkle" aria-hidden="true"></span>' +
       '<span class="tile-icon">' + icon + "</span>" +
       '<span class="tile-title">' + esc_(title) + "</span>" +
       '<span class="tile-blurb">' + esc_(blurb) + "</span>" +
@@ -2545,12 +2619,68 @@ function renderIndexHtml_(data, perfData) {
     );
   }
 
-  function group(title, page, tilesHtml) {
+  function group(title, page, tilesHtml, pieHtml) {
     return '<div class="tile-group"><h3 class="tile-group-head">' +
       '<button type="button" class="tile-group-link" onclick="gotoPage(\'' + esc_(page) +
       "')\" title=\"Open the " + esc_(title) + ' page">' + esc_(title) + " &rarr;</button></h3>" +
-      '<div class="tile-row">' + tilesHtml + "</div></div>";
+      pieHtml + '<div class="tile-col">' + tilesHtml + "</div></div>";
   }
+
+  var C = PIE_PALETTE;
+
+  // ---------- pies: one per group, combining its sub-title numbers ----------
+  var gpPie = pieBlockHtml_("Revenue won so far, by type", [
+    ["Service", Math.round(s.service.achieved), C[0]],
+    ["Accessory", Math.round(s.accessory.achieved), C[1]],
+    ["Repair", Math.round(s.repair.achieved), C[2]],
+  ]);
+
+  var kpis = data.kpi;
+  function kpiDone(rows) { var t = 0; rows.forEach(function (k) { t += k.achieved; }); return t; }
+  var kpiPie = pieBlockHtml_("KPIs hit so far, by category", [
+    ["AR", kpiDone(kpis.ar), C[0]],
+    ["RR", kpiDone(kpis.rr), C[1]],
+    ["SR", kpiDone(kpis.sr), C[2]],
+  ]);
+
+  var wlT = walkT || { walkins: 0, unique: 0, cases: 0, invoices: 0, deadLeads: 0 };
+  var wlLive = Math.max(0, wlT.walkins - wlT.cases - wlT.deadLeads);
+  var walkinPie = pieBlockHtml_("This month's walk-ins, split", [
+    ["Cases", wlT.cases, C[0]],
+    ["Invoices", wlT.invoices, C[1]],
+    ["Live leads", wlLive, C[4]],
+    ["Dead leads", wlT.deadLeads, C[3]],
+  ]);
+
+  var csatNeutral = 0;
+  if (csatT) csatNeutral = Math.max(0, csatT.totalRow.total - csatT.satTotal - csatT.disTotal);
+  var opPie = pieBlockHtml_("Feedback balance", [
+    ["Satisfied", csatT ? csatT.satTotal : 0, C[1]],
+    ["Neutral", csatT ? csatNeutral : 0, C[4]],
+    ["Dissatisfied", csatT ? csatT.disTotal : 0, C[3]],
+  ]);
+
+  var jobsList = (perfData && perfData.jobs && perfData.jobs.jobs) || [];
+  var commOk = 0, commNo = 0;
+  jobsList.forEach(function (jb) { if (jb.communicated) commOk++; else commNo++; });
+  var jobsPie = pieBlockHtml_("Open jobs, communication cover", [
+    ["Communicated", commOk, C[1]],
+    ["Not communicated", commNo, C[3]],
+  ]);
+
+  var days = data.days || [];
+  var dated = days.filter(function (d) { return !d.undated; }).length;
+  var datePie = pieBlockHtml_("Month coverage", [
+    ["Days with sales", dated, C[0]],
+    ["Working days used", s.consumedWorkingDays, C[1]],
+    ["Working days left", s.balanceWorkingDays, C[4]],
+  ]);
+
+  // ---------- tiles (unchanged content, now stacked vertically in-column) ----------
+  var kpiRows = kpis.ar.concat(kpis.rr, kpis.sr);
+  var kpiMet = kpiRows.filter(function (k) { return k.target > 0 && k.achieved >= k.target; }).length;
+  var payable = data.salespeople.reduce(function (a, p) { return a + (p.payableIncentive || 0); }, 0);
+  var a = data.invoiceValuation.arAttachment;
 
   var gpTiles =
     tile("gp", "🎯", "Store Target", "Performance vs the month plan", [
@@ -2559,7 +2689,7 @@ function renderIndexHtml_(data, perfData) {
       ["Balance", money_(s.total.balance)],
     ]) +
     tile("gp", "🗓", "Weekly Revenue Analysis", "Current month, week by week", [
-      ["This week's plan", "split from actual working days"],
+      ["This week's plan", "target/working-days × week wd"],
       ["Working days", s.totalWorkingDays + " in " + s.daysInMonth + " days"],
       ["Consumed", s.consumedWorkingDays + " · bal " + s.balanceWorkingDays],
     ]) +
@@ -2569,10 +2699,6 @@ function renderIndexHtml_(data, perfData) {
       ["Total revenue", money_(s.total.achieved)],
     ]);
 
-  var kpis = data.kpi, kpiRows = kpis.ar.concat(kpis.rr, kpis.sr);
-  var kpiMet = kpiRows.filter(function (k) { return k.target > 0 && k.achieved >= k.target; }).length;
-  var payable = data.salespeople.reduce(function (a, p) { return a + (p.payableIncentive || 0); }, 0);
-  var a = data.invoiceValuation.arAttachment;
   var kpiTiles =
     tile("kpi", "📊", "KPI Target", "AR / RR / SR scorecard", [
       ["KPIs tracked", kpiRows.length],
@@ -2586,8 +2712,8 @@ function renderIndexHtml_(data, perfData) {
     ]) +
     tile("kpi", "👤", "Sales Person Performance", "Per-person target vs achieved", [
       ["Top biller", data.salespeople.length ? data.salespeople[0].name : "—"],
-      ["Store repair", money_(data.store.repair.achieved) + " / " + money_(data.store.repair.target)],
-      ["Repair gate", CONFIG.REPAIR_INCENTIVE_GATE_PCT + "% of store repair"],
+      ["Repair shown", "each person's own win"],
+      ["Gate calc", CONFIG.REPAIR_INCENTIVE_GATE_PCT + "% of store repair"],
     ]) +
     tile("kpi", "🔗", "AR Attachment", "Accessory sold with service / repair", [
       ["Attach rate", a.attachRate.toFixed(1) + "%"],
@@ -2597,9 +2723,9 @@ function renderIndexHtml_(data, perfData) {
 
   var walkinTiles =
     tile("walkin", "🚶", "Walk-in Analysis", "Visitors, cases & invoices per day", walkT ? [
-      ["Walk-ins", walkT.walkins],
-      ["Unique", walkT.unique + " visitors"],
-      ["Dead leads", walkT.deadLeads],
+      ["Walk-ins", wlT.walkins],
+      ["Unique", wlT.unique + " visitors"],
+      ["Dead leads", wlT.deadLeads],
     ] : [["Status", "walkin sheet not found"], ["", "add the sheet to enable"]]) +
     tile("walkin", "🎟", "Token Creation", "Which user raised each token", walkT && perfData.walkin.creators.length ? [
       ["Top creator", perfData.walkin.creators[0].name],
@@ -2637,15 +2763,57 @@ function renderIndexHtml_(data, perfData) {
 
   return (
     '<section class="index-hero"><h2>Store Performance Dashboard</h2>' +
-    '<p class="index-sub">Pick a tile — it opens straight into that page. Hover any tile to peek at its live numbers. ' +
-    "Every dashboard reads the current sheets when you press <b>Refresh data</b>.</p></section>" +
-    group("GP", "gp", gpTiles) +
-    group("KPI", "kpi", kpiTiles) +
-    group("WALKIN", "walkin", walkinTiles) +
-    group("Operation", "operation", operationTiles) +
-    group("OPEN JOBS", "jobs", openJobTiles) +
-    group("DATE", "date", dateTiles)
+    '<p class="index-sub">Groups run <b>left → right</b>; each group&rsquo;s sub-tiles stack one below the other with a quick pie above them. ' +
+    "Hover a tile to see it glitter — click to jump into that page. Press <b>Refresh data</b> to re-read all sheets.</p></section>" +
+    '<div class="tile-board">' +
+    group("GP", "gp", gpTiles, gpPie) +
+    group("KPI", "kpi", kpiTiles, kpiPie) +
+    group("WALKIN", "walkin", walkinTiles, walkinPie) +
+    group("Operation", "operation", operationTiles, opPie) +
+    group("OPEN JOBS", "jobs", openJobTiles, jobsPie) +
+    group("DATE", "date", dateTiles, datePie) +
+    "</div>" +
+    freshnessLineHtml_(data, perfData)
   );
+}
+
+/** Bottom line on the index: latest dated record seen in each sheet. */
+function freshnessLineHtml_(data, perfData) {
+  function fmtDateKey(year, month, day) {
+    function p(x) { return x < 10 ? "0" + x : x; }
+    return p(day) + "-" + p(month) + "-" + year;
+  }
+  var bits = [];
+  // crm — from the date-wise rows of the business data
+  var latestCrm = null;
+  (data.days || []).forEach(function (d) {
+    if (d.undated || !d.dateKey) return;
+    if (!latestCrm || d.sortKey > latestCrm.sortKey) latestCrm = d;
+  });
+  bits.push(["crm (sales)", latestCrm ? latestCrm.dateKey : "no rows"]);
+  bits.push(["target (plan)", "refreshed " +
+    Utilities.formatDate(data.generatedAt, Session.getScriptTimeZone(), "dd-MM-yyyy" )]);
+  // walkin
+  var wlD = perfData && perfData.walkin && perfData.walkin.days
+    ? perfData.walkin.days.filter(function (d) { return !d.undated; })[0] : null;
+  bits.push(["walkin", wlD ? wlD.dateKey : "no rows"]);
+  // service (open jobs page) — max CaseDate among parsed rows
+  var svcTs = 0, svcKey = "";
+  (perfData && perfData.jobs && perfData.jobs.serviceRows || []).forEach(function (r) {
+    if (r.caseTs > svcTs) { svcTs = r.caseTs; svcKey = r.createdDate || ""; }
+  });
+  bits.push(["service", svcTs ? (svcKey || "—") : "no rows"]);
+  // advance / comm freshness carried by the perf loader when present
+  var fr = perfData && perfData.freshness ? perfData.freshness : null;
+  if (fr) {
+    bits.push(["advance", fr.advance || "—"]);
+    bits.push(["comm", fr.comm || "—"]);
+  }
+  var li = bits.map(function (b) {
+    return '<span class="fresh-chip"><i>' + esc_(b[0]) + "</i><b>" + esc_(b[1]) + "</b></span>";
+  }).join("");
+  return '<div class="fresh-line"><div class="fresh-line-head">⏱ Latest records per sheet</div>' +
+    '<div class="fresh-row">' + li + "</div></div>";
 }
 
 /** Assembles the complete HTML document. */
@@ -2837,9 +3005,11 @@ function renderWalkinAnalysis_(wl) {
 
   // Each DATE ROW gets its own soft hue so neighbouring dates are easy to tell
   // apart (pivot-style shading). Hue steps keep consecutive dates distinct.
+  // Day rows alternate between just TWO standard navy tints (owner asked to
+  // ditch the rotating rainbow: "simple 2 or 3 standard optimum colours").
+  var TINTS = ["#1d2354", "#2a3164", "#232a5e"];
   var rows = wl.days.map(function (d, i) {
-    var hue = (i * 47) % 360;
-    var tint = "hsl(" + hue + ",34%,20%)";
+    var tint = TINTS[i % TINTS.length];
     var cells = wl.purposeCols.map(function (name) { return c0(d.purposes[name] || 0); }).join("");
     var dead = d.deadLeads
       ? '<td class="num dead">' + d.deadLeads + "</td>"
@@ -3238,6 +3408,13 @@ function getDashboardCss_() {
     "table .muted { color:#94a2d2; }" +
     // ---- tables: old .date-report dark surface ----
     // ==== pricing-chart palette for every table: glow-blue header over deep navy rows ====
+    // Deep variant: on the owner's request the Invoice Valuation + Weekly
+    // tables get a header a few shades darker — still clearly separate from
+    // the navy body cells.
+    "table.hdr-deep thead th, table.hdr-deep thead th.grp, table.hdr-deep thead .sticky-col {" +
+    " background:linear-gradient(180deg,#25306e 0%,#1c2450 60%,#141b3e 100%) !important;" +
+    " color:#dfe6ff; border-bottom:2px solid #5468c9; }" +
+    "table.hdr-deep tr.total-row td { background:linear-gradient(90deg,#232b5f,#1a2048) !important; }" +
     "table { width:100%; border-collapse:separate; border-spacing:0; font-size:.8rem;" +
     " background:#161b42; border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
     " box-shadow:0 10px 26px rgba(8,12,48,.38), 0 2px 10px rgba(76,111,255,.14); }" +
@@ -3267,6 +3444,10 @@ function getDashboardCss_() {
     ".rs-item { display:flex; flex-direction:column; gap:2px; }" +
     ".rs-label { font-size:12px; color:#5b6675; font-weight:600; }" +
     ".rs-value { font-size:20px; font-weight:800; color:#17263a; }" +
+    ".csat-flex { display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap; }" +
+    ".csat-flex .csat-left { flex:0 0 auto; max-width:100%; }" +
+    ".csat-flex .csat-right { flex:1 1 300px; min-width:260px; max-width:420px; display:flex; flex-direction:column; gap:10px; }" +
+    ".csat-right .csat-chip { flex:0 0 auto; width:100%; }" +
     ".csat-chips { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:12px; }" +
     ".csat-chip { flex:1 1 150px; background:#fff; border:1px solid #d5dde6; border-radius:10px;" +
     " padding:10px 14px; display:flex; flex-direction:column; gap:2px; box-shadow:0 2px 6px rgba(15,23,42,.06); }" +
@@ -3479,10 +3660,19 @@ function getDashboardCss_() {
     // ---- wider tab bar (six pages + index) ----
     ".tabs.tabs-wide { width:min(1180px,100%); flex-wrap:wrap; }" +
     ".tabs.tabs-wide .tab-btn { font-size:.82rem; padding:11px 13px; }" +
-    // ---- walk-in page: table on the left, token table pinned to its right ----
-    ".walkin-pair { display:flex; gap:16px; align-items:flex-start; margin-top:2px; flex-wrap:wrap; }" +
-    ".walkin-pair .wp-left { flex:1 1 680px; min-width:0; }" +
-    ".walkin-pair .wp-right { flex:0 1 340px; min-width:280px; }" +
+    // ---- KPI page: table sizes to CONTENT, incentive fills the right ----
+    ".kpi-pair { display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap; }" +
+    ".kpi-pair .kp-left { flex:0 0 auto; min-width:0; }" +
+    ".kpi-pair .kp-left table { width:auto; min-width:min(100%,760px); }" +
+    ".kpi-pair .kp-right { flex:1 1 520px; min-width:340px; }" +
+    ".inc-cat { margin-bottom:14px; }" +
+    ".inc-cat-title { font-size:.78rem; font-weight:850; color:#33415c; letter-spacing:.04em;" +
+    " text-transform:uppercase; margin:0 0 8px; }" +
+    ".inc-cat table { width:100%; }" +
+    // ---- walk-in page: both halves share the width EQUALLY ----
+    ".walkin-pair { display:flex; gap:16px; align-items:stretch; margin-top:2px; flex-wrap:wrap; }" +
+    ".walkin-pair .wp-left { flex:1 1 50%; min-width:320px; }" +
+    ".walkin-pair .wp-right { flex:1 1 50%; min-width:320px; display:flex; flex-direction:column; }" +
     ".wp-head { font-size:.92rem; font-weight:850; color:#182a40; margin:0 0 4px; letter-spacing:-.015em; }" +
     // ---- placeholder modules (Decline repair / Requote-winback) ----
     ".ph-tile { display:flex; gap:12px; align-items:center; border:2px dashed rgba(105,132,255,.55);" +
@@ -3491,42 +3681,90 @@ function getDashboardCss_() {
     ".ph-tile .ph-text { font-size:.82rem; color:#475569; line-height:1.5; }" +
     // ---- repair-bucket cell tone on the job table ----
     ".jobtable td.bucket-cell { font-weight:800; color:#bcd0ff; }" +
-    // ================= INDEX LANDING — neon liquid-glass tiles =================
+    // ============ INDEX LANDING — LIQUID GLASS tiles ============
+    // Frosted translucent panes laid over a soft gradient backdrop (Apple
+    // "liquid glass" look): blurred, edge-lit, gently refracted. Groups run
+    // left→right as columns; each group's sub-tiles stack one below one.
     ".index-hero h2 { margin:0 0 6px; font-size:1.3rem; font-weight:850; letter-spacing:-.03em; color:#16263a; }" +
     ".index-sub { margin:0 0 4px; color:#5b6b84; font-size:.86rem; font-weight:500; }" +
-    ".tile-group { margin:16px 0 20px; }" +
-    ".tile-group-head { margin:0 0 9px; font-size:1rem; font-weight:850; letter-spacing:-.02em; color:#16263a; }" +
-    ".tile-group-link { background:none; border:none; padding:0; margin:0; font:inherit; color:#3f5ce0;" +
+    ".tile-board { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));" +
+    " gap:18px; margin:14px 0 8px; padding:18px; border-radius:22px;" +
+    " background:linear-gradient(135deg,#c9d6f8 0%,#dfe7fb 42%,#cde4f4 70%,#d9d2f4 100%);" +
+    " box-shadow:inset 0 1px 0 rgba(255,255,255,.6), 0 14px 34px rgba(30,45,90,.18); }" +
+    ".tile-group { display:flex; flex-direction:column; gap:10px; }" +
+    ".tile-group-head { margin:0; font-size:.92rem; font-weight:850; letter-spacing:.02em; color:#22336a; text-transform:none; }" +
+    ".tile-group-link { background:none; border:none; padding:0; margin:0; font:inherit; color:#22336a;" +
     " cursor:pointer; letter-spacing:-.02em; }" +
-    ".tile-group-link:hover { text-decoration:underline; }" +
-    ".tile-row { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,250px),1fr)); gap:14px; }" +
-    // the tile itself: translucent glass with a neon double border + halo
+    ".tile-group-link:hover { color:#3f5ce0; }" +
+    ".tile-col { display:flex; flex-direction:column; gap:12px; }" +
+    // --- the tile: liquid glass — clear, blurred, with a luminous rim ---
     ".glass-tile { position:relative; display:flex; flex-direction:column; gap:5px; text-align:left;" +
-    " min-height:172px; padding:16px 16px 40px; border-radius:18px; cursor:pointer; color:#dfe6ff;" +
-    " background:linear-gradient(145deg,rgba(60,70,160,.55),rgba(16,18,52,.88));" +
-    " border:2px solid rgba(158,129,255,.65);" +
-    " box-shadow:0 0 0 1px rgba(255,255,255,.07) inset, 0 0 22px rgba(124,92,255,.38), 0 14px 30px rgba(8,10,40,.4);" +
-    " backdrop-filter:blur(7px); overflow:hidden; opacity:.86;" +
-    " transition:opacity .16s ease, transform .16s ease, box-shadow .16s ease, border-color .16s ease; }" +
-    ".glass-tile::before { content:''; position:absolute; inset:3px; border-radius:14px;" +
-    " border:1px solid rgba(190,180,255,.4); pointer-events:none; }" +
-    ".glass-tile:hover, .glass-tile:focus-visible { opacity:1; transform:translateY(-3px);" +
-    " border-color:#d7c9ff; outline:none;" +
-    " box-shadow:0 0 0 1px rgba(255,255,255,.10) inset, 0 0 34px rgba(151,120,255,.65), 0 18px 36px rgba(8,10,40,.5); }" +
-    ".tile-icon { font-size:1.5rem; line-height:1; }" +
-    ".tile-title { font-size:1rem; font-weight:850; color:#ffffff; letter-spacing:-.01em; }" +
-    ".tile-blurb { font-size:.72rem; color:#aab4e8; line-height:1.4; }" +
-    // hidden numbers that fade in when the tile turns opaque on hover
-    ".tile-data { margin-top:3px; opacity:0; max-height:0; overflow:hidden;" +
+    " min-height:158px; padding:14px 14px 36px; border-radius:18px; cursor:pointer; color:#22336a;" +
+    " background:linear-gradient(135deg,rgba(255,255,255,.62) 0%,rgba(226,237,255,.34) 55%,rgba(255,255,255,.5) 100%);" +
+    " border:1px solid rgba(255,255,255,.75);" +
+    " box-shadow:0 10px 24px rgba(40,60,120,.16), inset 0 1px 0 rgba(255,255,255,.95)," +
+    " inset 0 -10px 18px rgba(120,150,255,.10), inset 0 0 0 1px rgba(255,255,255,.3);" +
+    " backdrop-filter:blur(14px) saturate(1.25); -webkit-backdrop-filter:blur(14px) saturate(1.25);" +
+    " overflow:hidden; opacity:.9;" +
+    " transition:opacity .16s ease, transform .16s ease, box-shadow .16s ease; }" +
+    // refracted top-light rim
+    ".glass-tile::before { content:''; position:absolute; inset:0 0 auto 0; height:46%; border-radius:18px 18px 60% 60%;" +
+    " background:linear-gradient(180deg,rgba(255,255,255,.7),rgba(255,255,255,0)); pointer-events:none; }" +
+    // golden glitter film — hidden until hover
+    ".tile-sparkle { position:absolute; inset:0; border-radius:inherit; pointer-events:none; opacity:0;" +
+    " background:" +
+      "radial-gradient(2px 2px at 18% 30%,rgba(255,221,120,.95),rgba(255,221,120,0) 60%)," +
+      "radial-gradient(2px 2px at 38% 70%,rgba(255,196,64,.95),rgba(255,196,64,0) 60%)," +
+      "radial-gradient(2.5px 2.5px at 58% 22%,rgba(255,232,150,.95),rgba(255,232,150,0) 60%)," +
+      "radial-gradient(2px 2px at 74% 55%,rgba(255,203,80,.95),rgba(255,203,80,0) 60%)," +
+      "radial-gradient(2.5px 2.5px at 86% 28%,rgba(255,240,180,.95),rgba(255,240,180,0) 60%)," +
+      "radial-gradient(2px 2px at 64% 82%,rgba(255,221,120,.95),rgba(255,221,120,0) 60%)," +
+      "radial-gradient(1.8px 1.8px at 26% 58%,rgba(255,232,150,.95),rgba(255,232,150,0) 60%)," +
+      "radial-gradient(22% 40% at 50% 0%,rgba(255,230,150,.35),rgba(255,230,150,0) 70%);" +
+    " background-repeat:no-repeat; }" +
+    ".glass-tile:hover, .glass-tile:focus-visible { opacity:1; transform:translateY(-3px); outline:none;" +
+    " box-shadow:0 16px 34px rgba(40,60,120,.28), inset 0 1px 0 rgba(255,255,255,1)," +
+    " inset 0 -12px 20px rgba(255,214,120,.18), 0 0 26px rgba(255,205,90,.35); }" +
+    // on hover the glitter brightens and twinkles
+    ".glass-tile:hover .tile-sparkle, .glass-tile:focus-visible .tile-sparkle { opacity:1;" +
+    " animation:tileTwinkle 1.1s ease-in-out infinite alternate; }" +
+    "@keyframes tileTwinkle { 0% { opacity:.35; } 100% { opacity:1; } }" +
+    ".tile-icon { font-size:1.45rem; line-height:1; position:relative; }" +
+    ".tile-title { font-size:.94rem; font-weight:850; color:#1d2f63; letter-spacing:-.005em; position:relative; }" +
+    ".tile-blurb { font-size:.7rem; color:#4d5d8a; line-height:1.4; position:relative; }" +
+    // hidden numbers that fade in when the tile brightens on hover
+    ".tile-data { margin-top:2px; opacity:0; max-height:0; overflow:hidden; position:relative;" +
     " transition:opacity .18s ease, max-height .22s ease; }" +
     ".glass-tile:hover .tile-data, .glass-tile:focus-visible .tile-data { opacity:1; max-height:180px; }" +
-    ".tile-stat { display:flex; justify-content:space-between; gap:8px; font-size:.72rem; color:#c9d3ff;" +
-    " padding:3px 0; border-top:1px solid rgba(150,160,255,.2); }" +
-    ".tile-stat b { color:#ffffff; font-weight:800; }" +
-    ".tile-soon { margin-top:6px; font-size:.78rem; font-weight:800; color:#ffd9e6; }" +
-    ".tile-soon-sub { font-size:.7rem; color:#aab4e8; }" +
-    ".tile-go { position:absolute; left:16px; bottom:12px; font-size:.72rem; font-weight:800; color:#9db4ff; }" +
-    ".glass-tile:hover .tile-go { color:#e4ebff; }" +
+    ".tile-stat { display:flex; justify-content:space-between; gap:8px; font-size:.7rem; color:#3a4a7d;" +
+    " padding:3px 0; border-top:1px solid rgba(120,140,220,.3); }" +
+    ".tile-stat b { color:#1d2f63; font-weight:800; }" +
+    ".tile-soon { margin-top:6px; font-size:.76rem; font-weight:800; color:#8a5b00; }" +
+    ".tile-soon-sub { font-size:.68rem; color:#4d5d8a; }" +
+    ".tile-go { position:absolute; left:14px; bottom:11px; font-size:.7rem; font-weight:800; color:#3f5ce0; }" +
+    ".glass-tile:hover .tile-go { color:#1d2f63; }" +
+    // --- pie under each group title ---
+    ".gpie-wrap { background:rgba(255,255,255,.55); border:1px solid rgba(255,255,255,.7); border-radius:14px;" +
+    " padding:10px; box-shadow:0 6px 16px rgba(40,60,120,.12), inset 0 1px 0 rgba(255,255,255,.8); }" +
+    ".gpie-title { font-size:.64rem; font-weight:800; color:#5a6a99; text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px; }" +
+    ".gpie-body { display:flex; align-items:center; gap:10px; }" +
+    "svg.gpie { width:88px; height:88px; flex-shrink:0; }" +
+    ".gpie-leg { display:flex; flex-direction:column; gap:3px; min-width:0; }" +
+    ".gpie-leg-item { display:flex; align-items:center; gap:6px; font-size:.66rem; color:#3a4a7d; white-space:nowrap;" +
+    " overflow:hidden; text-overflow:ellipsis; }" +
+    ".gpie-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; box-shadow:0 0 4px rgba(0,0,0,.2); }" +
+    ".gpie-leg-val { color:#1d2f63; margin-left:auto; padding-left:8px; }" +
+    ".gpie-empty { font-size:.66rem; color:#8a96b8; padding:14px 4px; }" +
+    // --- latest-records strip at the bottom of the index ---
+    ".fresh-line { margin-top:16px; padding:12px 16px; border-radius:14px;" +
+    " background:linear-gradient(135deg,rgba(255,255,255,.6),rgba(230,238,255,.45));" +
+    " border:1px solid rgba(255,255,255,.7); box-shadow:0 6px 16px rgba(40,60,120,.10); }" +
+    ".fresh-line-head { font-size:.66rem; font-weight:850; color:#5a6a99; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }" +
+    ".fresh-row { display:flex; flex-wrap:wrap; gap:8px; }" +
+    ".fresh-chip { display:inline-flex; align-items:center; gap:6px; background:rgba(255,255,255,.75);" +
+    " border:1px solid rgba(150,170,255,.4); border-radius:999px; padding:4px 12px; font-size:.68rem; }" +
+    ".fresh-chip i { font-style:normal; color:#5a6a99; font-weight:700; }" +
+    ".fresh-chip b { color:#1d2f63; font-weight:800; }" +
     "@media (max-width:640px){ .brand{font-size:1.1rem;} .card .value{font-size:1rem;} }"
   );
 }
@@ -3648,15 +3886,19 @@ function renderSalespersonCards_(data) {
   var cards = data.salespeople.map(function (p) {
     var gate = p.repairGate;
 
-    // Repair: no incentive of its own — it only unlocks the others.
+    // Repair: the number YOU personally won, shown plainly. The store repair
+    // target is used ONLY inside the 80% incentive-unlock gate below — it is
+    // never divide-compared against this person's own achievement on display.
+    var storeRep = data.store.repair;
     var repairBlock =
       '<div class="row-line" style="margin-top:12px"><span><b>Repair</b> ' +
       '<span class="muted">(no incentive — unlock gate)</span></span>' +
-      "<span>" + money_(p.repair.achieved) + ' <span class="muted">/ ' + money_(p.repair.target) +
-      "</span> " + pctBadgeHtml_(p.repair.pct) + "</span></div>" +
-      barHtml_(p.repair.pct) +
-      // Store-wide revenue target, shown right under the repair target line.
-      '<div class="row-line" style="margin-top:6px"><span class="muted">Store Total Revenue Target</span>' +
+      '<span><b class="rr-val">' + money_(p.repair.achieved) + "</b> " +
+      '<span class="muted">won by you</span></span></div>' +
+      '<div class="row-line" style="margin-top:4px"><span class="muted">Store Repair Target (shared)</span>' +
+      '<span class="muted"><b>' + money_(storeRep.target) + '</b> · store won <b>' +
+      money_(storeRep.achieved) + '</b> (' + storeRep.pct.toFixed(1) + '%)</span></div>' +
+      '<div class="row-line" style="margin-top:2px"><span class="muted">Store Total Revenue Target</span>' +
       '<span class="muted"><b>' + money_(data.store.total.target) + "</b></span></div>";
 
     var gateBlock = gate.met
@@ -3688,12 +3930,13 @@ function renderSalespersonCards_(data) {
 
   return (
     '<section class="section" id="sec-person"><h2>👤 Sales Person Performance</h2><div class="body">' +
-    '<div class="sec-desc">Definition: per-person target vs achieved. Service and Accessory use each person&rsquo;s own targets from the <b>target!C1:J1</b> roster (empty cells are skipped); <b>Repair is judged against the fixed STORE repair target — not an employee&rsquo;s 50&#37; share</b>. Unlock gate = repair revenue reaching <b>' + CONFIG.REPAIR_INCENTIVE_GATE_PCT + '%</b> of the store repair target, which releases the service+accessory incentive earned. Daily requirement = remaining balance ÷ working days left.</div>' +
+    '<div class="sec-desc">Definition: per-person target vs achieved. Service and Accessory use each person&rsquo;s own targets from the <b>target!C1:J1</b> roster (empty cells are skipped); the Repair row shows the value <b>won by that salesperson, unblocked</b>. The fixed STORE repair target is used <b>only inside the incentive calculation</b> — the gate releases the service+accessory incentive once repair revenue reaches <b>' + CONFIG.REPAIR_INCENTIVE_GATE_PCT + '%</b> of the store repair target. Daily requirement = remaining balance ÷ working days left.</div>' +
     '<div class="person-grid">' + cards + "</div>" +
     '<p class="muted" style="font-size:12.5px;margin:14px 0 0">' +
     "Only <b>Service</b> and <b>Accessory</b> revenue earn incentive. <b>Repair</b> revenue pays nothing on its own — " +
-    "it acts as a gate: the salesperson only receives the earned amount once repair revenue reaches <b>" +
-    CONFIG.REPAIR_INCENTIVE_GATE_PCT + "%</b> of the <b>store</b> repair target.</p>" +
+    "it acts as a gate: it pays nothing itself, but once repair revenue reaches <b>" +
+    CONFIG.REPAIR_INCENTIVE_GATE_PCT + "%</b> of the <b>store</b> repair target the service+accessory incentive is released. " +
+    "The card shows your own repair amount — the store target is used only for this incentive calculation.</p>" +
     "</div></section>"
   );
 }
@@ -3701,21 +3944,44 @@ function renderSalespersonCards_(data) {
 function renderIncentiveTable_(data) {
   var bundleByKey = {};
   data.bundle.forEach(function (b) { bundleByKey[b.key] = b; });
-  var rows = data.amc.map(function (a) {
-    var b = bundleByKey[a.key] || { count: 0, projectedIncentive: 0 };
-    var totalInc = a.projectedIncentive + b.projectedIncentive;
+
+  // ---- Category 1: AMC ----
+  var amcTot = { cnt: 0, elig: 0, accCnt: 0, accElig: 0, inc: 0 };
+  var amcRows = data.amc.map(function (a) {
+    amcTot.cnt += a.amcCount; amcTot.elig += a.amcEligible;
+    amcTot.accCnt += a.accessoryCount; amcTot.accElig += a.accessoryEligible;
+    amcTot.inc += a.projectedIncentive;
     return "<tr><td>" + esc_(a.name) + "</td><td>" + a.amcCount + "</td><td>" + money_(a.amcEligible) +
-      "</td><td>" + (a.amcNextSlab ? a.amcRemaining + " more" : "top slab") + "</td><td>" + a.accessoryCount +
-      "</td><td>" + money_(a.accessoryEligible) + "</td><td>" + b.count + "</td><td>" +
-      money_(b.projectedIncentive) + '</td><td class="pos">' + money_(totalInc) + "</td></tr>";
+      "</td><td>" + a.accessoryCount + "</td><td>" + money_(a.accessoryEligible) + "</td><td>" +
+      (a.amcNextSlab ? a.amcRemaining + " more" : "top slab") + '</td><td class="pos">' + money_(a.projectedIncentive) +
+      "</td></tr>";
   }).join("");
+  var amcFoot = '<tr class="total-row"><td>All salespersons</td><td>' + amcTot.cnt + "</td><td>" +
+    money_(amcTot.elig) + "</td><td>" + amcTot.accCnt + "</td><td>" + money_(amcTot.accElig) +
+    "<td></td>" + '<td class="pos">' + money_(amcTot.inc) + "</td></tr>";
+
+  // ---- Category 2: Bundle (DISC scheme) ----
+  var bunTot = { cnt: 0, inc: 0 };
+  var bunRows = data.amc.map(function (a) {
+    var b = bundleByKey[a.key] || { count: 0, projectedIncentive: 0 };
+    bunTot.cnt += b.count; bunTot.inc += b.projectedIncentive;
+    return "<tr><td>" + esc_(a.name) + "</td><td>" + b.count + '</td><td class="pos">' +
+      money_(b.projectedIncentive) + "</td></tr>";
+  }).join("");
+  var bunFoot = '<tr class="total-row"><td>All salespersons</td><td>' + bunTot.cnt +
+    '</td><td class="pos">' + money_(bunTot.inc) + "</td></tr>";
+
   return (
     '<section class="section" id="sec-incentive"><h2>💰 Sales Person Incentive — AMC &amp; Bundle</h2><div class="body">' +
-    '<div class="sec-desc">Definition: slab-wise incentive money — each AMC sale and each accessory-slab crossing pays a rate from the target sheet; bundle (DISC scheme) sales pay per-bundle slab amounts.</div>' +
-    '<div class="scroll-x">' +
-    "<table><thead><tr><th>Salesperson</th><th>AMC Count</th><th>AMC Eligible</th><th>AMC To Next</th>" +
-    "<th>Acc-AMC Count</th><th>Acc-AMC Eligible</th><th>Bundle Count</th><th>Bundle Eligible</th>" +
-    "<th>Total Incentive</th></tr></thead><tbody>" + rows + "</tbody></table></div></section>"
+    '<div class="sec-desc">Definition: slab-wise incentive money, split by category — each AMC sale and each accessory-slab crossing pays a rate from the target sheet; bundle (DISC scheme) sales pay per-bundle slab amounts.</div>' +
+    '<div class="inc-cat"><div class="inc-cat-title">Category 1 · AMC</div>' +
+    '<div class="scroll-x"><table><thead><tr><th>Salesperson</th><th>AMC Count</th><th>AMC Eligible</th>' +
+    "<th>Acc-AMC Count</th><th>Acc-AMC Eligible</th><th>AMC To Next</th><th>AMC Incentive</th></tr></thead><tbody>" +
+    amcRows + amcFoot + "</tbody></table></div></div>" +
+    '<div class="inc-cat"><div class="inc-cat-title">Category 2 · Bundle (DISC scheme)</div>' +
+    '<div class="scroll-x"><table><thead><tr><th>Salesperson</th><th>Bundle Count</th><th>Bundle Incentive</th></tr></thead><tbody>' +
+    bunRows + bunFoot + "</tbody></table></div></div>" +
+    "</div></section>"
   );
 }
 
@@ -3774,7 +4040,7 @@ function renderInvoiceValuation_(data) {
     '<section class="section" id="sec-invoice"><h2>🧾 Invoice Valuation</h2><div class="body">' +
     '<div class="sec-desc">Definition: what invoices are really worth — line count, unique invoice count, revenue and gross profit per revenue type, plus AR (accessory attachment) rate next to invoices that qualified for one.</div>' +
     '<div class="scroll-x">' +
-    "<table><thead><tr><th>Revenue Type</th><th>Invoice Lines</th><th>Unique Invoices</th><th>Revenue</th>" +
+    "<table class=\"hdr-deep\"><thead><tr><th>Revenue Type</th><th>Invoice Lines</th><th>Unique Invoices</th><th>Revenue</th>" +
     "<th>Gross Profit</th></tr></thead><tbody>" + rows + totalRow + "</tbody></table>" +
     '<div class="cards" style="margin-top:14px">' +
     '<div class="card"><div class="label">Bundle Unique Invoices</div><div class="value">' +
@@ -3975,7 +4241,7 @@ function renderWeeklyAnalysis_(data) {
     '<section class="section" id="sec-weekly"><h2>🗓 Weekly Revenue Analysis — ' +
       esc_(wa.monthName) + '</h2><div class="body">' +
     '<div class="sec-desc">Current month split into ' + wa.weeks.length + ' weeks — achieved vs weekly target, per revenue type</div>' +
-    '<div class="scroll-x" style="margin-top:12px"><table class="matrix">' +
+    '<div class="scroll-x" style="margin-top:12px"><table class="matrix hdr-deep">' +
       "<thead>" + head1 + head2 + "</thead><tbody>" + body + foot + "</tbody></table></div>" +
     '<p class="muted" style="font-size:12.5px;margin:12px 0 0">' +
     "Weekly target plan: <b>week target = month target ÷ actual working days (" +
