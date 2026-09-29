@@ -190,15 +190,28 @@ check("per-day requirement strip",page.indexOf("Per Day Requirement")>-1);
 check("metric grid",page.indexOf('class="metric a"')>-1&&page.indexOf('class="metric b"')>-1);
 // Title from crm!C2 (mock C2 = "Subha")
 check("title uses crm C2",page.indexOf("Store Performance Dashboard - Subha")>-1);
-check("three tabs: Business / Process / Performance",page.indexOf("🛠 Process")>-1
-  &&page.indexOf("📈 Performance")>-1&&page.indexOf("💼 Business")>-1);
+check("seven tabs: Index/GP/KPI/WALK-IN/Operation/Jobs/DATE",
+  page.indexOf("🏠 Index")>-1&&page.indexOf("🎯 GP")>-1&&page.indexOf("📊 KPI")>-1
+  &&page.indexOf("🚶 WALK-IN")>-1&&page.indexOf("⚙️ Operation")>-1
+  &&page.indexOf("🧰 Open Jobs")>-1&&page.indexOf("📅 DATE")>-1);
+check("index tiles render",page.indexOf("glass-tile")>-1&&page.indexOf("Store Target")>-1
+  &&page.indexOf("AR Attachment")>-1&&page.indexOf("Decline Repair")>-1
+  &&page.indexOf("Requote - Winback")>-1&&page.indexOf("Job Management")>-1
+  &&page.indexOf("Date-wise Sales Revenue Analysis")>-1);
+check("tile gotoPage hook",page.indexOf("gotoPage('gp'")>-1&&page.indexOf("gotoPage('date'")>-1);
 check("tab slider row",page.indexOf('class="tabs-row"')>-1);
 check("fonts bumped globally",page.indexOf("font-size:18px")>-1);
 check("DISC/AMC notes hidden",page.indexOf("starts with DISC")===-1&&page.indexOf("SubCategory contains AMC")===-1);
 check("date-wise GP column",page.indexOf('class="grp grp-0">Gross Profit</th>')>-1);
 check("legend shows GP daily target",page.indexOf("Gross Profit "+"₹"+subha.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
 check("GP daily target in legend for Dinesh",page.indexOf("Gross Profit "+"₹"+dinesh.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
-check("jobs warranty column",page.indexOf("<th>Warranty Type</th>")>-1);
+check("job table 10-col owner order",page.indexOf(
+  "<th>Repair Bucket</th><th>Aging</th><th>GSX Repair Status</th>"+
+  "<th>Case ID</th><th>Name</th><th>Number</th><th>Model</th>"+
+  "<th>Repair Type</th><th>Communicated</th><th>Comm. Updated</th>")>-1);
+check("old job columns dropped",page.indexOf("<th>Warranty Type</th>")===-1
+  &&page.indexOf("<th>Job created</th>")===-1&&page.indexOf("<th>Advance paid</th>")===-1);
+check("repair bucket cell tone",page.indexOf('class="bucket-cell"')>-1);
 // ---- job rules ----
 var c1004=j.jobs.find(function(o){return o.caseId==="C1004";});
 check("SNR ready-for-pickup flags gsxCompleted",c1004.gsxCompleted===true);
@@ -216,11 +229,13 @@ check("jobs repair type column",page.indexOf("<th>Repair Type</th>")>-1);
 check("jobs warranty value renders",page.indexOf("Out of Warranty")>-1);
 check("repair tab section",page.indexOf("Repair Type Performance")>-1);
 // month-to-date composition (no date rows) + integers only
-check("till-date composition table",page.indexOf("Till Date ·")>-1&&page.indexOf("All repair types")>-1);
+check("till-date table retired",page.indexOf("Till Date ·")===-1&&page.indexOf("All repair types")===-1);
 check("no per-date pivot",page.indexOf("Repair Types by Date")===-1);
 check("mtd walk-in 3 / carry-in 2",page.indexOf('<strong>Walk-In Repair</strong></td><td class="num">3</td>')>-1
   &&page.indexOf('<strong>Carry-In Repair</strong></td><td class="num">2</td>')>-1);
-check("mtd grand total 5 (SNR excluded)",page.indexOf('<tr class="totrow"><td>All repair types</td><td class="num">5</td></tr>')>-1);
+check("mtd grand-total row retired",page.indexOf("All repair types")===-1);
+var raObj=loadPerformanceData_().repair;
+check("mtd totals still computed per type",raObj.mtdRows.length===2&&raObj.mtdTotal===5);
 check("repair tile avg baseline",page.indexOf("avg 0/month")>-1);
 check("no-fraction averages",page.indexOf("avg 0.3/month")===-1);
 check("KPI names from row 14",biz.kpi.ar.some(function(k){return k.code==="CAREPLUS";}));
@@ -241,15 +256,20 @@ check("vmatrix grand total 5",page.indexOf('<td class="num vmtotal"><b>5</b></td
 check("vmatrix prev3m avg row",page.indexOf("Prev 3M Avg")>-1);
 check("vmatrix definition line",page.indexOf("Definition: one table combining every repair")>-1);
 check("snr excluded note",page.indexOf('"Service Non-Repair" is excluded')>-1);
-check("walkin hsl tint",page.indexOf("background:hsl(")>-1);
+check("walkin hsl tint var",page.indexOf("--tint:hsl(")>-1&&page.indexOf("background:hsl(")===-1);
 check("token table",page.indexOf("% of creation")>-1&&page.indexOf("Total tokens generated")>-1);
 check("ready col gone",page.indexOf("Ready for pickup")===-1);
 check("comm pos/neg present",page.indexOf("comm-pos")>-1&&page.indexOf("comm-neg")>-1);
-check("mapping line on page",page.indexOf('class="map-line"')>-1&&page.indexOf("Mobile ← <b>MobileNo</b>")>-1);
+check("mapping line owner columns",page.indexOf('class="map-line"')>-1
+  &&page.indexOf("Number ← <b>MobileNo</b>")>-1&&page.indexOf("Repair Bucket ←")>-1
+  &&page.indexOf("Open filter")>-1);
 check("business sections intact",page.indexOf("Invoice Valuation")>-1&&page.indexOf("Date-wise")>-1);
-// ---- weekly revenue analysis (section 7) + date-wise renumbered to 8 ----
-check("weekly section is #7",page.indexOf("7 &middot; Weekly Revenue Analysis")>-1);
-check("date-wise renumbered #8",page.indexOf("8 &middot; Date-wise")>-1);
+// ---- section headings re-named per the new page structure ----
+check("weekly section heading",page.indexOf("🗓 Weekly Revenue Analysis —")>-1&&page.indexOf('id="sec-weekly"')>-1);
+check("date-wise section heading",page.indexOf("📆 Date-wise Sales Revenue Analysis")>-1&&page.indexOf('id="sec-datewise"')>-1);
+check("gp sections anchor",page.indexOf('id="sec-store"')>-1&&page.indexOf('id="sec-invoice"')>-1);
+check("kpi sections anchor",page.indexOf('id="sec-kpi"')>-1&&page.indexOf('id="sec-incentive"')>-1
+  &&page.indexOf('id="sec-person"')>-1&&page.indexOf('id="sec-ar"')>-1);
 check("Store Total column removed",page.indexOf("Store Total</th>")===-1);
 check("week rows 1-7 etc",page.indexOf("<b>Week 1</b>")>-1&&page.indexOf("(1–7")>-1&&page.indexOf("<b>Week 5</b>")>-1);
 check("weekly status labels",page.indexOf("In progress")>-1&&page.indexOf("Upcoming")>-1&&page.indexOf("Completed")>-1);
@@ -269,6 +289,36 @@ check("walk-in summary is a table", page.indexOf('ptable walksum')>-1 && page.in
 
 check("weekly wd wk2=7 (no holiday)",page.indexOf("(8–14 Sep)</span></td><td style=\"text-align:center\">7</td>")>-1);
 check("weekly wd wk5=2",page.indexOf("(29–30 Sep)</span></td><td style=\"text-align:center\">2</td>")>-1);
+
+console.log("== TASK 19 rework ==");
+check("Subha repair target fixed to store", subha.repair.target===200000, subha.repair.target);
+check("Dinesh repair target fixed to store", dinesh.repair.target===200000, dinesh.repair.target);
+check("repair gate on store target (80% of 200000)", subha.repairGate.requiredValue===160000,
+  subha.repairGate.requiredValue);
+check("person card marks store repair", page.indexOf("store</b> repair target")>-1
+  ||page.indexOf("fixed STORE repair target")>-1);
+check("weekly formula stated", page.indexOf("week target = month target ÷ actual working days")>-1);
+check("walkin unique total 7", w.totals.unique===7, w.totals.unique);
+check("walkin day unique 5", w.days[0].unique===5, w.days[0].unique);
+check("walkin conversion headers gone", page.indexOf("Case conv.")===-1&&page.indexOf("Invoice conv.")===-1);
+check("walkin unique row + col", page.indexOf("<b>Unique Walk-ins</b>")>-1
+  &&page.indexOf('<th rowspan="2">Unique</th>')>-1);
+check("token table right of walk-in", page.indexOf('class="walkin-pair"')>-1
+  &&page.indexOf('<div class="wp-right"')>-1
+  &&page.lastIndexOf("tokentable")>page.lastIndexOf('<div class="wp-right"'));
+check("job buckets grouped", page.indexOf('class="grphead"')>-1);
+check("decline/requote placeholders", page.indexOf('ph-tile')>-1
+  &&page.indexOf("Decline Repair")>-1&&page.indexOf("Requote &amp; Win-back")>-1);
+check("vmatrix shaded cells", page.indexOf("table.vmatrix td { background:#1d2354; color:#e9edff")>-1);
+check("blue-glow header skin", page.indexOf("#5b7bff 0%,#4360e0")>-1);
+check("3d bar styling", page.indexOf("--barc")>-1&&page.indexOf("barShine")>-1
+  &&page.indexOf(".bar-fill::before")>-1);
+check("index page pane", page.indexOf('data-pane="index"')>-1&&page.indexOf("index-hero")>-1);
+check("index tiles built (12)", (page.match(/glass-tile /g)||[]).length>=12,
+  (page.match(/glass-tile /g)||[]).length);
+check("tile group heads", page.indexOf("tile-group-head")>-1);
+check("seven panes incl index", (page.match(/data-pane=/g)||[]).length===7,
+  (page.match(/data-pane=/g)||[]).length);
 
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);

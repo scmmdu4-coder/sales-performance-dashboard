@@ -51,7 +51,7 @@ check("review caption negative",page.indexOf("35 this month")>-1&&page.indexOf("
 check("approx cell em-dash when unit 0",page.indexOf(">—<")>-1);
 check("avg invoice value tile is gone",page.indexOf("Avg Invoice Value")===-1);
 check("comm C1 red (older than 2 days)",page.indexOf("comm-neg")>-1);
-check("no process/perf regression",page.indexOf("Process")>-1);
+check("no process/perf regression",page.indexOf("WALK-IN")>-1&&page.indexOf("Open Jobs")>-1);
 
 // --- scenario 2: comm within 2 days => green; review tile pos clap; no review row ---
 var cm2=[["CaseId","CreatedDate"],["C1",daysAgoStr(1,"9")]];

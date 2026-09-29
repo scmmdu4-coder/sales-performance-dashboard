@@ -1221,6 +1221,11 @@ function computeDashboard(allRows, target) {
       repair: sum(mine, function (r) { return revenueTypeKey_(r.revenueType) === "repair"; }),
     };
     ach.total = ach.service + ach.accessory + ach.repair;
+    // Repair (RR) is judged ON THE STORE TARGET, not the salesperson's own
+    // ~50% share (owner request): every person's Repair %, balance-to-target
+    // and the 80% incentive-unlock gate all compare against the store-wide
+    // repair target. Service / Accessory stay on the personal targets.
+    var storeRepairTarget = (target.store && target.store.repair) || 0;
     // Gross profit earned by this person (for the date-wise GP column).
     var achGrossProfit = 0;
     mine.forEach(function (r) { if (r.taxableAmount >= 0) achGrossProfit += r.grossProfit; });
@@ -1233,11 +1238,12 @@ function computeDashboard(allRows, target) {
 
     // Repair earns nothing itself — it is a GATE. The person only actually
     // receives the earned service+accessory incentive once repair revenue
-    // reaches CONFIG.REPAIR_INCENTIVE_GATE_PCT of their repair target.
-    var repairPct = pct_(ach.repair, t.repair);
+    // reaches CONFIG.REPAIR_INCENTIVE_GATE_PCT of the STORE repair target
+    // (fixed store target data, not the employee's 50% target).
+    var repairPct = pct_(ach.repair, storeRepairTarget);
     var gatePct = CONFIG.REPAIR_INCENTIVE_GATE_PCT;
-    var gateNeeded = Math.round((gatePct / 100) * t.repair);
-    var repairGateMet = t.repair > 0 ? repairPct >= gatePct : false;
+    var gateNeeded = Math.round((gatePct / 100) * storeRepairTarget);
+    var repairGateMet = storeRepairTarget > 0 ? repairPct >= gatePct : false;
     var payableIncentive = repairGateMet ? earnedIncentive : 0;
 
     function mk(tg, a, inc) {
@@ -1254,7 +1260,7 @@ function computeDashboard(allRows, target) {
       total: mk(t.total, ach.total, payableIncentive),
       service: mk(t.service, ach.service, svcInc),
       accessory: mk(t.accessory, ach.accessory, accInc),
-      repair: mk(t.repair, ach.repair, 0),
+      repair: mk(storeRepairTarget, ach.repair, 0),
       grossProfit: mk(t.grossProfit, achGrossProfit, 0),
       // Per-day target for this engineer = the BALANCE still needed for that
       // revenue type ÷ the number of working days REMAINING in the month.
@@ -1496,7 +1502,8 @@ function computeWalkinAnalysis_(ss) {
   var dayMap = {};
   var purposeTotals = {};
   var creatorTotals = {};
-  var totals = { walkins: 0, cases: 0, invoices: 0, remarks: 0, deadLeads: 0 };
+  var allMobiles = {};
+  var totals = { walkins: 0, cases: 0, invoices: 0, remarks: 0, deadLeads: 0, unique: 0 };
 
   rows.forEach(function (r) {
     var d = parseAnyDate_(r.tokenDate);
@@ -1506,15 +1513,22 @@ function computeWalkinAnalysis_(ss) {
         dateKey: key, undated: !d.valid,
         sortKey: d.valid ? d.year * 10000 + d.month * 100 + d.day : -1,
         weekday: d.valid ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(d.year, d.month - 1, d.day).getDay()] : "",
-        walkins: 0, cases: 0, invoices: 0, remarks: 0, deadLeads: 0,
-        purposes: {}, creators: {},
+        walkins: 0, unique: 0, cases: 0, invoices: 0, remarks: 0, deadLeads: 0,
+        purposes: {}, creators: {}, mobiles: {},
       };
     }
     var bucket = dayMap[key];
-
-    // Every walk-in row is one visitor; MobileNo is the identity of that visit.
     bucket.walkins += 1;
     totals.walkins += 1;
+
+    // Unique walk-ins: distinct mobile numbers seen that day (& overall).
+    // Repeated tokens from the same visitor count only once.
+    var mk = mobileKey_(r.mobile);
+    if (mk) {
+      bucket.mobiles = bucket.mobiles || {};
+      if (!bucket.mobiles[mk]) { bucket.mobiles[mk] = true; bucket.unique = (bucket.unique || 0) + 1; }
+      if (!allMobiles[mk]) { allMobiles[mk] = true; totals.unique = (totals.unique || 0) + 1; }
+    }
 
     var hasCase = !!str_(r.caseId);
     var hasInvoice = !!str_(r.invoiceCode);
@@ -1593,7 +1607,7 @@ function computeWalkinAnalysis_(ss) {
     purposeColTotals: purposeColTotals,
     creators: creators,
     totals: {
-      walkins: totals.walkins, cases: totals.cases, invoices: totals.invoices,
+      walkins: totals.walkins, unique: totals.unique || 0, cases: totals.cases, invoices: totals.invoices,
       remarks: totals.remarks, deadLeads: totals.deadLeads,
       caseRate: pct_(totals.cases, totals.walkins),
       invoiceRate: pct_(totals.invoices, totals.walkins),
@@ -2021,13 +2035,13 @@ function computeRepairAnalytics_(serviceRows) {
   };
 }
 
-/** Renders the PERFORMANCE tab: repair-type, product & coverage analytics. */
-function renderRepairAnalytics_(ra) {
+/** Renders the repair-type & coverage analytics sections (Operation page). */
+function renderRepairAnalyticsInner_(ra) {
   if (!ra.available) {
-    return '<div id="performance" class="tab-page"><div class="section"><h2 class="section-title">🔧 Repair Analytics</h2>' +
-      '<div class="empty-state">No service data available yet.</div></div></div>';
+    return '<div class="section"><h2 class="section-title">🔧 Repair Analytics</h2>' +
+      '<div class="empty-state">No service data available yet.</div></div>';
   }
-  var out = ['<div id="performance" class="tab-page active">'];
+  var out = [];
 
   function deltaPill(c) {
     if (c.deltaPct == null) return '<span class="pill pill-benchmark" title="No repairs logged in the previous 3 months">no 3-month baseline</span>';
@@ -2111,23 +2125,16 @@ function renderRepairAnalytics_(ra) {
     out.push(foot + "</tbody></table></div></div>");
   }
 
-  // ---- Month-to-date totals per repair type (no date rows) ----
-  if (ra.mtdRows.length) {
-    out.push('<div class="section">' +
-      '<h2 class="section-title">🗓 Repair Types — Till Date · <em>' + esc_(ra.curLabel) + "</em></h2>" +
-      '<div class="section-sub">One composition row per repair type for the whole of ' + esc_(ra.curLabel) +
-      ' — no per-date split. "Service Non-Repair" excluded.</div>' +
-      '<div class="table-wrap"><table aria-label="Repair types till date"><thead><tr>' +
-      "<th>Repair Type</th>" + '<th class="num">Repairs Till Date · ' + esc_(ra.curLabel) + "</th>" +
-      "</tr></thead><tbody>");
-    ra.mtdRows.forEach(function (r) {
-      out.push("<tr><td><strong>" + esc_(r.name) + "</strong></td>" + '<td class="num">' + r.cur + "</td></tr>");
-    });
-    out.push('<tr class="totrow"><td>All repair types</td><td class="num">' + ra.mtdTotal + "</td></tr>");
-    out.push("</tbody></table></div></div>");
-  }
-  out.push("</div>");
+  // The "Repair Types — Till Date" composition table was retired on the
+  // owner's request; the Repair Type Performance block above already carries
+  // the month-to-date counts per type.
   return out.join("");
+}
+
+/** Kept for backward-compatible references: the same sections, wrapped. */
+function renderRepairAnalytics_(ra) {
+  return '<div id="performance" class="tab-page active">' +
+    renderRepairAnalyticsInner_(ra) + "</div>";
 }
 
 function repairMeta_(ra, generatedAt) {
@@ -2382,18 +2389,81 @@ function barHtml_(pctVal) {
 
 /** Builds just the dashboard sections (used for both first paint and refresh). */
 function renderSectionsHtml_(data) {
+  // Full Business content (kept for compatibility); pages render only their
+  // own slice via renderPageHtml_ below.
+  return renderGpHtml_(data) + renderKpiHtml_(data) + renderDateHtml_(data);
+}
+
+/** GP page: Store target · Weekly Revenue Analysis · Invoice valuation. */
+function renderGpHtml_(data) {
   var body = "";
   body += renderStoreCards_(data);
   body += renderStoreTable_(data);
   body += renderWorkingDaysCard_(data);
-  body += renderSalespersonCards_(data);
-  body += renderIncentiveTable_(data);
-  body += renderKpiSection_(data);
   body += renderInvoiceValuation_(data);
   body += renderWeeklyAnalysis_(data);
-  body += renderDateWiseTable_(data);
   return body;
 }
+
+/** KPI page: KPI target · Incentive · Salesperson performance · AR attachment. */
+function renderKpiHtml_(data) {
+  var body = "";
+  body += renderKpiSection_(data);
+  body += renderIncentiveTable_(data);
+  body += renderSalespersonCards_(data);
+  body += renderArSection_(data);
+  return body;
+}
+
+/** DATE page: date-wise sales revenue analysis (by salesperson). */
+function renderDateHtml_(data) {
+  return renderDateWiseTable_(data);
+}
+
+/** WALK-IN page: walk-in analysis + token creation side by side. */
+function renderWalkinHtml_(pd) {
+  var wl = pd.walkin;
+  var head =
+    '<section class="section" id="sec-walkin"><h2>🚶 Walk-in Analysis &amp; Token Creation</h2><div class="body">' +
+    '<div class="sec-desc">source: ' + esc_(wl.sheetName) +
+    ". Every row is one walk-in — MobileNo identifies the visitor (Unique = distinct mobiles); a row with a CaseId counts as a case, a row with an InvoiceCode as a completed sale. The token table pins which user created each token.</div>" +
+    '<div class="walkin-pair">';
+
+  var left = '<div class="wp-left">' + renderWalkinAnalysis_(wl) + "</div>";
+  var right =
+    '<div class="wp-right"><div class="wp-head">🎟 Token Creation</div>' +
+    '<p class="sec-desc" style="margin:-2px 0 10px">how many walk-in tokens each user created, and their share of the month&rsquo;s tokens.</p>' +
+    renderTokenCreation_(wl) + "</div>";
+
+  return head + left + right + "</div></div></section>";
+}
+
+/** OPERATION page: customer satisfaction + repair ops + future sub-modules. */
+function renderOperationHtml_(pd) {
+  var out = [];
+  out.push(renderTargetBlock_(pd.targetBlock, pd.repair));
+  out.push(renderRepairAnalyticsInner_(pd.repair));
+  // Placeholder sub-modules the owner will fill in later.
+  out.push(
+    '<section class="sec"><div class="sec-head"><h2>🚫 Decline Repair</h2>' +
+    '<p class="sec-sub">Coming soon — jobs the customer declined after diagnosis.</p></div>' +
+    '<div class="ph-tile"><div class="ph-icon">⏳</div>' +
+    '<div class="ph-text"><b>Placeholder for the Decline-repair module.</b><br>' +
+    "This tile is reserved in the new Operation page; the content will be built next.</div></div></section>");
+  out.push(
+    '<section class="sec"><div class="sec-head"><h2>🔁 Requote &amp; Win-back</h2>' +
+    '<p class="sec-sub">Coming soon — re-quoted jobs and customers won back.</p></div>' +
+    '<div class="ph-tile"><div class="ph-icon">⏳</div>' +
+    '<div class="ph-text"><b>Placeholder for the Requote / win-back module.</b><br>' +
+    "This tile is reserved in the new Operation page; the content will be built next.</div></div></section>");
+  return out.join("");
+}
+
+/** OPEN JOBS page: job management. */
+function renderJobsHtml_(pd) {
+  return renderJobsSection_(pd);
+}
+
 
 /** The "Updated ... · N rows · N invoices" line under the title. */
 function renderMetaText_(data) {
@@ -2416,13 +2486,8 @@ function renderMetaText_(data) {
 function refreshDashboardSections() {
   var loaded = loadDashboardData_();
   var data = loaded.data;
-  var sections = renderSectionsHtml_(data);
 
   var perfData = loadPerformanceData_();
-  var perfHtml = renderPerformanceHtml_(perfData);
-  var perfMeta = perfMeta_(perfData);
-  var repHtml = renderRepairAnalytics_(perfData.repair);
-  var repMeta = repairMeta_(perfData.repair, perfData.generatedAt);
 
   // Keep the server-side page cache in step with what we just computed.
   try {
@@ -2433,53 +2498,221 @@ function refreshDashboardSections() {
   } catch (err) { /* cache refresh is best-effort */ }
 
   return JSON.stringify({
-    html: sections, meta: renderMetaText_(data),
-    perfHtml: perfHtml, perfMeta: perfMeta,
-    repairHtml: repHtml, repairMeta: repMeta,
+    meta: renderMetaText_(data),
+    index: renderIndexHtml_(data, perfData),
+    gp: renderGpHtml_(data),
+    kpi: renderKpiHtml_(data),
+    walkin: renderWalkinHtml_(perfData),
+    operation: renderOperationHtml_(perfData),
+    jobs: renderJobsHtml_(perfData),
+    date: renderDateHtml_(data),
   });
+}
+
+/* ============================================================================
+ * INDEX LANDING PAGE — neon liquid-glass tiles
+ *
+ * One translucent tile per dashboard. Hovering makes the tile opaque and
+ * reveals a handful of key numbers; clicking jumps straight to the pane that
+ * holds the content. Groups below follow the owner's page split:
+ *   GP / KPI / WALKIN / Operation / OPEN JOBS / DATE.
+ * ========================================================================= */
+
+function renderIndexHtml_(data, perfData) {
+  var s = data.store;
+  function p1(x) { return (x || 0).toFixed(1) + "%"; }
+  var walkT = perfData && perfData.walkin && perfData.walkin.available ? perfData.walkin.totals : null;
+  var jobT = perfData && perfData.jobs && perfData.jobs.available ? perfData.jobs.totals : null;
+  var csatT = perfData && perfData.targetBlock && perfData.targetBlock.available ? perfData.targetBlock : null;
+  var ra = perfData && perfData.repair && perfData.repair.available ? perfData.repair : null;
+
+  function tile(page, icon, title, blurb, stats, flags) {
+    var statHtml = stats && stats.length
+      ? '<div class="tile-data">' + stats.map(function (st) {
+          return '<div class="tile-stat"><span>' + esc_(st[0]) + "</span><b>" + esc_(String(st[1])) + "</b></div>";
+        }).join("") + "</div>"
+      : '<div class="tile-data"><div class="tile-soon">⏳ Content coming soon</div>' +
+        "<div class=\"tile-soon-sub\">reserved by the owner for this module</div></div>";
+    return (
+      '<button type="button" class="glass-tile ' + (flags || "") + '" data-page="' + esc_(page) +
+      '" onclick="gotoPage(\'' + esc_(page) + "', this)\" aria-label=\"" + esc_(title) + "\">" +
+      '<span class="tile-icon">' + icon + "</span>" +
+      '<span class="tile-title">' + esc_(title) + "</span>" +
+      '<span class="tile-blurb">' + esc_(blurb) + "</span>" +
+      statHtml +
+      '<span class="tile-go">Open page &rarr;</span>' +
+      "</button>"
+    );
+  }
+
+  function group(title, page, tilesHtml) {
+    return '<div class="tile-group"><h3 class="tile-group-head">' +
+      '<button type="button" class="tile-group-link" onclick="gotoPage(\'' + esc_(page) +
+      "')\" title=\"Open the " + esc_(title) + ' page">' + esc_(title) + " &rarr;</button></h3>" +
+      '<div class="tile-row">' + tilesHtml + "</div></div>";
+  }
+
+  var gpTiles =
+    tile("gp", "🎯", "Store Target", "Performance vs the month plan", [
+      ["Total", money_(s.total.achieved) + " / " + money_(s.total.target)],
+      ["Achieved", p1(s.total.pct)],
+      ["Balance", money_(s.total.balance)],
+    ]) +
+    tile("gp", "🗓", "Weekly Revenue Analysis", "Current month, week by week", [
+      ["This week's plan", "split from actual working days"],
+      ["Working days", s.totalWorkingDays + " in " + s.daysInMonth + " days"],
+      ["Consumed", s.consumedWorkingDays + " · bal " + s.balanceWorkingDays],
+    ]) +
+    tile("gp", "🧾", "Invoice Valuation", "What each invoice is worth", [
+      ["Invoices", s.uniqueInvoices],
+      ["Avg value", money_(s.avgInvoiceValue)],
+      ["Total revenue", money_(s.total.achieved)],
+    ]);
+
+  var kpis = data.kpi, kpiRows = kpis.ar.concat(kpis.rr, kpis.sr);
+  var kpiMet = kpiRows.filter(function (k) { return k.target > 0 && k.achieved >= k.target; }).length;
+  var payable = data.salespeople.reduce(function (a, p) { return a + (p.payableIncentive || 0); }, 0);
+  var a = data.invoiceValuation.arAttachment;
+  var kpiTiles =
+    tile("kpi", "📊", "KPI Target", "AR / RR / SR scorecard", [
+      ["KPIs tracked", kpiRows.length],
+      ["Targets met", kpiMet + " / " + kpiRows.length],
+      ["Reviews", "+ " + kpis.googleReview.difference + " this month"],
+    ]) +
+    tile("kpi", "💰", "Sales Person Incentive", "Slab-wise incentive valuation", [
+      ["Payable", money_(payable)],
+      ["People", data.salespeople.length + " on roster"],
+      ["Unlock gate", CONFIG.REPAIR_INCENTIVE_GATE_PCT + "% of store repair"],
+    ]) +
+    tile("kpi", "👤", "Sales Person Performance", "Per-person target vs achieved", [
+      ["Top biller", data.salespeople.length ? data.salespeople[0].name : "—"],
+      ["Store repair", money_(data.store.repair.achieved) + " / " + money_(data.store.repair.target)],
+      ["Repair gate", CONFIG.REPAIR_INCENTIVE_GATE_PCT + "% of store repair"],
+    ]) +
+    tile("kpi", "🔗", "AR Attachment", "Accessory sold with service / repair", [
+      ["Attach rate", a.attachRate.toFixed(1) + "%"],
+      ["Attached", a.attachedInvoices + " of " + a.attachableInvoices],
+      ["AR value", money_(a.value)],
+    ]);
+
+  var walkinTiles =
+    tile("walkin", "🚶", "Walk-in Analysis", "Visitors, cases & invoices per day", walkT ? [
+      ["Walk-ins", walkT.walkins],
+      ["Unique", walkT.unique + " visitors"],
+      ["Dead leads", walkT.deadLeads],
+    ] : [["Status", "walkin sheet not found"], ["", "add the sheet to enable"]]) +
+    tile("walkin", "🎟", "Token Creation", "Which user raised each token", walkT && perfData.walkin.creators.length ? [
+      ["Top creator", perfData.walkin.creators[0].name],
+      ["Tokens", perfData.walkin.creators[0].count + " (" + perfData.walkin.creators[0].share + "%)"],
+      ["Creators", perfData.walkin.creators.length + " users"],
+    ] : [["Created-by col", "not detected"], ["", "add TokenCreatedBy"]]);
+
+  var operationTiles =
+    tile("operation", "😊", "Customer Satisfaction", csatT ? "C-SAT · " + csatT.periodName : "C-SAT feedback board", csatT ? [
+      ["Responses", csatT.totalRow.total],
+      ["Satisfied", csatT.totalRow.total > 0 ? Math.round((csatT.satTotal / csatT.totalRow.total) * 100) + "%" : "—"],
+      ["C-SAT", csatT.csat || "—"],
+    ] : [["Status", "target sheet block empty"], ["", "fill L1:U5"]]) +
+    tile("operation", "🚫", "Decline Repair", "Estimate declined by customer", null) +
+    tile("operation", "🔁", "Requote - Winback", "Re-quoted & won back customers", null);
+
+  var openJobTiles =
+    tile("jobs", "🔧", "Job Management", "Open jobs by repair bucket", jobT ? [
+      ["Open jobs", jobT.openJobs],
+      ["Communicated", jobT.communicated + " (" + jobT.commRate + "%)"],
+      ["Avg job age", jobT.avgAge + " d"],
+    ] : [["Status", "service sheet not found"], ["", "add the sheet to enable"]]) +
+    tile("jobs", "🔁", "Repair Validation", "Products × coverage matrix", ra ? [
+      ["Repairs", ra.monthRepairsTotal + " this month"],
+      ["3-mo avg", ra.prevRepairAvgTotal],
+      ["Families", ra.validationMatrix.products.length],
+    ] : [["Status", "no service data"], ["", "no repairs logged yet"]]);
+
+  var dateTiles =
+    tile("date", "📆", "Date-wise Sales Revenue Analysis", "Day × salesperson × type matrix", [
+      ["Today", s.daysElapsed + " of " + s.daysInMonth + " days"],
+      ["Daily target", money_(s.dailyTarget)],
+      ["Working days left", s.balanceWorkingDays],
+    ]);
+
+  return (
+    '<section class="index-hero"><h2>Store Performance Dashboard</h2>' +
+    '<p class="index-sub">Pick a tile — it opens straight into that page. Hover any tile to peek at its live numbers. ' +
+    "Every dashboard reads the current sheets when you press <b>Refresh data</b>.</p></section>" +
+    group("GP", "gp", gpTiles) +
+    group("KPI", "kpi", kpiTiles) +
+    group("WALKIN", "walkin", walkinTiles) +
+    group("Operation", "operation", operationTiles) +
+    group("OPEN JOBS", "jobs", openJobTiles) +
+    group("DATE", "date", dateTiles)
+  );
 }
 
 /** Assembles the complete HTML document. */
 function buildDashboardPage_(data) {
   var css = getDashboardCss_();
-  var sections = renderSectionsHtml_(data);
   var storeCode = (data.store && data.store.storeCode) ? data.store.storeCode : "";
   var pageTitle = "Store Performance Dashboard" + (storeCode ? " - " + storeCode : "");
 
-  // ---- second tab: Process (walk-ins + tokens + open jobs) ----
   var perfData = loadPerformanceData_();
-  var perfHtml = renderPerformanceHtml_(perfData);
-  var perfMeta = perfMeta_(perfData);
-  // ---- third tab: Performance (repair-type analytics) ----
-  var repHtml = renderRepairAnalytics_(perfData.repair);
-  var repMeta = repairMeta_(perfData.repair, perfData.generatedAt);
+
+  var PAGES = [
+    // [tab label, data-page id, main id, html, meta-subtitle]
+    ["🏠 Index",     "index",     "pageIndex",     renderIndexHtml_(data, perfData), "Landing — pick a tile to jump to its page"],
+    ["🎯 GP",        "gp",        "pageGp",        renderGpHtml_(data),       renderMetaText_(data)],
+    ["📊 KPI",       "kpi",       "pageKpi",       renderKpiHtml_(data),      renderMetaText_(data)],
+    ["🚶 WALK-IN",   "walkin",    "pageWalkin",    renderWalkinHtml_(perfData),  perfMeta_(perfData)],
+    ["⚙️ Operation", "operation", "pageOperation", renderOperationHtml_(perfData), repairMeta_(perfData.repair, perfData.generatedAt)],
+    ["🧰 Open Jobs", "jobs",      "pageJobs",      renderJobsHtml_(perfData), perfMeta_(perfData)],
+    ["📅 DATE",      "date",      "pageDate",      renderDateHtml_(data),     renderMetaText_(data)],
+  ];
+
+  var tabs = PAGES.map(function (pg, idx) {
+    return '<button class="tab-btn' + (idx === 0 ? " active" : "") + '" data-page="' + pg[1] +
+      '" onclick="switchPage(this)">' + pg[0] + "</button>";
+  }).join("");
+
+  var mains = PAGES.map(function (pg, idx) {
+    return '<main class="wrap" id="' + pg[2] + '" data-pane="' + pg[1] + '" data-meta="' + esc_(pg[4]) + '"' +
+      (idx === 0 ? "" : ' style="display:none;"') + ">" + pg[3] + "</main>";
+  }).join("");
 
   // Refresh runs through google.script.run because the page is served inside
   // a sandboxed iframe — window.location there points at an internal
   // userCodeAppPanel URL, so navigating it would blank the page.
   var clientScript =
     "<script>" +
-    // Section 7 collapse/expand. Rows outside the recent-days window carry
-    // .extra-day and are hidden by .collapsed on the table, so toggling is a
-    // pure CSS class flip with no server call.
+    // Section collapse/expand for the DATE matrix. Rows outside the
+    // recent-days window carry .extra-day and are hidden by .collapsed on the
+    // table, so toggling is a pure CSS class flip with no server call.
     "function dwToggle(btn){" +
     "  var t=document.getElementById('dwTable'); if(!t) return;" +
     "  var open=t.classList.toggle('collapsed')===false;" +
     "  btn.classList.toggle('open', open);" +
     "  btn.querySelector('.txt').textContent=open?btn.dataset.less:btn.dataset.more;" +
     "}" +
-    // Page slider: flip the active tab, show the matching <main>, and swap the
-    // subtitle from that container's data-meta attribute.
-    "function currentPage(){var a=document.querySelector('.tab-btn.active');return a?a.dataset.page:'business';}" +
-    "function paneFor(page){return page==='business'?'content':page==='performance'?'perfContent':'repairContent';}" +
+    // Pane routing: flip the active tab, show the matching <main>, swap the
+    // subtitle from its data-meta. Panes are keyed by data-pane.
+    "function paneId(page){return {index:'pageIndex',gp:'pageGp',kpi:'pageKpi',walkin:'pageWalkin',operation:'pageOperation',jobs:'pageJobs',date:'pageDate'}[page]||'pageIndex';}" +
+    "function paneEl(page){return document.getElementById(paneId(page));}" +
+    "function currentPage(){var a=document.querySelector('.tab-btn.active');return a?a.dataset.page:'index';}" +
+    "function showPane(page){" +
+    "  var mains=document.querySelectorAll('main[data-pane]');" +
+    "  for(var i=0;i<mains.length;i++){mains[i].style.display=(mains[i].getAttribute('data-pane')===page)?'block':'none';}" +
+    "  var active=paneEl(page);" +
+    "  if(active){document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';}" +
+    "  window.scrollTo({top:0,behavior:'smooth'});" +
+    "}" +
     "function switchPage(btn){" +
     "  var tabs=document.querySelectorAll('.tab-btn');" +
     "  for(var i=0;i<tabs.length;i++){tabs[i].classList.toggle('active', tabs[i]===btn);}" +
-    "  var page=btn.dataset.page;" +
-    "  ['content','perfContent','repairContent'].forEach(function(id){" +
-    "    document.getElementById(id).style.display=(id===paneFor(page))?'block':'none';});" +
-    "  var active=document.getElementById(paneFor(page));" +
-    "  document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';" +
+    "  showPane(btn.dataset.page);" +
+    "}" +
+    // Tile click → flip to that page (tab highlight follows automatically).
+    "function gotoPage(page, el){" +
+    "  var tabs=document.querySelectorAll('.tab-btn');" +
+    "  for(var i=0;i<tabs.length;i++){tabs[i].classList.toggle('active', tabs[i].dataset.page===page);}" +
+    "  showPane(page);" +
     "}" +
     "function dashRefresh(btn){" +
     "  if(btn.disabled) return;" +
@@ -2495,15 +2728,13 @@ function buildDashboardPage_(data) {
     "        var prev=document.getElementById('dwTable');" +
     "        var wasOpen=prev?!prev.classList.contains('collapsed'):false;" +
     "        var d=JSON.parse(res);" +
-    "        var biz=document.getElementById('content');" +
-    "        var perf=document.getElementById('perfContent');" +
-    "        biz.innerHTML=d.html;" +
-    "        biz.setAttribute('data-meta', d.meta);" +
-    "        if(d.perfHtml){ perf.innerHTML=d.perfHtml; perf.setAttribute('data-meta', d.perfMeta); }" +
-    "        var rep=document.getElementById('repairContent');" +
-    "        if(d.repairHtml){ rep.innerHTML=d.repairHtml; rep.setAttribute('data-meta', d.repairMeta); }" +
-    "        var active=document.getElementById(paneFor(currentPage()));" +
-    "        document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';" +
+    "        var map={index:'pageIndex',gp:'pageGp',kpi:'pageKpi',walkin:'pageWalkin',operation:'pageOperation',jobs:'pageJobs',date:'pageDate'};" +
+    "        Object.keys(map).forEach(function(page){" +
+    "          var el=document.getElementById(map[page]);" +
+    "          if(el && d[page]!==undefined){ el.innerHTML=d[page]; }" +
+    "        });" +
+    "        var active=paneEl(currentPage());" +
+    "        if(active){document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';}" +
     "        if(wasOpen){" +
     "          var nt=document.getElementById('dwTable');" +
     "          var nb=document.getElementById('dwToggle');" +
@@ -2542,19 +2773,13 @@ function buildDashboardPage_(data) {
     "</div>" +
     '<button class="refresh-btn" onclick="dashRefresh(this)">' +
     '<span class="spin"></span><span class="txt">↻ Refresh data</span></button>' +
-    // ---- page slider: Business / Process / Performance — wide centered bar ----
-    '<div class="tabs-row"><div class="tabs" role="tablist">' +
-    '<button class="tab-btn active" data-page="business" onclick="switchPage(this)">💼 Business</button>' +
-    '<button class="tab-btn" data-page="performance" onclick="switchPage(this)">🛠 Process</button>' +
-    '<button class="tab-btn" data-page="repair" onclick="switchPage(this)">📈 Performance</button>' +
-    "</div></div>" +
+    // ---- tabs: Index / GP / KPI / Walk-in / Operation / Open Jobs / Date ----
+    '<div class="tabs-row"><div class="tabs tabs-wide" role="tablist">' + tabs + "</div></div>" +
     "</div></header>" +
-    '<main class="wrap" id="content" data-meta="' + esc_(bizMeta) + '">' + sections + "</main>" +
-    '<main class="wrap" id="perfContent" data-meta="' + esc_(perfMeta) + '" style="display:none;">' + perfHtml + "</main>" +
-    '<main class="wrap" id="repairContent" data-meta="' + esc_(repMeta) + '" style="display:none;">' + repHtml + "</main>" +
-    '<footer class="foot">Salesperson roster = target!C1:J1 · C-SAT block = target!K1 / L1:U5 · KPI grid = target!B14:L16 · ' +
-    'Process reads walkin / service / advance / comm · Performance reads service!RepairDocType / productDescription / CoverageCodeDescription / CaseDate / Ready_For_Pickup_Date_CRM. ' +
-    'Press “Refresh data” to pull the latest values.</footer>' +
+    mains +
+    '<footer class="foot">Six pages, one data run: Salesperson roster = target!C1:J1 · C-SAT block = target!K1 / L1:U5 · KPI grid = target!B14:L16 · ' +
+    "Walk-in reads the walkin sheet · Open Jobs reads service / advance / comm · Operation reads service!RepairDocType / productDescription / CoverageCodeDescription / CaseDate / Ready_For_Pickup_Date_CRM. " +
+    "Repair % is measured against the store repair target for everyone. Press “Refresh data” to pull the latest values.</footer>" +
     clientScript +
     "</body></html>"
   );
@@ -2596,14 +2821,16 @@ function renderWalkinAnalysis_(wl) {
     "<th>Reading</th></tr></thead><tbody>" +
     "<tr><td><b>Total Walk-ins</b></td>" + '<td class="num"><b>' + t.walkins + "</b></td>" +
       "<td>" + esc_(t.activeDays + " active days") + "</td></tr>" +
+    "<tr><td><b>Unique Walk-ins</b></td>" + '<td class="num"><b>' + t.unique + "</b></td>" +
+      "<td>distinct mobile numbers — repeat visitors counted once</td></tr>" +
     "<tr><td><b>Cases Created</b></td>" + '<td class="num"><b>' + t.cases + "</b></td>" +
-      "<td>" + esc_(t.caseRate + "% case conversion") + "</td></tr>" +
+      "<td>walk-ins that turned into a service case</td></tr>" +
     "<tr><td><b>Invoices Created</b></td>" + '<td class="num"><b>' + t.invoices + "</b></td>" +
-      "<td>" + esc_(t.invoiceRate + "% invoice conversion") + "</td></tr>" +
+      "<td>walk-ins that closed a sale</td></tr>" +
     "<tr><td><b>Remarks Updated</b></td>" + '<td class="num"><b>' + t.remarks + "</b></td>" +
       "<td>rows carrying a remark</td></tr>" +
     '<tr class="deadsum"><td><b>Dead Leads</b></td>' + '<td class="num dead"><b>' + t.deadLeads + "</b></td>" +
-      "<td>" + esc_(t.deadRate + "% — no case, no invoice, no remark") + "</td></tr>" +
+      "<td>no case, no invoice, no remark</td></tr>" +
     "</tbody></table></div>";
 
   function c0(n) { return n ? ('<td class="num">' + n + "</td>") : '<td class="num muted">—</td>'; }
@@ -2612,7 +2839,7 @@ function renderWalkinAnalysis_(wl) {
   // apart (pivot-style shading). Hue steps keep consecutive dates distinct.
   var rows = wl.days.map(function (d, i) {
     var hue = (i * 47) % 360;
-    var tint = "hsl(" + hue + ",72%,94%)";
+    var tint = "hsl(" + hue + ",34%,20%)";
     var cells = wl.purposeCols.map(function (name) { return c0(d.purposes[name] || 0); }).join("");
     var dead = d.deadLeads
       ? '<td class="num dead">' + d.deadLeads + "</td>"
@@ -2623,15 +2850,14 @@ function renderWalkinAnalysis_(wl) {
     var remark = d.remarks
       ? '<td class="num">' + d.remarks + "</td>"
       : '<td class="num muted">—</td>';
-    return '<tr style="background:' + tint + '"' + (d.undated ? ' class="undated-row"' : "") + ">" +
+    return '<tr style="--tint:' + tint + '"' + (d.undated ? ' class="undated-row"' : "") + ">" +
       '<td class="daycell"><b>' + esc_(d.undated ? "No date" : d.dateKey) + "</b>" +
         (d.weekday ? ' <span class="muted">' + d.weekday + "</span>" : "") + "</td>" +
       '<td class="num"><b>' + d.walkins + "</b></td>" +
+      '<td class="num uniq">' + d.unique + "</td>" +
       cells +
       '<td class="num">' + d.cases + "</td>" +
-      '<td class="num conv">' + d.caseRate + "%</td>" +
       '<td class="num">' + d.invoices + "</td>" +
-      '<td class="num conv">' + d.invoiceRate + "%</td>" +
       remark +
       dead +
       deadPct +
@@ -2645,11 +2871,10 @@ function renderWalkinAnalysis_(wl) {
     '<tr class="totrow">' +
     "<td><b>Total</b></td>" +
     '<td class="num"><b>' + t.walkins + "</b></td>" +
+    '<td class="num uniq"><b>' + t.unique + "</b></td>" +
     purposeFoot +
     '<td class="num">' + t.cases + "</td>" +
-    '<td class="num">' + t.caseRate + "%</td>" +
     '<td class="num">' + t.invoices + "</td>" +
-    '<td class="num">' + t.invoiceRate + "%</td>" +
     '<td class="num">' + t.remarks + "</td>" +
     '<td class="num dead">' + t.deadLeads + "</td>" +
     '<td class="num dead">' + t.deadRate + "%</td>" +
@@ -2659,10 +2884,10 @@ function renderWalkinAnalysis_(wl) {
   var table =
     '<div class="scroll-x"><table class="ptable walkintable">' +
     "<thead>" +
-    '<tr><th rowspan="2">Date</th><th rowspan="2">Walk-ins</th>' +
+    '<tr><th rowspan="2">Date</th><th rowspan="2">Walk-ins</th><th rowspan="2">Unique</th>' +
     '<th colspan="' + wl.purposeCols.length + '" class="grp">Visit purpose</th>' +
-    '<th rowspan="2">Cases</th><th rowspan="2">Case conv.</th>' +
-    '<th rowspan="2">Invoices</th><th rowspan="2">Invoice conv.</th>' +
+    '<th rowspan="2">Cases</th>' +
+    '<th rowspan="2">Invoices</th>' +
     '<th rowspan="2">Remark</th><th rowspan="2">Dead leads</th><th rowspan="2">Dead leads %</th></tr>' +
     "<tr>" + purpHeads + "</tr>" +
     "</thead><tbody>" + rows + foot + "</tbody></table></div>";
@@ -2758,7 +2983,11 @@ function renderJobManagement_(jm) {
     return b.jobAge - a.jobAge;
   });
 
-  var NCOLS = 14;
+  // Column order fixed by the owner (10 columns):
+  // Repair bucket · Aging · GSX repair status · Case ID · Name · Number ·
+  // Model · Repair type · Communicated · Comm updated date.
+  // Rows stay grouped under a highlighted band per repair bucket.
+  var NCOLS = 10;
   var prevGroup = null;
   var rowParts = [];
   for (var gi = 0; gi < grouped.length; gi++) {
@@ -2794,6 +3023,13 @@ function renderJobManagement_(jm) {
     // Rule (a): Service Non-Repair + CRM ready-for-pickup → GSX = Completed.
     var gsxDisplay = j.gsxCompleted ? '<td><span class="badge completed">Completed</span></td>'
       : repairStatusCell(j.gsxStatus);
+    // Repair-bucket cell: same value the rows are grouped by, with the
+    // "Unclaimed Device" badge kept loud. The <td> is pre-built by
+    // repairStatusCell — the grphead band above each block carries the
+    // highlight, so the cell itself stays a plain status.
+    var bucketCell = j.isUnclaimed
+      ? '<td class="bucket-cell"><span class="badge-unclaimed">' + esc_(j.crmRepairStatus || "—") + "</span></td>"
+      : '<td class="bucket-cell">' + esc_(j.crmRepairStatus || "—") + "</td>";
     var rowClses = [];
     if (j.isUnclaimed) rowClses.push("unclaimed-row");
     // Rule (b): physical repair never started and the case is 2+ days old.
@@ -2801,21 +3037,17 @@ function renderJobManagement_(jm) {
     // Rule (c): Out Of Warranty (No Coverage) with no advance anywhere.
     if (j.oowNoAdvance) rowClses.push("oow-nopay-row");
     return "<tr" + (rowClses.length ? ' class="' + rowClses.join(" ") + '"' : "") + ">" +
+      bucketCell +
+      ageCell(j.jobAge) +
+      gsxDisplay +
       '<td class="sticky-col"><b>' + esc_(j.caseId) + "</b>" +
         (j.isUnclaimed ? ' <span class="badge-unclaimed sm">⚠ Unclaimed</span>' : "") +
         (j.noRepairLate ? ' <span class="badge-norepair sm">⚠ No repair started</span>' : "") +
         (j.oowNoAdvance ? ' <span class="badge-oow sm">⚠ OOW · no advance</span>' : "") + "</td>" +
       "<td>" + esc_(j.name) + "</td>" +
-      "<td>" + esc_(j.mobile) + "</td>" +
+      '<td class="num">' + esc_(j.mobile) + "</td>" +
       "<td>" + esc_(j.product) + "</td>" +
-      "<td>" + esc_(j.warranty) + "</td>" +
       "<td>" + esc_(j.repairType) + "</td>" +
-      gsxDisplay +
-      repairStatusCell(j.crmRepairStatus) +
-      "<td>" + esc_(j.createdDate) + "</td>" +
-      "<td>" + esc_(j.repairDate) + "</td>" +
-      ageCell(j.jobAge) +
-      '<td class="num">' + money_(j.advance) + "</td>" +
       "<td>" + comm + "</td>" +
       commDate +
       "</tr>";
@@ -2824,11 +3056,9 @@ function renderJobManagement_(jm) {
   var table =
     '<div class="scroll-x"><table class="ptable jobtable">' +
     '<thead><tr>' +
-    "<th>Case ID</th><th>Customer</th><th>Mobile</th><th>Product</th>" +
-    "<th>Warranty Type</th><th>Repair Type</th>" +
-    "<th>GSX repair status</th><th>CRM repair status</th>" +
-    "<th>Job created</th><th>Repair created</th>" +
-    "<th>Job age</th><th>Advance paid</th><th>Communicated</th><th>Comm. updated</th>" +
+    "<th>Repair Bucket</th><th>Aging</th><th>GSX Repair Status</th>" +
+    "<th>Case ID</th><th>Name</th><th>Number</th><th>Model</th>" +
+    "<th>Repair Type</th><th>Communicated</th><th>Comm. Updated</th>" +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>";
 
   // Resolved column mapping — printed under the section so the user can
@@ -2838,45 +3068,41 @@ function renderJobManagement_(jm) {
     return esc_(pair[0]) + " ← " + (h ? "<b>" + esc_(h) + "</b>" : '<span class="map-missing">not found</span>');
   }
   var mapLine = '<div class="map-line">' + [
-    ["Case ID","caseId"],["Mobile","mobile"],["Product","product"],
-    ["Warranty Type","warranty"],["Repair Type","repairDocType"],
-    ["GSX repair status","gsxStatus"],["CRM repair status","crmRepairStatus"],
-    ["Job created","caseDate"],["Repair created","repairCreatedDate"],
-    ["Job age","jobAge"],["Advance paid","advanceDirect"],["Open filter","status"]]
+    ["Repair Bucket","crmRepairStatus"],["Aging","jobAge"],
+    ["GSX Repair Status","gsxStatus"],["Case ID","caseId"],["Number","mobile"],
+    ["Model","product"],["Repair Type","repairDocType"],["Open filter","status"]]
     .map(srcLine).join(" · ") + "</div>";
 
   return head + mapLine + table;
 }
 
-/** Whole performance tab content (walk-in analysis + token creation + job management). */
-function renderPerformanceHtml_(pd) {
-  var wl = pd.walkin, jm = pd.jobs;
-
-  var secTarget = renderTargetBlock_(pd.targetBlock, pd.repair);
-
-  var secWalkin =
-    '<section class="sec"><div class="sec-head">' +
-    '<h2>🚶 Walk-in Analysis</h2>' +
-    '<p class="sec-sub">source: ' + esc_(wl.sheetName) + ". Every row is one walk-in — MobileNo identifies the visitor; a row with a CaseId counts as a case, a row with an InvoiceCode as a completed sale.</p>" +
-    "</div>" + renderWalkinAnalysis_(wl) + "</section>";
-
-  var secToken =
-    '<section class="sec"><div class="sec-head">' +
-    '<h2>🎟 Token Creation</h2>' +
-    '<p class="sec-sub">how many walk-ins each person’s tokens generated, and their contribution share.</p>' +
-    "</div>" + renderTokenCreation_(wl) + "</section>";
-
-  var secJobs =
+/** Job management section (OPEN JOBS page). */
+function renderJobsSection_(pd) {
+  var jm = pd.jobs;
+  return (
     '<section class="sec"><div class="sec-head">' +
     '<h2>🔧 Job Management — Open Jobs</h2>' +
     '<p class="sec-sub">source: ' + esc_(jm.sheetName) + '. One row per <b>unique CaseId</b> (repeated rows are merged, latest case date wins' +
     (jm.totals.duplicatesMerged ? ' — ' + jm.totals.duplicatesMerged + " duplicate row(s) merged" : "") +
-    '). Rows are clubbed by <b>CRM repair status</b>. Only cases whose <b>JobStatus is “open”</b> are listed. Warranty Type comes from <b>CoverageCodeDescription</b>, Repair Type from <b>RepairDocType</b>. Service Non-Repair cases that are ready for pickup show GSX as <b>Completed</b>. Highlights: no repair date + case &gt; 2 days (rose), <b>Out Of Warranty (No Coverage)</b> with no advance (violet), Unclaimed Device (amber). Advance is matched on the customer mobile with the advance sheet. Communicated = Yes when a comm record matches the case id — the latest update shows <span style="color:#15803d;font-weight:700">green</span> when within ' + CONFIG.COMM_STALE_DAYS + ' days of today, <span style="color:#b91c1c;font-weight:700">red</span> when older or “Not updated”. “Unclaimed Device” rows are highlighted amber.</p>' +
-    "</div>" + renderJobManagement_(jm) + "</section>";
+    '). Rows are <b>segregated &amp; highlighted by repair bucket</b> (CRM repair status) and laid out in the owner&rsquo;s column order: ' +
+    "<b>Repair bucket · Aging · GSX repair status · Case ID · Name · Number · Model · Repair type · Communicated · Comm. updated</b>. " +
+    'Only cases whose <b>JobStatus is “open”</b> are listed. Repair bucket comes from <b>CRM repair status</b>, Model from <b>productDescription</b>, ' +
+    'Repair Type from <b>RepairDocType</b>. Service Non-Repair cases that are ready for pickup show GSX as <b>Completed</b>. ' +
+    "Highlights: no repair date + case &gt; 2 days (rose), <b>Out Of Warranty (No Coverage)</b> with no advance (violet), Unclaimed Device (amber). " +
+    "Advance is matched on the customer mobile with the advance sheet. Communicated = Yes when a comm record matches the case id — the latest update shows " +
+    '<span style="color:#6dffc7;font-weight:700">green</span> when within ' + CONFIG.COMM_STALE_DAYS + ' days of today, ' +
+    '<span style="color:#ff9da7;font-weight:700">red</span> when older or “Not updated”.</p>' +
+    "</div>" + renderJobManagement_(jm) + "</section>"
+  );
+}
 
+/** Whole performance tab content (legacy combined view, kept for compat). */
+function renderPerformanceHtml_(pd) {
+  var wl = pd.walkin;
   var pieces = [];
+  var secTarget = renderTargetBlock_(pd.targetBlock, pd.repair);
   if (secTarget) pieces.push(secTarget);
-  pieces.push(secWalkin, secToken, secJobs);
+  pieces.push(renderWalkinHtml_(pd), renderJobsSection_(pd));
   return pieces.join("");
 }
 
@@ -2987,27 +3213,44 @@ function getDashboardCss_() {
     ".badge.info { background:rgba(143,199,255,.16); color:var(--target); }" +
     ".badge.warn { background:rgba(255,210,122,.15); color:var(--balance); }" +
     ".badge.bad { background:rgba(255,157,167,.15); color:var(--danger); }" +
-    // ---- progress bars: old .progress ----
-    ".bar { height:4px; border-radius:999px; background:rgba(255,255,255,.10); overflow:hidden; min-width:70px; }" +
-    ".bar-fill { height:100%; border-radius:inherit; display:block; background:linear-gradient(90deg,#46d5ff,#62efbb); }" +
-    ".bar-fill.good { background:#6dffc7; } .bar-fill.info { background:linear-gradient(90deg,#46d5ff,#8fc7ff); }" +
-    ".bar-fill.warn { background:var(--balance); } .bar-fill.bad { background:var(--danger); }" +
+    // ---- progress bars: 3D loading-slider look — dark inset track,
+    // glossy gradient fill with a glow halo and a travelling light streak ----
+    ".bar { height:11px; border-radius:999px; background:#12141f; overflow:hidden; min-width:70px;" +
+    " box-shadow:inset 0 2px 5px rgba(0,0,0,.7), inset 0 -1px 2px rgba(255,255,255,.08), 0 1px 0 rgba(255,255,255,.08); }" +
+    ".bar-fill { position:relative; height:100%; border-radius:inherit; display:block; overflow:hidden;" +
+    " background:var(--barc, linear-gradient(90deg,#2f8dff,#3ce3b4));" +
+    " box-shadow:0 0 12px var(--barg, rgba(88,190,255,.55)), inset 0 -2px 3px rgba(0,0,0,.28); }" +
+    // top gloss: the "3D" dome highlight
+    ".bar-fill::before { content:''; position:absolute; left:1px; right:1px; top:1px; height:44%;" +
+    " border-radius:999px 999px 40% 40%; background:linear-gradient(180deg,rgba(255,255,255,.85),rgba(255,255,255,.04)); }" +
+    // travelling shine streak
+    ".bar-fill::after { content:''; position:absolute; top:0; bottom:0; width:42%; left:-45%;" +
+    " background:linear-gradient(90deg,transparent,rgba(255,255,255,.5),transparent);" +
+    " transform:skewX(-18deg); animation:barShine 2.6s ease-in-out infinite; }" +
+    "@keyframes barShine { to { left:135%; } }" +
+    ".bar-fill.good { --barc:linear-gradient(90deg,#0fbf7f,#6dffc7); --barg:rgba(109,255,199,.55); }" +
+    ".bar-fill.info { --barc:linear-gradient(90deg,#3b7dff,#8fc7ff); --barg:rgba(113,160,255,.55); }" +
+    ".bar-fill.warn { --barc:linear-gradient(90deg,#e0a02c,#ffd477); --barg:rgba(255,212,119,.55); }" +
+    ".bar-fill.bad { --barc:linear-gradient(90deg,#e05a68,#ff9da7); --barg:rgba(255,120,135,.6); }" +
     // ---- generic text tones ----
     ".pos { color:var(--achieved); font-weight:700; } .neg { color:var(--danger); font-weight:700; }" +
     ".muted { color:var(--muted); }" +
-    "table .muted { color:#8b9db8; }" +
+    "table .muted { color:#94a2d2; }" +
     // ---- tables: old .date-report dark surface ----
+    // ==== pricing-chart palette for every table: glow-blue header over deep navy rows ====
     "table { width:100%; border-collapse:separate; border-spacing:0; font-size:.8rem;" +
-    " background:rgba(12,29,53,.96); border:1px solid var(--line); border-radius:11px; overflow:hidden;" +
-    " box-shadow:0 8px 20px rgba(0,0,0,.14); }" +
-    "th { text-align:right; background:#203852; color:var(--muted); font-size:.68rem; font-weight:700;" +
-    " letter-spacing:.03em; text-transform:uppercase; padding:8px 10px; border-bottom:1px solid var(--line); }" +
+    " background:#161b42; border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
+    " box-shadow:0 10px 26px rgba(8,12,48,.38), 0 2px 10px rgba(76,111,255,.14); }" +
+    "th { text-align:right; background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%); color:#ffffff;" +
+    " font-size:.68rem; font-weight:800; text-shadow:0 1px 2px rgba(12,20,70,.65);" +
+    " letter-spacing:.05em; text-transform:uppercase; padding:9px 10px;" +
+    " border-bottom:2px solid #8eaaff; box-shadow:inset 0 1px 0 rgba(255,255,255,.25), 0 2px 8px rgba(76,111,255,.30); }" +
     "th:first-child, td:first-child { text-align:left; }" +
-    "td { padding:8px 10px; text-align:right; color:var(--white); font-size:.8rem; font-weight:400;" +
-    " font-variant-numeric:tabular-nums; background:rgba(255,255,255,.035);" +
-    " border-bottom:1px solid rgba(58,85,117,.45); }" +
+    "td { padding:8px 10px; text-align:right; color:#e9edff; font-size:.8rem; font-weight:400;" +
+    " font-variant-numeric:tabular-nums; background:#1d2354;" +
+    " border-bottom:1px solid rgba(105,132,255,.16); }" +
     "tbody tr:last-child td { border-bottom:none; }" +
-    "tbody tr:hover td { background:rgba(69,217,245,.06); }" +
+    "tbody tr:hover td { background:#262e68; }" +
     "tr.holiday td { background:rgba(255,212,119,.10) !important; }" +
     ".status-chip { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:700; }" +
     ".status-chip.ok { background:rgba(99,230,183,.28); color:#0f7a52; }" +
@@ -3034,26 +3277,36 @@ function getDashboardCss_() {
     ".csat-chip.neg { border-left:4px solid #e25567; } .csat-chip.neg .cc-value { color:#b93a4a; }" +
     ".csat-chip.warn { border-left:4px solid #e0a12d; }" +
     ".csat-chip.info { border-left:4px solid #2f5aa8; }" +
-    ".csat-table th, .csat-table td { text-align:left; }" +
-    ".csat-table td.num { font-variant-numeric:tabular-nums; }" +
-    ".csat-table .totrow td { background:#263e5b !important; color:#ffffff; font-weight:800; border-top:1px solid #3a5575; }" +
-    ".csat-pos { color:#1d7d56; font-weight:700; } .csat-neg { color:#c2393f; font-weight:700; } .csat-mid { color:#8a5b00; font-weight:600; }" +
-    "table.vmatrix { width:100%; border-collapse:collapse; background:rgba(255,255,255,.94);" +
-    " border:1px solid #d5dde6; border-radius:11px; overflow:hidden; box-shadow:0 3px 10px rgba(15,23,42,.05); }" +
-    "table.vmatrix th, table.vmatrix td { padding:8px 12px; border-bottom:1px solid rgba(90,110,145,.22); font-size:.85rem; }" +
-    "table.vmatrix thead th { background:#203852; color:#f8fbff; text-align:center; font-size:.78rem;" +
-    " text-transform:uppercase; letter-spacing:.04em; position:sticky; top:0; z-index:2; }" +
+    // C-SAT: columns size to their DATA, long headers wrap instead of
+    // stretching the table (owner's "fit the data, not the header").
+    "table.csat-table { width:auto; min-width:320px; max-width:100%; }" +
+    "table.csat-table th { white-space:normal; overflow-wrap:break-word; vertical-align:bottom;" +
+    " line-height:1.25; min-width:62px; max-width:150px; text-align:center; }" +
+    "table.csat-table th:first-child { text-align:left; min-width:150px; }" +
+    "table.csat-table td { width:1%; white-space:nowrap; }" +
+    "table.csat-table td:first-child { text-align:left; white-space:normal; width:auto; }" +
+    "table.csat-table td.num { font-variant-numeric:tabular-nums; text-align:center; }" +
+    ".csat-table .totrow td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; color:#ffffff; font-weight:800; border-top:1px solid rgba(142,170,255,.6); }" +
+    ".csat-pos { color:#52e9ac; font-weight:700; } .csat-neg { color:#ff8f9d; font-weight:700; } .csat-mid { color:#ffd477; font-weight:600; }" +
+    "table.vmatrix { width:100%; border-collapse:collapse; background:#161b42;" +
+    " border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
+    " box-shadow:0 10px 26px rgba(8,12,48,.38), 0 2px 10px rgba(76,111,255,.14); }" +
+    "table.vmatrix th, table.vmatrix td { padding:8px 12px; border-bottom:1px solid rgba(105,132,255,.16); font-size:.85rem; }" +
+    "table.vmatrix thead th { background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%); color:#ffffff; text-align:center; font-size:.76rem;" +
+    " font-weight:800; text-shadow:0 1px 2px rgba(12,20,70,.65);" +
+    " text-transform:uppercase; letter-spacing:.04em; position:sticky; top:0; z-index:2; border-bottom:2px solid #8eaaff; }" +
+    "table.vmatrix td { background:#1d2354; color:#e9edff; }" +
     "table.vmatrix td.num, table.vmatrix th.num { text-align:right; font-variant-numeric:tabular-nums; }" +
-    "table.vmatrix td.muted { color:#b3bfcb; }" +
-    "table.vmatrix .sticky-col { position:sticky; left:0; z-index:1; background:#f4f7fb; text-align:left; font-weight:700; }" +
-    "table.vmatrix thead .sticky-col { z-index:3; background:#203852; color:#f8fbff; }" +
-    "table.vmatrix tbody tr:hover td { background:#eef4fb; }" +
-    "table.vmatrix tbody tr:hover .sticky-col { background:#dde8f5; }" +
-    ".vmtotal { background:rgba(47,90,168,.08); font-weight:800; }" +
-    "tr.vmtotrow td { background:#263e5b !important; color:#fff; font-weight:800; border-top:1px solid #3a5575; }" +
-    "tr.vmavgrow td { background:#e8edf6; color:#4a5a72; font-weight:700; font-style:italic; }" +
-    ".vmavg { color:#4a5a72; }" +
-    "tr.total-row td { background:#263e5b !important; color:#ffffff; font-weight:900; }" +
+    "table.vmatrix td.muted { color:#8f9ecf; }" +
+    "table.vmatrix .sticky-col { position:sticky; left:0; z-index:1; background:#232a63; color:#e9edff; text-align:left; font-weight:700; }" +
+    "table.vmatrix thead .sticky-col { z-index:3; background:#3350c2; color:#ffffff; }" +
+    "table.vmatrix tbody tr:hover td { background:#262e68; }" +
+    "table.vmatrix tbody tr:hover .sticky-col { background:#2b336f; }" +
+    ".vmtotal { background:rgba(84,116,255,.16) !important; color:#ffffff; font-weight:800; }" +
+    "tr.vmtotrow td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; color:#fff; font-weight:800; border-top:1px solid rgba(142,170,255,.6); }" +
+    "tr.vmavgrow td { background:rgba(84,116,255,.12); color:#a9b8ff; font-weight:700; font-style:italic; }" +
+    ".vmavg { color:#a9b8ff; }" +
+    "tr.total-row td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; color:#ffffff; font-weight:900; }" +
     // ---- salesperson cards ----
     ".person-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr)); gap:10px; }" +
     ".person-card { background:rgba(12,29,53,.94); border:1px solid var(--line); border-radius:11px;" +
@@ -3089,8 +3342,8 @@ function getDashboardCss_() {
     ".incentive-line .muted { color:var(--muted); }" +
     // ---- date-wise per-person grouping (wide business table) ----
     "table.detail td, table.detail th { font-size:.8rem; }" +
-    "tr.date-head td { background:#203852 !important; color:var(--white); font-weight:750;" +
-    " border-top:1px solid var(--line); }" +
+    "tr.date-head td { background:#2b336f !important; color:#ffffff; font-weight:750;" +
+    " border-top:1px solid rgba(105,132,255,.35); }" +
     "td.person-cell { font-weight:700; border-left:4px solid transparent; }" +
     ".sp-0 { border-left-color:#8fc7ff !important; }" +
     ".sp-1 { border-left-color:#fbbf24 !important; }" +
@@ -3116,10 +3369,10 @@ function getDashboardCss_() {
     "table.matrix tbody td { border-bottom:1px solid rgba(58,85,117,.45); }" +
     "table.matrix thead th { position:sticky; top:0; z-index:3; }" +
     "table.matrix th.grp { text-align:center; border-left:1px solid var(--line); }" +
-    "table.matrix .sticky-col { position:sticky; left:0; z-index:2; background:#17263a;" +
-    " text-align:left; border-right:1px solid var(--line); }" +
-    "table.matrix thead .sticky-col { z-index:4; background:#203852; }" +
-    "table.matrix td .tgt { display:block; font-size:.66rem; font-weight:600; color:#8b9db8; margin-top:2px; }" +
+    "table.matrix .sticky-col { position:sticky; left:0; z-index:2; background:#1d2354;" +
+    " text-align:left; border-right:1px solid rgba(105,132,255,.35); }" +
+    "table.matrix thead .sticky-col { z-index:4; background:#3350c2; }" +
+    "table.matrix td .tgt { display:block; font-size:.66rem; font-weight:600; color:#94a2d2; margin-top:2px; }" +
     // subtle tinted column groups, one per salesperson
     "th.grp-0, td.cell-0 { background:rgba(143,199,255,.055); } th.grp-0 { background:rgba(143,199,255,.12); }" +
     "th.grp-1, td.cell-1 { background:rgba(251,191,36,.055); } th.grp-1 { background:rgba(251,191,36,.12); }" +
@@ -3127,7 +3380,7 @@ function getDashboardCss_() {
     "th.grp-3, td.cell-3 { background:rgba(223,178,255,.055); } th.grp-3 { background:rgba(223,178,255,.12); }" +
     "th.grp-4, td.cell-4 { background:rgba(255,157,167,.055); } th.grp-4 { background:rgba(255,157,167,.12); }" +
     "table.matrix tr.holiday .sticky-col { background:rgba(255,212,119,.16) !important; }" +
-    "table.matrix tr.total-row td { background:#263e5b !important; border-top:1px solid var(--line); }" +
+    "table.matrix tr.total-row td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; border-top:1px solid rgba(142,170,255,.6); }" +
     // ---- AR attachment sub-panel inside section 6 (light panel like old summary items) ----
     ".subpanel { margin-top:14px; padding:13px 15px; border-radius:10px;" +
     " border:1px solid #d5dde6; background:rgba(255,255,255,.92); box-shadow:0 3px 10px rgba(15,23,42,.05); }" +
@@ -3160,19 +3413,21 @@ function getDashboardCss_() {
 
     // dark tables inside the process page (jobs / tokens), matching the old date-report
     ".ptable { border-collapse:separate; border-spacing:0; width:100%; font-size:.8rem;" +
-    " background:rgba(12,29,53,.96); border:1px solid var(--line); border-radius:11px; overflow:hidden;" +
-    " box-shadow:0 8px 20px rgba(0,0,0,.12); }" +
-    ".ptable th, .ptable td { text-align:left; padding:8px 11px; border-bottom:1px solid rgba(58,85,117,.45);" +
-    " vertical-align:top; white-space:nowrap; font-weight:400; color:var(--white); }" +
-    ".ptable td { background:rgba(255,255,255,.035); }" +
-    ".ptable thead th { background:#203852; color:var(--muted); font-size:.68rem; font-weight:700;" +
-    " text-transform:uppercase; letter-spacing:.03em; position:sticky; top:0; border-bottom:1px solid var(--line); }" +
-    ".ptable tbody tr:hover td { background:rgba(69,217,245,.06); }" +
+    " background:#161b42; border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
+    " box-shadow:0 10px 26px rgba(8,12,48,.38), 0 2px 10px rgba(76,111,255,.14); }" +
+    ".ptable th, .ptable td { text-align:left; padding:8px 11px; border-bottom:1px solid rgba(105,132,255,.16);" +
+    " vertical-align:top; white-space:nowrap; font-weight:400; color:#e9edff; }" +
+    ".ptable td { background:#1d2354; }" +
+    ".ptable thead th { background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%); color:#ffffff; font-size:.68rem;" +
+    " font-weight:800; text-shadow:0 1px 2px rgba(12,20,70,.65);" +
+    " text-transform:uppercase; letter-spacing:.05em; position:sticky; top:0; border-bottom:2px solid #8eaaff;" +
+    " box-shadow:inset 0 1px 0 rgba(255,255,255,.25); }" +
+    ".ptable tbody tr:hover td { background:#262e68; }" +
     ".ptable td.num { text-align:right; font-variant-numeric:tabular-nums; }" +
     ".ptable .daycell { min-width:110px; }" +
     ".jobtable th, .jobtable td { font-size:.78rem; }" +
-    ".jobtable .sticky-col { position:sticky; left:0; background:#17263a; }" +
-    ".jobtable thead .sticky-col { background:#203852; }" +
+    ".jobtable .sticky-col { position:sticky; left:0; background:#1d2354; }" +
+    ".jobtable thead .sticky-col { background:#3350c2; }" +
     ".chip { display:inline-block; background:rgba(69,217,245,.12); color:#aee8f7; border-radius:999px;" +
     " padding:3px 9px; font-size:.68rem; margin:1px 2px 1px 0; font-weight:600; }" +
     ".chip b { color:#ffffff; }" +
@@ -3188,27 +3443,26 @@ function getDashboardCss_() {
     ".badge-unclaimed { display:inline-block; background:rgba(255,210,122,.18); color:var(--balance); font-weight:850;" +
     " font-size:.68rem; padding:3px 10px; border-radius:999px; white-space:nowrap; text-transform:uppercase; }" +
     ".badge-unclaimed.sm { font-size:.62rem; padding:2px 7px; background:var(--balance); color:#451a03; }" +
-    ".undated-row td { background:rgba(223,178,255,.08); }" +
-    // walk-in analysis stays on the light surface: its date rows are pastel hsl tints
-    ".walkintable { background:rgba(255,255,255,.92); border:1px solid #d5dde6; box-shadow:0 3px 10px rgba(15,23,42,.05); }" +
-    ".walkintable thead th { background:#eef2f9; color:#475569; }" +
-    ".walkintable td { color:#17263a; background:#fbfcfe; border-bottom:1px solid rgba(90,110,145,.22); }" +
-    ".walkintable thead th.grp { background:#dfe8f6; text-align:center; }" +
+    ".undated-row td { background:rgba(223,178,255,.10); }" +
+    // walk-in day rows each carry their own --tint; cells fall back to the navy phase
+    ".walkintable tbody td { background-color: var(--tint, #1d2354); }" +
+    ".walkintable tbody tr:hover td { background-color: var(--tint, #1d2354); box-shadow: inset 0 0 0 999px rgba(84,116,255,.14); }" +
+    ".walkintable .totrow td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; border-top:1px solid rgba(142,170,255,.6); color:#ffffff; font-weight:800; }" +
+    ".walkintable td.dead { color:#ff9daa; font-weight:700; }" +
+    ".walkintable td.uniq { color:#7edbff; font-weight:700; }" +
     ".walkintable thead th { text-align:center; }" +
+    ".walkintable thead th.grp { background:linear-gradient(180deg,#5b7bff,#3350c2); text-align:center; }" +
     ".walkintable th:first-child, .walkintable td.daycell { text-align:left; }" +
-    ".walkintable tbody tr:hover td { background:#eef4fb; }" +
-    ".walkintable .totrow td { background:#dfe6f2 !important; border-top:1px solid #b9c6dd; color:#17263a; font-weight:800; }" +
-    ".walkintable td.dead { color:#c2393f; font-weight:700; }" +
-    ".walkintable td.conv { color:#2f5aa8; font-weight:600; }" +
-    ".tokentable .totrow td { background:#263e5b !important; color:#ffffff; font-weight:900; border-top:1px solid var(--line); }" +
+    ".tokentable .totrow td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; color:#ffffff; font-weight:900; border-top:1px solid rgba(142,170,255,.6); }" +
     ".age-warn { color:var(--balance); font-weight:600; }" +
     ".age-crit { color:var(--danger); font-weight:700; }" +
     ".subnote { background:rgba(255,210,122,.14); border:1px solid rgba(255,210,122,.45); border-radius:8px; padding:9px 12px;" +
     " font-size:.78rem; color:#6b5410; margin-bottom:12px; font-weight:500; }" +
     ".empty-perf { background:rgba(255,255,255,.92); border:1px dashed #cbd5e1; border-radius:9px; padding:22px;" +
     " text-align:center; font-size:.82rem; color:#64748b; font-weight:500; }" +
-    ".grphead td { background:#203852 !important; color:var(--white); font-weight:850; font-size:.68rem;" +
-    " letter-spacing:.06em; text-transform:uppercase; padding:7px 10px; border-bottom:1px solid var(--line); }" +
+    ".grphead td { background:linear-gradient(90deg,#546fff,#7c5cff) !important; color:#ffffff; font-weight:850; font-size:.7rem;" +
+    " letter-spacing:.07em; text-transform:uppercase; padding:8px 12px; border-bottom:2px solid #9db4ff;" +
+    " box-shadow:0 3px 10px rgba(84,111,255,.35); }" +
     ".grphead-count { float:right; color:var(--target); font-weight:800; text-transform:none; letter-spacing:0; }" +
     ".norepair-row td { background:rgba(255,157,167,.12) !important; }" +
     ".norepair-row .sticky-col { box-shadow:inset 4px 0 0 var(--danger); }" +
@@ -3222,6 +3476,57 @@ function getDashboardCss_() {
     ".map-line { font-size:.68rem; color:#64748b; margin:0 0 10px; font-weight:500; line-height:1.6; }" +
     ".map-line b { color:#17263a; font-weight:750; }" +
     ".map-missing { color:#c2393f; font-weight:800; }" +
+    // ---- wider tab bar (six pages + index) ----
+    ".tabs.tabs-wide { width:min(1180px,100%); flex-wrap:wrap; }" +
+    ".tabs.tabs-wide .tab-btn { font-size:.82rem; padding:11px 13px; }" +
+    // ---- walk-in page: table on the left, token table pinned to its right ----
+    ".walkin-pair { display:flex; gap:16px; align-items:flex-start; margin-top:2px; flex-wrap:wrap; }" +
+    ".walkin-pair .wp-left { flex:1 1 680px; min-width:0; }" +
+    ".walkin-pair .wp-right { flex:0 1 340px; min-width:280px; }" +
+    ".wp-head { font-size:.92rem; font-weight:850; color:#182a40; margin:0 0 4px; letter-spacing:-.015em; }" +
+    // ---- placeholder modules (Decline repair / Requote-winback) ----
+    ".ph-tile { display:flex; gap:12px; align-items:center; border:2px dashed rgba(105,132,255,.55);" +
+    " border-radius:12px; padding:16px; background:rgba(84,116,255,.08); }" +
+    ".ph-tile .ph-icon { font-size:1.4rem; }" +
+    ".ph-tile .ph-text { font-size:.82rem; color:#475569; line-height:1.5; }" +
+    // ---- repair-bucket cell tone on the job table ----
+    ".jobtable td.bucket-cell { font-weight:800; color:#bcd0ff; }" +
+    // ================= INDEX LANDING — neon liquid-glass tiles =================
+    ".index-hero h2 { margin:0 0 6px; font-size:1.3rem; font-weight:850; letter-spacing:-.03em; color:#16263a; }" +
+    ".index-sub { margin:0 0 4px; color:#5b6b84; font-size:.86rem; font-weight:500; }" +
+    ".tile-group { margin:16px 0 20px; }" +
+    ".tile-group-head { margin:0 0 9px; font-size:1rem; font-weight:850; letter-spacing:-.02em; color:#16263a; }" +
+    ".tile-group-link { background:none; border:none; padding:0; margin:0; font:inherit; color:#3f5ce0;" +
+    " cursor:pointer; letter-spacing:-.02em; }" +
+    ".tile-group-link:hover { text-decoration:underline; }" +
+    ".tile-row { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,250px),1fr)); gap:14px; }" +
+    // the tile itself: translucent glass with a neon double border + halo
+    ".glass-tile { position:relative; display:flex; flex-direction:column; gap:5px; text-align:left;" +
+    " min-height:172px; padding:16px 16px 40px; border-radius:18px; cursor:pointer; color:#dfe6ff;" +
+    " background:linear-gradient(145deg,rgba(60,70,160,.55),rgba(16,18,52,.88));" +
+    " border:2px solid rgba(158,129,255,.65);" +
+    " box-shadow:0 0 0 1px rgba(255,255,255,.07) inset, 0 0 22px rgba(124,92,255,.38), 0 14px 30px rgba(8,10,40,.4);" +
+    " backdrop-filter:blur(7px); overflow:hidden; opacity:.86;" +
+    " transition:opacity .16s ease, transform .16s ease, box-shadow .16s ease, border-color .16s ease; }" +
+    ".glass-tile::before { content:''; position:absolute; inset:3px; border-radius:14px;" +
+    " border:1px solid rgba(190,180,255,.4); pointer-events:none; }" +
+    ".glass-tile:hover, .glass-tile:focus-visible { opacity:1; transform:translateY(-3px);" +
+    " border-color:#d7c9ff; outline:none;" +
+    " box-shadow:0 0 0 1px rgba(255,255,255,.10) inset, 0 0 34px rgba(151,120,255,.65), 0 18px 36px rgba(8,10,40,.5); }" +
+    ".tile-icon { font-size:1.5rem; line-height:1; }" +
+    ".tile-title { font-size:1rem; font-weight:850; color:#ffffff; letter-spacing:-.01em; }" +
+    ".tile-blurb { font-size:.72rem; color:#aab4e8; line-height:1.4; }" +
+    // hidden numbers that fade in when the tile turns opaque on hover
+    ".tile-data { margin-top:3px; opacity:0; max-height:0; overflow:hidden;" +
+    " transition:opacity .18s ease, max-height .22s ease; }" +
+    ".glass-tile:hover .tile-data, .glass-tile:focus-visible .tile-data { opacity:1; max-height:180px; }" +
+    ".tile-stat { display:flex; justify-content:space-between; gap:8px; font-size:.72rem; color:#c9d3ff;" +
+    " padding:3px 0; border-top:1px solid rgba(150,160,255,.2); }" +
+    ".tile-stat b { color:#ffffff; font-weight:800; }" +
+    ".tile-soon { margin-top:6px; font-size:.78rem; font-weight:800; color:#ffd9e6; }" +
+    ".tile-soon-sub { font-size:.7rem; color:#aab4e8; }" +
+    ".tile-go { position:absolute; left:16px; bottom:12px; font-size:.72rem; font-weight:800; color:#9db4ff; }" +
+    ".glass-tile:hover .tile-go { color:#e4ebff; }" +
     "@media (max-width:640px){ .brand{font-size:1.1rem;} .card .value{font-size:1rem;} }"
   );
 }
@@ -3290,7 +3595,7 @@ function renderStoreTable_(data) {
       "</div>";
   }
   return (
-    '<section class="section"><h2>1 &middot; Store Performance</h2><div class="body">' +
+    '<section class="section" id="sec-store"><h2>🎯 Store Target — Performance</h2><div class="body">' +
     '<div class="sec-desc">Target vs Achievement &middot; Run Rate</div>' +
     '<div class="rgrid">' +
     tile("Service Revenue", s.service) +
@@ -3305,7 +3610,7 @@ function renderStoreTable_(data) {
 function renderWorkingDaysCard_(data) {
   var s = data.store;
   return (
-    '<section class="section"><h2>2 &middot; Working Days (Current Month)</h2><div class="body">' +
+    '<section class="section" id="sec-workdays"><h2>📅 Working Days (Current Month)</h2><div class="body">' +
     '<div class="sec-desc">Definition: days the store is open this month — total, already consumed, and how many selling days are left. Holiday dates come from CONFIG.</div>' +
     '<div class="cards" style="margin-bottom:0">' +
     '<div class="card"><div class="label">Total Working Days</div><div class="value">' + s.totalWorkingDays + "</div></div>" +
@@ -3335,7 +3640,7 @@ function renderSalespersonCards_(data) {
   }
 
   if (!data.salespeople.length) {
-    return '<section class="section"><h2>3 &middot; Salesperson Performance</h2><div class="body">' +
+    return '<section class="section" id="sec-person"><h2>👤 Sales Person Performance</h2><div class="body">' +
       '<div class="sec-desc">Definition: per-person target vs achieved, targets from the target!C1:J1 roster.</div>' +
       '<div class="empty-state">No salespersons on the roster — add names to <b>target!C1:J1</b> (empty cells are skipped). ' +
       "People named in the CRM but not on the roster count only toward the store totals.</div></div></section>";
@@ -3382,13 +3687,13 @@ function renderSalespersonCards_(data) {
   }).join("");
 
   return (
-    '<section class="section"><h2>3 &middot; Salesperson Performance</h2><div class="body">' +
-    '<div class="sec-desc">Definition: per-person target vs achieved for Service / Accessory / Repair (targets from <b>target!C1:J1</b> roster — empty cells are skipped), plus service+accessory incentive earned, the repair-revenue unlock gate, and Remaining ÷ Days-Left run rates.</div>' +
+    '<section class="section" id="sec-person"><h2>👤 Sales Person Performance</h2><div class="body">' +
+    '<div class="sec-desc">Definition: per-person target vs achieved. Service and Accessory use each person&rsquo;s own targets from the <b>target!C1:J1</b> roster (empty cells are skipped); <b>Repair is judged against the fixed STORE repair target — not an employee&rsquo;s 50&#37; share</b>. Unlock gate = repair revenue reaching <b>' + CONFIG.REPAIR_INCENTIVE_GATE_PCT + '%</b> of the store repair target, which releases the service+accessory incentive earned. Daily requirement = remaining balance ÷ working days left.</div>' +
     '<div class="person-grid">' + cards + "</div>" +
     '<p class="muted" style="font-size:12.5px;margin:14px 0 0">' +
     "Only <b>Service</b> and <b>Accessory</b> revenue earn incentive. <b>Repair</b> revenue pays nothing on its own — " +
     "it acts as a gate: the salesperson only receives the earned amount once repair revenue reaches <b>" +
-    CONFIG.REPAIR_INCENTIVE_GATE_PCT + "%</b> of their repair target.</p>" +
+    CONFIG.REPAIR_INCENTIVE_GATE_PCT + "%</b> of the <b>store</b> repair target.</p>" +
     "</div></section>"
   );
 }
@@ -3405,7 +3710,7 @@ function renderIncentiveTable_(data) {
       money_(b.projectedIncentive) + '</td><td class="pos">' + money_(totalInc) + "</td></tr>";
   }).join("");
   return (
-    '<section class="section"><h2>4 &middot; Incentive Valuation — AMC &amp; Bundle</h2><div class="body">' +
+    '<section class="section" id="sec-incentive"><h2>💰 Sales Person Incentive — AMC &amp; Bundle</h2><div class="body">' +
     '<div class="sec-desc">Definition: slab-wise incentive money — each AMC sale and each accessory-slab crossing pays a rate from the target sheet; bundle (DISC scheme) sales pay per-bundle slab amounts.</div>' +
     '<div class="scroll-x">' +
     "<table><thead><tr><th>Salesperson</th><th>AMC Count</th><th>AMC Eligible</th><th>AMC To Next</th>" +
@@ -3445,7 +3750,7 @@ function renderKpiSection_(data) {
   }).join("");
 
   return (
-    '<section class="section"><h2>5 &middot; Store KPI Parameters</h2><div class="body">' +
+    '<section class="section" id="sec-kpi"><h2>📊 KPI Target — Store KPI Parameters</h2><div class="body">' +
     '<div class="sec-desc">Definition: store-level KPI scorecard — KPI names from <b>target!B14:L14</b>, target counts from <b>target!B15:L15</b>; each KPI type AR (attachment) / RR (repair) / SR (service) shows achieved count, %, balance, and the money still winnable (balance × approx unit value).</div>' +
     '<div class="scroll-x">' +
     "<table><thead><tr><th>KPI</th><th>Type</th><th>Target</th><th>Achieved</th><th>Achieved %</th>" +
@@ -3466,7 +3771,7 @@ function renderInvoiceValuation_(data) {
     "</td><td>" + data.invoiceValuation.totalUniqueInvoices + "</td><td>" + money_(data.store.total.achieved) +
     "</td><td>" + money_(data.store.grossProfit.achieved) + "</td></tr>";
   return (
-    '<section class="section"><h2>6 &middot; Invoice Valuation</h2><div class="body">' +
+    '<section class="section" id="sec-invoice"><h2>🧾 Invoice Valuation</h2><div class="body">' +
     '<div class="sec-desc">Definition: what invoices are really worth — line count, unique invoice count, revenue and gross profit per revenue type, plus AR (accessory attachment) rate next to invoices that qualified for one.</div>' +
     '<div class="scroll-x">' +
     "<table><thead><tr><th>Revenue Type</th><th>Invoice Lines</th><th>Unique Invoices</th><th>Revenue</th>" +
@@ -3477,7 +3782,6 @@ function renderInvoiceValuation_(data) {
     '<div class="card"><div class="label">AMC Unique Invoices</div><div class="value">' +
     data.invoiceValuation.amcUniqueInvoices + "</div></div>" +
     "</div>" +
-    renderArAttachment_(data) +
     "</div></section>"
   );
 }
@@ -3490,6 +3794,14 @@ function renderInvoiceValuation_(data) {
  * standalone sales and are excluded. The value and GP shown are the
  * accessory portion of those invoices — the revenue the attachment earned.
  */
+function renderArSection_(data) {
+  return (
+    '<section class="section" id="sec-ar"><h2>🔗 AR Attachment — accessory sold with service / repair</h2><div class="body">' +
+    '<div class="sec-desc">Definition: an invoice counts as an AR attachment when accessory revenue shares the invoice code with service or repair revenue; value and GP shown are the accessory portion of those invoices. Accessory-only invoices are excluded.</div>' +
+    renderArAttachment_(data) + "</div></section>"
+  );
+}
+
 function renderArAttachment_(data) {
   var a = data.invoiceValuation.arAttachment;
 
@@ -3567,10 +3879,14 @@ function computeWeeklyAnalysis_(data) {
   var totalWorkingDays = 0;
   weeks.forEach(function (w) { totalWorkingDays += w.workingDays; });
 
-  // Weekly target = month target × this week's working days ÷ total working days.
+  // Weekly target plan (owner's formula): split the month target by the
+  // month's ACTUAL working days to get a per-working-day rate, then multiply
+  // back by this week's working days.
+  //   week target = month target ÷ actual working days × week working days
   weeks.forEach(function (w) {
     TYPES.forEach(function (t) {
-      w.tgt[t.key] = Math.round(t.monthTarget * w.workingDays / Math.max(1, totalWorkingDays));
+      var perDay = t.monthTarget / Math.max(1, totalWorkingDays);
+      w.tgt[t.key] = Math.round(perDay * w.workingDays);
     });
   });
 
@@ -3656,15 +3972,15 @@ function renderWeeklyAnalysis_(data) {
   foot += "</tr>";
 
   return (
-    '<section class="section" id="weekly"><h2>7 &middot; Weekly Revenue Analysis — ' +
+    '<section class="section" id="sec-weekly"><h2>🗓 Weekly Revenue Analysis — ' +
       esc_(wa.monthName) + '</h2><div class="body">' +
     '<div class="sec-desc">Current month split into ' + wa.weeks.length + ' weeks — achieved vs weekly target, per revenue type</div>' +
     '<div class="scroll-x" style="margin-top:12px"><table class="matrix">' +
       "<thead>" + head1 + head2 + "</thead><tbody>" + body + foot + "</tbody></table></div>" +
     '<p class="muted" style="font-size:12.5px;margin:12px 0 0">' +
-    "Each <b> week's target</b> = month target × that week's <b>working days</b> ÷ the month's total working days (" +
-    wa.totalWorkingDays + "). " +
-    "Achieved values come from <b>crm!TaxableAmount</b> (and <b>crm!GrossProfit</b>) for " + esc_(wa.monthName) +
+    "Weekly target plan: <b>week target = month target ÷ actual working days (" +
+    wa.totalWorkingDays + ") × that week's working days</b> — the target is first split evenly across the month's real working days, " +
+    "then rebuilt for each week. Achieved values come from <b>crm!TaxableAmount</b> (and <b>crm!GrossProfit</b>) for " + esc_(wa.monthName) +
     " dates only. Pills turn <b>green</b> once a week clears its target.</p>" +
     "</div></section>"
   );
@@ -3776,7 +4092,7 @@ function renderDateWiseTable_(data) {
     : "";
 
   return (
-    '<section class="section" id="datewise"><h2>8 &middot; Date-wise Sales Revenue Analysis (by salesperson)</h2><div class="body">' +
+    '<section class="section" id="sec-datewise"><h2>📆 Date-wise Sales Revenue Analysis (by salesperson)</h2><div class="body">' +
     '<div class="sec-desc">Definition: every invoice date, split per on-roster salesperson (target!C1:J1) —' +
     ' Service / Accessory / Repair revenue and Gross Profit from crm rows (achieved values sit in oval pills,' +
     ' green = hit that person\'s daily target, red = missed). Month-to-date total row pinned at the bottom.</div>' +
