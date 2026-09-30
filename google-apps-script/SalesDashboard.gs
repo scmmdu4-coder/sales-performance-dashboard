@@ -2650,27 +2650,14 @@ function serverQuery(q) {
     var query = str_(q).trim();
     if (!query) {
       result.title = "Say something first";
-      result.note = "Try: “sales 23.09.26”, “part number for display”, or a mobile number.";
+      result.note = "Try a customer mobile number or a Case ID.";
       return JSON.stringify(result);
     }
 
     var c = chatQuery(query);
-
-    // Task 27: EVERY query also scans every tab in the workbook for relevant
-    // matches — the answer is never limited to the one handler's sheet.
-    var scan = chatAllSheetsScan_(query);
     result.title = c.title;
     result.rows = c.rows || [];
-    if (scan.rows.length) {
-      if (result.rows.length) {
-        result.rows.push([chatTxt('<div style="margin:4px 0 2px;font-size:.68rem;color:#9fb4e8">— matches across all tabs —</div>')]);
-      }
-      result.rows = result.rows.concat(scan.rows);
-      result.note = (c.note ? c.note + " " : "") +
-        "Cross-tab matches found in: " + esc_(scan.touched.join(", ")) + ".";
-    } else {
-      result.note = c.note || "Scanned all sheet tabs; nothing matched — try a date, part word, or mobile number.";
-    }
+    result.note = c.note || "";
     return JSON.stringify(result);
   } catch (err) {
     try {
@@ -2707,56 +2694,43 @@ function chatDig(q) {
  * Route the free-text question to the right search.
  * Returns { title, rows, note } where rows are table-cell arrays.
  */
+/**
+ * Task 30 hard limit: the bot answers ONLY two kinds of lookups —
+ *   1. a customer mobile number  → service!MobileNo → case ID, CRM repair
+ *      status (CRM_JobStatusDesc), customer name, product, plus the rest of
+ *      the 360 (walk-in visits, advance balance, CRM invoices).
+ *   2. a Case ID                 → service!CaseId  → the full case detail.
+ * Anything else gets a gentle guidance reply instead of a fuzzy search.
+ */
 function chatQuery(q) {
-  var lower = str_(q).toLowerCase();
-
-  // 1) A contiguous 10+ digit run (a real phone number) → customer 360
-  // across sheets. Dates like 23.09.2026 never match — the dots break runs.
+  // 1) A contiguous 10+ digit run (a real phone number) — dates never match.
   var phoneMatch = str_(q).match(/[\d+][\d\s().\-]{8,}\d/);
   var mobile = phoneMatch ? chatDig(phoneMatch[0]) : "";
   if (mobile) return chatMobileQuery(mobile, q);
 
-  // 2) Asks for a DATE / date range + sales → revenue & GP invoice breakdown.
-  var wantsSales = /sales|sale\b|revenue|invoice|gross\s*profit|\bgp\b/i.test(lower);
-  if (wantsSales) {
-    var dates = chatExtractDates(q);
-    if (dates.length) return chatSalesQuery(dates, q);
-    // "sale date from 15.09.26" — date parsed above; without one, fall through.
-    if (/date\s*from\s*[\d]/.test(lower)) {
-      return {
-        title: "No matching date found",
-        rows: [],
-        note: "I could not parse the date in that question — try “23.09.26” or “23-09-2026”.",
-      };
-    }
+  // 2) A case-id shaped token (optionally letters + 3+ digits): C1001,
+  // CS-200145, or a bare 6+ digit job number.
+  var tok = null;
+  var tokens = (str_(q).toLowerCase().replace(/[^a-z0-9\- ]/g, " ").split(/\s+/));
+  for (var i = 0; i < tokens.length; i++) {
+    var t = tokens[i];
+    if (t === "case" || t === "caseid" || t === "id" || t === "job" || t === "status") continue;
+    if (/^[a-z]{0,4}\d{3,}[a-z0-9\-]*$/.test(t)) { tok = t; break; }
+  }
+  if (tok) {
+    var hit = chatCaseQuery(tok);
+    if (hit) return hit;
   }
 
-  // 3) "part number for iphone 3 display" → lookup in CRM item codes +
-  // service advance part-ish text. We look in crm ItemCode / PartType /
-  // ItemDescription / SubCategory, and walkin/service repair docs too.
-  if (/part|item\s*code|model|display\b|battery\b|glass\b|product/i.test(lower)) {
-    return chatPartQuery(q);
-  }
-
-  // 4) Fall back to a fuzzy name / invoice / case / text search.
-  return chatFuzzyQuery(q);
+  // 3) Everything else → guidance only (no fuzzy / date / part search).
+  return {
+    title: "Give me a mobile number or a Case ID",
+    rows: [],
+    note: "I look up customers by mobile number (e.g. 919876543210) or by Case ID " +
+      "(e.g. C1001) from the service sheet — name, case ID, CRM repair status and product.",
+  };
 }
 
-/** Extract every date written in the question (dot/slash/hyphen, yy or yyyy). */
-function chatExtractDates(q) {
-  var out = [];
-  var seen = {};
-  str_(q).replace(/\b(\d{1,2})[.\-\/](\d{1,2})[.\-\/](\d{2,4})\b/g, function (m, d, mo, y) {
-    var q = parseInvoiceDate_(m.replace(/[.\/]/g, "-"));
-    if (q.dayKey && !seen[q.dayKey]) {
-      seen[q.dayKey] = true;
-      out.push(q.dayKey);
-    }
-    return m;
-  });
-  out.sort(); // dd-MM-yyyy lexicographic… fine for our equality use; not sorted chronologically
-  return out;
-}
 
 /** Chat answer for a mobile number — the 360 customer profile. */
 function chatMobileQuery(mobile, origQ) {
@@ -2793,9 +2767,16 @@ function chatMobileQuery(mobile, origQ) {
   var caseArr = Object.keys(caseIds);
   if (caseArr.length) {
     rows.push([chatTxt("<b>Case IDs</b>"), chatPlain(caseArr.join(", "))]);
-    rows.push([chatTxt("<b>Case detail</b>"), chatPlain(caseArr.map(function (c) {
+    rows.push([chatTxt("<b>CRM repair status</b>"), chatPlain(caseArr.map(function (c) {
       var s = caseIds[c];
-      return c + " — " + (s.status || "open") + (s.gsx ? ", " + s.gsx : "");
+      return c + " — " + (s.status || "open");
+    }).join(" · "))]);
+    var prods = [];
+    caseArr.forEach(function (c) { if (caseIds[c].product) prods.push(caseIds[c].product); });
+    if (prods.length) rows.push([chatTxt("<b>Product</b>"), chatPlain(prods.join(" · "))]);
+    rows.push([chatTxt("<b>GSX status</b>"), chatPlain(caseArr.map(function (c) {
+      var s = caseIds[c];
+      return c + " — " + (s.gsx || "—");
     }).join(" · "))]);
   }
 
@@ -2819,7 +2800,7 @@ function chatMobileQuery(mobile, origQ) {
     return {
       title: title,
       rows: [[chatTxt('<span class="muted">No records found for this number in any sheet.</span>')]],
-      note: "Check the number, or try a date / part-number question.",
+      note: "Check the number, or try a Case ID instead.",
     };
   }
   return { title: title, rows: rows, note: "criss-crossed through walk-in, service, advance and CRM sheets." };
@@ -2901,8 +2882,9 @@ function chatServiceRowsForMobile(ss, mobile) {
   var cFirst = findColumn_(values.header, [/first.*name/i, /name/i]);
   var cLast = findColumn_(values.header, [/last.*name/i]);
   var cCase = findColumn_(values.header, [/case.*id/i]);
-  var cStatus = findColumn_(values.header, [/crm.*status/i, /status/i, /job.*status/i]);
+  var cStatus = findColumn_(values.header, [/^crm_?jobstatusdesc$/i, /crm.*status/i, /job.*status.*desc/i]);
   var cGsx = findColumn_(values.header, [/gsx/i, /repair.*status/i]);
+  var cProd = findColumn_(values.header, [/product.*desc/i, /^product/i, /model/i]);
   var out = [];
   values.rows.forEach(function (r) {
     if (chatDig(r[cMobile]) === mobile) {
@@ -2912,10 +2894,54 @@ function chatServiceRowsForMobile(ss, mobile) {
         caseId: cCase !== -1 ? str_(r[cCase]) : "",
         status: cStatus !== -1 ? str_(r[cStatus]) : "",
         gsx: cGsx !== -1 ? str_(r[cGsx]) : "",
+        product: cProd !== -1 ? str_(r[cProd]) : "",
       });
     }
   });
   return out;
+}
+
+/**
+ * Direct Case-ID lookup against service!CaseId (Task 30). Returns null when
+ * the ID isn't on the sheet so the router can fall back to the guidance text.
+ */
+function chatCaseQuery(caseId) {
+  var sh = getSheetByNames_(getSpreadsheet_(), CONFIG.SERVICE_SHEET_NAMES);
+  if (!sh) return null;
+  var values = chatSheetData(sh);
+  var cCase = findColumn_(values.header, [/^caseid$/i, /^case.*id/i]);
+  if (cCase === -1) return null;
+  function col(patterns) { return findColumn_(values.header, patterns); }
+  var cFirst = col([/first.*name/i, /name/i]);
+  var cLast = col([/last.*name/i]);
+  var cMobile = col([/mobile/i, /number/i, /phone/i]);
+  var cProd = col([/product.*desc/i, /^product/i, /model/i]);
+  var cStatus = col([/^jobstatus$/i, /^status$/i, /case.*status/i]);
+  var cGsx = col([/gsx/i, /repair.*status/i]);
+  var cCrm = col([/^crm_?jobstatusdesc$/i, /crm.*status/i, /crm.*job/i]);
+  var cDoc = col([/^repairdoctype$/i, /repair.*doc.*type/i, /doc.*type/i]);
+  var cAge = col([/^jobage$/i, /job.*age/i, /^age$/i]);
+  var cDate = col([/^casedate$/i, /case.*date/i]);
+  var rows = [];
+  var want = str_(caseId).toLowerCase();
+  values.rows.forEach(function (r) {
+    if (str_(r[cCase]).toLowerCase() === want) rows.push(r);
+  });
+  if (!rows.length) return null;
+  var outRows = [];
+  outRows.push([chatTxt("<b>Case ID</b>"), chatTxt(str_(rows[0][cCase]).toUpperCase())]);
+  var name = ((cFirst !== -1 ? str_(rows[0][cFirst]) : "") + " " + (cLast !== -1 ? str_(rows[0][cLast]) : "")).trim();
+  if (name) outRows.push([chatTxt("<b>Customer</b>"), chatPlain(name)]);
+  if (cMobile !== -1 && rows[0][cMobile]) outRows.push([chatTxt("<b>Mobile</b>"), chatTxt(str_(rows[0][cMobile]))]);
+  if (cProd !== -1) outRows.push([chatTxt("<b>Product</b>"), chatPlain(str_(rows[0][cProd]) || "—")]);
+  if (cCrm !== -1) outRows.push([chatTxt("<b>CRM repair status</b>"), chatPlain(str_(rows[0][cCrm]) || "—")]);
+  if (cGsx !== -1) outRows.push([chatTxt("<b>GSX repair status</b>"), chatPlain(str_(rows[0][cGsx]) || "—")]);
+  if (cDoc !== -1 && rows[0][cDoc]) outRows.push([chatTxt("<b>Repair type</b>"), chatPlain(str_(rows[0][cDoc]))]);
+  if (cStatus !== -1 && rows[0][cStatus]) outRows.push([chatTxt("<b>Case status</b>"), chatPlain(str_(rows[0][cStatus]))]);
+  if (cAge !== -1 && rows[0][cAge] !== "") outRows.push([chatTxt("<b>Job age</b>"), chatTxt(String(rows[0][cAge]) + " days")]);
+  if (cDate !== -1 && rows[0][cDate]) outRows.push([chatTxt("<b>Case opened</b>"), chatPlain(str_(rows[0][cDate]))]);
+  if (rows.length > 1) outRows.push([chatTxt('<span class="muted">' + rows.length + " rows carry this Case ID on the service sheet.</span>")]);
+  return { title: "🧰 Case " + str_(caseId).toUpperCase(), rows: outRows, note: "From service!CaseId." };
 }
 
 /** Advance-balance rows for this mobile. */
@@ -2941,80 +2967,6 @@ function chatSheetData(sheet) {
   return { allValues: all, header: all[0] || [], rows: all.slice(1) };
 }
 
-/**
- * "sale date from 15.09.26" (plus optional second date "to 20.09.26").
- * Produces one row per invoice + a salesperson-wise summary with GP.
- */
-function chatSalesQuery(dayKeys, origQ) {
-  var ss = getSpreadsheet_();
-  var crmSheet = getSheetByNames_(ss, [CONFIG.CRM_SHEET_NAME]);
-  if (!crmSheet) {
-    return { title: "CRM sheet missing", rows: [], note: 'Add a sheet named "' + CONFIG.CRM_SHEET_NAME + '".' };
-  }
-  var rows = parseCrmRows(chatSheetData(crmSheet).allValues);
-  var wanted = {};
-  dayKeys.forEach(function (k) { wanted[k] = true; });
-
-  // If they said "from" and there are >=2 dates, treat as a range.
-  var lower = str_(origQ).toLowerCase();
-  var range = /from/.test(lower) && dayKeys.length >= 2;
-
-  var matched = rows.filter(function (r) {
-    if (!r.dayKey) return false;
-    if (range) return r.dayKey >= dayKeys[0] && r.dayKey <= dayKeys[dayKeys.length - 1];
-    return !!wanted[r.dayKey];
-  });
-
-  if (!matched.length) {
-    return {
-      title: "No invoices found",
-      rows: [[chatTxt('<span class="muted">The crm sheet has no rows for ' +
-        esc_(dayKeys.join(", ")) + ".</span>")]],
-      note: "Try another date — dates are read as <b>dd-MM-yyyy</b> (so 15.09.26 = 15-09-2026).",
-    };
-  }
-
-  // ---- per-invoice lines ----
-  var invoiceMap = matchOrderInvoices_(matched);
-  var title = "🧾 Sales on " + esc_(dayKeys.join(", "));
-  var rows2 = [];
-  invoiceMap.forEach(function (inv) {
-    rows2.push([
-      chatTxt("<b>" + esc_(inv.date) + "</b>"),
-      chatPlain(inv.code),
-      chatTxt(esc_(inv.person)),
-      chatMoneyCell(inv.total),
-      chatMoneyCell(inv.gp),
-    ]);
-  });
-  // ---- salesperson-wise summary ----
-  var people = {};
-  matched.forEach(function (r) {
-    var k = r.salesPerson || "(unassigned)";
-    if (!people[k]) people[k] = { name: k, revenue: 0, gp: 0, invoices: {} };
-    people[k].revenue += r.taxableAmount;
-    people[k].gp += r.grossProfit;
-    people[k].invoices[r.invoiceCode] = true;
-  });
-  var names = Object.keys(people).sort(function (a, b) { return people[b].revenue - people[a].revenue; });
-  var totalRevenue = 0, totalGp = 0;
-  names.forEach(function (n) {
-    totalRevenue += people[n].revenue;
-    totalGp += people[n].gp;
-    rows2.push([
-      chatTxt("<b>by " + esc_(people[n].name) + "</b>"),
-      chatTxt(Object.keys(people[n].invoices).length + " inv"),
-      chatBlank(),
-      chatMoneyCell(people[n].revenue),
-      chatMoneyCell(people[n].gp),
-    ]);
-  });
-  rows2.push([
-    chatTxt("<b>TOTAL</b>"), chatTxt(invoiceMap.length + " inv"), chatBlank(),
-    chatMoneyCell(totalRevenue), chatMoneyCell(totalGp),
-  ]);
-  return { title: title, rows: rows2, note: "Revenue + gross profit per invoice, then per salesperson." };
-}
 
 /** Merge crm lines into one row per invoice, preserving invoice order. */
 function matchOrderInvoices_(rows) {
@@ -3029,140 +2981,8 @@ function matchOrderInvoices_(rows) {
   return order;
 }
 
-/** "part number for iphone 3 display" → fuzzy match on crm item codes + walkin/service text. */
-function chatPartQuery(q) {
-  var ss = getSpreadsheet_();
-  var stopWords = { whats: 1, what: 1, is: 1, the: 1, for: 1, part: 1, number: 1, find: 1, get: 1, give: 1, tell: 1, me: 1, show: 1, item: 1, code: 1, model: 1, details: 1, please: 1, inventory: 1, list: 1, price: 1 };
-  var tokens = str_(q).toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter(function (t) { return t && !stopWords[t] && t.length >= 2; });
-  if (!tokens.length) {
-    return {
-      title: "Unclear part name",
-      rows: [],
-      note: 'Say something like "part number for iPhone display" or "battery for Galaxy S23".',
-    };
-  }
 
-  var crmSheet = getSheetByNames_(ss, [CONFIG.CRM_SHEET_NAME]);
-  if (!crmSheet) return { title: "CRM sheet missing", rows: [], note: "" };
-  var rows = parseCrmRows(chatSheetData(crmSheet).allValues);
 
-  // Score every row: how many query tokens appear in a haystack of its fields.
-  var scored = rows.map(function (r) {
-    var hay = (r.itemCode + " " + r.itemDescription + " " + r.subCategory + " " + r.partType + " " + r.schemeCode + " " + r.revenueType).toLowerCase();
-    var hits = tokens.filter(function (t) { return hay.indexOf(t) > -1; }).length;
-    return { r: r, hits: hits };
-  }).filter(function (s) { return s.hits > 0; });
-  scored.sort(function (a, b) { return b.hits - a.hits || (b.r.taxableAmount - a.r.taxableAmount); });
-
-  if (!scored.length) {
-    return {
-      title: "No matches",
-      rows: [[chatTxt('<span class="muted">Nothing found for “' + esc_(tokens.join(" ")) + '” in the CRM sheet.</span>')]],
-      note: "Check spelling, or ask for a date or mobile-number search.",
-    };
-  }
-
-  var title = "🔧 Part: " + esc_(tokens.join(" "));
-  var out = [[chatTxt("<b>Item code</b>"), chatTxt("<b>Description</b>"), chatTxt("<b>Part type</b>"), chatTxt("<b>On invoice</b>"), chatTxt("<b>₹</b>")]];
-  var seen = {};
-  scored.slice(0, 12).forEach(function (s) {
-    var key = s.r.itemCode + "|" + s.r.itemDescription;
-    if (seen[key]) return;
-    seen[key] = true;
-    out.push([
-      chatTxt("<b>" + esc_(s.r.itemCode || "—") + "</b>"),
-      chatPlain(s.r.itemDescription || "—"),
-      chatPlain(s.r.partType || s.r.subCategory || "—"),
-      chatPlain(s.r.invoiceCode),
-      chatMoneyCell(s.r.taxableAmount),
-    ]);
-  });
-  return { title: title, rows: out, note: "Item codes / part types matched against crm!ItemCode, ItemDescription, SubCategory, PartType." };
-}
-
-/** Last resort: fuzzy search on invoice code, case id, names, descriptions. */
-function chatFuzzyQuery(q) {
-  var ss = getSpreadsheet_();
-  var needle = str_(q).toLowerCase();
-  var crmSheet = getSheetByNames_(ss, [CONFIG.CRM_SHEET_NAME]);
-  if (crmSheet) {
-    var rows = parseCrmRows(chatSheetData(crmSheet).allValues);
-    var matches = rows.filter(function (r) {
-      var hay = (r.invoiceCode + " " + r.salesPerson + " " + r.itemDescription + " " + r.itemCode + " " + r.subCategory + " " + r.partType + " " + r.schemeCode).toLowerCase();
-      return needle.split(/\s+/).filter(function (t) { return t.length > 2; }).every(function (t) { return hay.indexOf(t) > -1; });
-    });
-    if (matches.length) {
-      return {
-        title: "🔎 Matches in crm",
-        rows: matches.slice(0, 10).map(function (r) {
-          return [chatTxt(r.dayKey), chatPlain(r.invoiceCode), chatPlain(r.salesPerson),
-            chatPlain(r.itemDescription || r.itemCode || ""), chatMoneyCell(r.taxableAmount)];
-        }),
-        note: "",
-      };
-    }
-  }
-  return {
-    title: "Not sure what you mean",
-    rows: [],
-    note: 'Try a date: “sales 23.09.26”, a part: “part number for iPhone display”, or a mobile: “919876543210”.',
-  };
-}
-
-/**
- * Task 27 blanket search: scan EVERY tab in the workbook for rows whose text
- * contains every query token, regardless of which handler answered above.
- * Stop words are stripped so "sale date from 23.09.26" focuses on the date
- * digits, "9791994639" focuses on the digits, etc.
- */
-function chatAllSheetsScan_(query) {
-  var STOP = { sale:1, sales:1, date:1, day:1, from:1, to:1, since:1, what:1, whats:1, is:1, the:1,
-    part:1, number:1, item:1, code:1, for:1, tell:1, me:1, show:1, give:1, details:1, of:1, and:1, or:1,
-    on:1, in:1, find:1, get:1, list:1, whole:1, full:1, all:1 };
-  var raw = str_(query).toLowerCase();
-  var sq = raw.replace(/[^a-z0-9@.\-]/g, " ").trim();
-  var tokens = sq.split(/\s+/).filter(function (t) { return t.length >= 2 && !STOP[t]; });
-  // Keep at most the 4 most distinctive tokens (longest first) to avoid over-tight matching.
-  tokens.sort(function (a, b) { return b.length - a.length; });
-  var useTokens = tokens.slice(0, 4);
-
-  var ss = getSpreadsheet_();
-  var sheets = ss.getSheets();
-  var outRows = [];
-  var touched = [];
-  var PER_SHEET_CAP = 3;
-  var TOTAL_CAP = 12;
-
-  sheets.forEach(function (sheet) {
-    if (outRows.length >= TOTAL_CAP) return;
-    var name = sheet.getName();
-    var values = sheet.getDataRange().getDisplayValues();
-    var found = [];
-    for (var r = 1; r < values.length && found.length < PER_SHEET_CAP; r++) {
-      var cells = values[r].map(function (v) { return str_(v); }).filter(function (v) { return v !== ""; });
-      if (!cells.length) continue;
-      var hay = cells.join(" ").toLowerCase();
-      var hit = useTokens.length
-        ? useTokens.every(function (t) { return hay.indexOf(t) > -1; })
-        : (sq.length >= 2 && hay.indexOf(sq) > -1);
-      if (!hit) continue;
-      // Summarise: first 4 non-empty cells, each ≤24 chars.
-      var bits = cells.slice(0, 6).map(function (c) {
-        return c.length > 24 ? (esc_(c.slice(0, 23)) + "…") : esc_(c);
-      });
-      found.push([chatTxt("<b>" + esc_(name) + "</b>"), chatTxt(bits.join(" · "))]);
-    }
-    if (found.length) {
-      outRows = outRows.concat(found);
-      touched.push(name);
-    }
-  });
-
-  return { rows: outRows, touched: touched };
-}
 
 /** Escape for the chat's HTML table cells (plain text variants live above). */
 
@@ -3599,7 +3419,6 @@ function buildDashboardPage_(data) {
     "  google.script.run" +
     "    .withSuccessHandler(function(raw){" +
     "      var res; try{res=JSON.parse(raw);}catch(e){res={title:'Reply error',rows:[],note:String(e)};}" +
-    "      window.__waLastQuery=q; window.__waLastText=waTextOf_(res);" +
     "      var h='<div class=\\\"chat-title\\\">'+res.title+'</div>';" +
     "      if(res.rows && res.rows.length){" +
     "        h+='<table class=\\\"chat-table\\\"><tbody>';" +
@@ -3614,39 +3433,6 @@ function buildDashboardPage_(data) {
     "    })" +
     "    .serverQuery(q);" +
     "}" +
-    // ---- WhatsApp share of the last bot answer (Task 28) ----
-    "function waTextOf_(res){" +
-    "  var rows=(res.rows||[]).map(function(r){return r.map(function(c){return c.replace(/<[^>]+>/g,'');}).filter(Boolean).join('  ·  ');});" +
-    "  return [res.title].concat(rows).concat(res.note?[res.note]:[]).slice(0,22).join('\\n');" +
-    "}" +
-    "function waSendLast(){" +
-    "  var q=window.__waLastQuery, msg=window.__waLastText;" +
-    "  if(!q||!msg){chatBubble('bot','Ask something first, then send the answer to WhatsApp.');return;}" +
-    "  var chat=(localStorage.getItem('wa_chatid')||'').trim();" +
-    "  if(!chat){" +
-    "    chat=(prompt('WhatsApp number (with country code, e.g. 919876543210):')||'').trim();" +
-    "    if(chat){localStorage.setItem('wa_chatid',chat);}" +
-    "  }" +
-    "  if(!chat){chatBubble('bot','No WhatsApp number set — cancelled.');return;}" +
-    "  chatBubble('user','WhatsApp→'+chat.replace(/&/g,'&amp;').replace(/</g,'&lt;'));" +
-    "  var thinking=chatBubble('bot','<span class=\\\"chat-dots\\\"><i></i><i></i><i></i></span>');" +
-    "  var finish=function(html){ if(thinking) thinking.innerHTML=html; };" +
-    "  if(!(window.google && google.script && google.script.run)){" +
-    "    finish('WhatsApp send needs the live web app (static preview).'); return;" +
-    "  }" +
-    "  var payload=JSON.stringify({q:q,chat:chat,text:msg});" +
-    "  google.script.run" +
-    "    .withSuccessHandler(function(raw){" +
-    "      var r; try{r=JSON.parse(raw);}catch(e){r={};}" +
-    "      if(r.ok){finish('✅ Sent to '+chat+' via OpenWA gateway.');return;}" +
-    "      if(r.offline && r.link){finish('Gateway not configured — opening WhatsApp directly…');window.open(r.link,'_blank');return;}" +
-    "      finish('WhatsApp send failed: '+(r.error||'unknown'));" +
-    "    })" +
-    "    .withFailureHandler(function(err){" +
-    "      finish('WhatsApp send failed: '+(err && err.message ? err.message : err));" +
-    "    })" +
-    "    .sendWhatsAppAnswer(payload);" +
-    "}" +
     "</script>";
 
   var bizMeta = renderMetaText_(data);
@@ -3654,22 +3440,15 @@ function buildDashboardPage_(data) {
   return (
     "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
     "<title>" + esc_(pageTitle) + "</title><style>" + css + "</style></head><body>" +
-    // Task 27 backdrop for EVERY page: starry deep-blue pinimg GIF at 60%
-    // visibility — dark enough that all foreground detail stays readable.
-    '<img id="globalBgGif" class="global-bg-gif" ' +
-      'src="https://i.pinimg.com/originals/2c/7c/cf/2c7ccfba6490b77f6688ae0d429d3a3a.gif" ' +
-      'alt="" aria-hidden="true">' +
+    // Task 30: plain dark-ash backdrop for EVERY page — no image at all.
     '<header class="topbar"><div class="topbar-inner">' +
     "<div class=\"topbar-left\">" +
     '<div class="brand">' + esc_(pageTitle) + "</div>" +
     '<div class="meta" id="meta">' + esc_(bizMeta) + "</div>" +
     '<div class="note" id="note"></div>' +
     "</div>" +
-    // ---- live clock, top-middle: owner-supplied red-LED BRG clock gif as the card background ----
+    // ---- live clock, top-middle: Task 30 — gif removed; blue LED digits only ----
     '<div class="topbar-clock" role="timer">' +
-    '<img class="clock-gif" aria-hidden="true" alt="" ' +
-    'src="https://www.brgprecision.com/phpinclude/saclocks/alpha/double/images/AC40-01-10-02-R%20animation.gif">' +
-    '<span class="clock-dim" aria-hidden="true"></span>' +
     '<span class="clock-text" id="liveClock">—</span>' +
     "</div>" +
     '<button class="refresh-btn" onclick="dashRefresh(this)">' +
@@ -3686,23 +3465,20 @@ function buildDashboardPage_(data) {
       '</div>' +
       '<div class="chat-panel" id="chatPanel" role="dialog" aria-label="Sheet search chat">' +
         '<div class="chat-head"><b>🤖 ask me anything</b>' +
-          '<span class="chat-sub">ask about sales, parts, customers</span>' +
+          '<span class="chat-sub">ask by mobile number or Case ID</span>' +
           '<button class="chat-close" onclick="chatToggle()" aria-label="Close chat">&times;</button>' +
         "</div>" +
         '<div class="chat-log" id="chatLog">' +
-          '<div class="chat-msg bot">Ask me anything from the source sheets — e.g. ' +
-            "<i>sale date from 23.09.26</i>, <i>part number for display</i>, " +
-            "or a mobile number like <i>919876543210</i>." +
-            '<br>Tap <b>✆</b> to send an answer over WhatsApp (OpenWA gateway — set ' +
-            '<code>WA_GATEWAY_URL/WA_API_KEY/WA_CHATID</code> in Script Properties).</div>' +
+          '<div class="chat-msg bot">Enter a <b>customer mobile number</b> (e.g. ' +
+            "<i>919876543210</i>) or a <b>Case ID</b> (e.g. <i>C1001</i>) — I'll fetch " +
+            "the case ID, CRM repair status, customer name and product from the " +
+            "service sheet.</div>" +
         "</div>" +
         '<div class="chat-inputrow">' +
           '<input class="chat-input" id="chatInput" type="text" autocomplete="off" ' +
-            'placeholder="Try: sales 23.09.26, part number for…, or a mobile number" ' +
+            'placeholder="Customer mobile number, or a Case ID like C1001" ' +
             "onkeydown=\"if(event.key==='Enter')chatSend()\">" +
           '<button class="chat-send" onclick="chatSend()" aria-label="Send">➤</button>' +
-          '<button class="chat-send chat-wa" onclick="waSendLast()" ' +
-            'aria-label="Send last answer to WhatsApp" title="Send last answer to WhatsApp">✆</button>' +
         "</div>" +
       "</div>" +
     "</div>" +
@@ -3922,7 +3698,7 @@ function renderJobManagement_(jm) {
   // Repair bucket · Aging · GSX repair status · Case ID · Name · Number ·
   // Model · Repair type · Communicated · Comm updated date.
   // Rows stay grouped under a highlighted band per repair bucket.
-  var NCOLS = 10;
+  var NCOLS = 11;
   var prevGroup = null;
   var rowParts = [];
   for (var gi = 0; gi < grouped.length; gi++) {
@@ -3975,6 +3751,8 @@ function renderJobManagement_(jm) {
       bucketCell +
       ageCell(j.jobAge) +
       gsxDisplay +
+      // Task 30: CRM status column (service!CRM_JobStatusDesc) next to GSX status.
+      "<td>" + esc_(j.crmRepairStatus || "—") + "</td>" +
       '<td class="sticky-col"><b>' + esc_(j.caseId) + "</b>" +
         (j.isUnclaimed ? ' <span class="badge-unclaimed sm">⚠ Unclaimed</span>' : "") +
         (j.noRepairLate ? ' <span class="badge-norepair sm">⚠ No repair started</span>' : "") +
@@ -3991,13 +3769,14 @@ function renderJobManagement_(jm) {
   var table =
     '<div class="scroll-x jobwrap"><table class="ptable jobtable">' +
     '<colgroup>' +
-    '<col style="width:10.5%"><col style="width:5.5%"><col style="width:12%">' +
-    '<col style="width:11%"><col style="width:11%"><col style="width:9.5%">' +
-    '<col style="width:14%"><col style="width:11%"><col style="width:7.5%">' +
-    '<col style="width:8%">' +
+    '<col style="width:10%"><col style="width:5%"><col style="width:10.5%">' +
+    '<col style="width:10.5%"><col style="width:10.5%"><col style="width:10%">' +
+    '<col style="width:9%"><col style="width:12.5%"><col style="width:9.5%">' +
+    '<col style="width:7.5%"><col style="width:5.5%">' +
     '</colgroup>' +
     '<thead><tr>' +
     "<th>Repair Bucket</th><th>Aging</th><th>GSX Repair Status</th>" +
+    "<th>CRM Status</th>" +
     "<th>Case ID</th><th>Name</th><th>Number</th><th>Model</th>" +
     "<th>Repair Type</th><th>Communicated</th><th>Comm. Updated</th>" +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>";
@@ -4010,7 +3789,7 @@ function renderJobManagement_(jm) {
   }
   var mapLine = '<div class="map-line">' + [
     ["Repair Bucket","crmRepairStatus"],["Aging","jobAge"],
-    ["GSX Repair Status","gsxStatus"],["Case ID","caseId"],["Number","mobile"],
+    ["GSX Repair Status","gsxStatus"],["CRM Status","crmRepairStatus"],["Case ID","caseId"],["Number","mobile"],
     ["Model","product"],["Repair Type","repairDocType"],["Open filter","status"]]
     .map(srcLine).join(" · ") + "</div>";
 
@@ -4096,7 +3875,7 @@ function getDashboardCss_() {
     ".section .body { padding:0; }" +
     // ---- cards: the old .kpi-card dark navy tile ----
     ".cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,225px),1fr)); gap:10px; margin-bottom:16px; }" +
-    ".card { background:linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98));" +
+    ".card { background:rgba(28,43,82,.98);" +
     " border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 20px rgba(0,0,0,.18);" +
     " min-width:0; overflow:hidden; padding:13px; }" +
     ".card .label { color:var(--muted); display:block; font-size:.6rem; font-weight:800;" +
@@ -4262,7 +4041,7 @@ function getDashboardCss_() {
     ".scroll-x { overflow-x:auto; border-radius:11px; }" +
     // Performance-page tile row: one navy card per bucket, fits any width.
     ".tile-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr)); gap:10px; margin-bottom:14px; }" +
-    ".tile { background:linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98));" +
+    ".tile { background:rgba(28,43,82,.98);" +
     " border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 20px rgba(0,0,0,.18);" +
     " min-width:0; overflow:hidden; padding:13px; }" +
     ".tile .label { color:var(--muted); display:block; font-size:.6rem; font-weight:800;" +
@@ -4512,15 +4291,15 @@ function getDashboardCss_() {
     // --- pie under each group title ---
     ".gpie-wrap { background:rgba(255,255,255,.55); border:1px solid rgba(255,255,255,.7); border-radius:14px;" +
     " padding:10px; box-shadow:0 6px 16px rgba(40,60,120,.12), inset 0 1px 0 rgba(255,255,255,.8); }" +
-    ".gpie-title { font-size:.64rem; font-weight:800; color:#5a6a99; text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px; }" +
+    ".gpie-title { font-size:.7rem; font-weight:800; color:#c9d4f5; text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px; }" +
     ".gpie-body { display:flex; align-items:center; gap:10px; }" +
     "svg.gpie { width:88px; height:88px; flex-shrink:0; }" +
     ".gpie-leg { display:flex; flex-direction:column; gap:3px; min-width:0; }" +
-    ".gpie-leg-item { display:flex; align-items:center; gap:6px; font-size:.66rem; color:#3a4a7d; white-space:nowrap;" +
+    ".gpie-leg-item { display:flex; align-items:center; gap:6px; font-size:.72rem; font-weight:600; color:#e3eafd; white-space:nowrap;" +
     " overflow:hidden; text-overflow:ellipsis; }" +
     ".gpie-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; box-shadow:0 0 4px rgba(0,0,0,.2); }" +
-    ".gpie-leg-val { color:#1d2f63; margin-left:auto; padding-left:8px; }" +
-    ".gpie-empty { font-size:.66rem; color:#8a96b8; padding:14px 4px; }" +
+    ".gpie-leg-val { color:#ffffff; font-weight:800; margin-left:auto; padding-left:8px; }" +
+    ".gpie-empty { font-size:.72rem; color:#a5b3d6; padding:14px 4px; }" +
     // --- latest-records strip at the bottom of the index ---
     ".fresh-line { margin-top:16px; padding:12px 16px; border-radius:14px;" +
     " background:linear-gradient(135deg,rgba(255,255,255,.6),rgba(230,238,255,.45));" +
@@ -4550,11 +4329,11 @@ function getDashboardCss_() {
     ".glass-tile:hover .tile-glitter-vid, .glass-tile:focus-visible .tile-glitter-vid { opacity:.62; }" +
     ".glass-tile .tile-data, .glass-tile .tile-go { z-index:1; }" +
     // index-side group charts & freshness strip on the dark backdrop
-    "#pageIndex .gpie-wrap { background:linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98)); }" +
+    "#pageIndex .gpie-wrap { background:rgba(28,43,82,.98); }" +
     "#pageIndex .fresh-line { background:rgba(12,17,44,.62); border-color:rgba(255,255,255,.18);" +
     " backdrop-filter:blur(10px); }" +
     "#pageIndex .fresh-line-head { color:#aebcff; }" +
-    "#pageIndex .fresh-chip { background:linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98)); border-color:rgba(170,190,255,.28); }" +
+    "#pageIndex .fresh-chip { background:rgba(28,43,82,.98); border-color:rgba(170,190,255,.28); }" +
     "#pageIndex .fresh-chip i { color:#aebcff; } #pageIndex .fresh-chip b { color:#ffffff; }" +
     // ---- horizontal bar chart under each group title ----
     ".gbar-group { display:flex; flex-direction:column; gap:5px; }" +
@@ -4567,7 +4346,7 @@ function getDashboardCss_() {
     " box-shadow:0 0 8px rgba(80,120,255,.45), inset 0 -1px 2px rgba(0,0,0,.25), inset 0 1px 1px rgba(255,255,255,.5); }" +
     ".gbar-val { width:30px; flex-shrink:0; text-align:right; font-size:.64rem; font-weight:850; color:#1d2f63; }" +
     // ---- liquid-glass material for every table & tile (owner's dribbble ref) ----
-    "table { background:linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98)); border:1px solid rgba(170,190,255,.32);" +
+    "table { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.32);" +
     " backdrop-filter:blur(12px) saturate(1.2); -webkit-backdrop-filter:blur(12px) saturate(1.2);" +
     " box-shadow:0 12px 30px rgba(8,12,48,.45), inset 0 1px 0 rgba(255,255,255,.10), 0 2px 10px rgba(76,111,255,.14); }" +
     "td { background:rgba(29,35,84,.78); }" +
@@ -4596,24 +4375,20 @@ function getDashboardCss_() {
     // ---- next-slab chase line on the salesperson cards ----
     ".next-slab { color:#8fc7ff; font-weight:700; }" +
     // ---- live clock card, top-middle of the page ----
-    // Task 29: the AC40 clock gif must be FULLY visible — cover-cropping cut
-    // off its edges; use contain inside a fixed-height, non-shrinking card.
-    ".topbar-clock { position:relative; overflow:hidden; border-radius:14px; width:300px; height:86px; flex:0 0 auto;" +
+    // Task 30: gif animation removed; digits keep the LED texture, now in
+    // pale light sky blue, 20% bigger (1.08rem -> 1.296rem).
+    ".topbar-clock { position:relative; overflow:hidden; border-radius:14px; width:320px; height:88px; flex:0 0 auto;" +
     " padding:10px 18px; box-sizing:border-box;" +
     " display:flex; align-items:center; justify-content:center; border:1px solid rgba(140,160,230,.5);" +
-    " background:rgba(4,6,18,.85);" +
+    " background:rgba(8,14,36,.92);" +
     " box-shadow:0 8px 22px rgba(6,10,34,.4), inset 0 1px 0 rgba(255,255,255,.25); isolation:isolate; }" +
-    ".clock-gif { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; z-index:-2; }" +
-    ".clock-dim { position:absolute; inset:0; z-index:-1; background:rgba(6,10,30,.52); }" +
-    // Task 25/26: digits glow red-LED to match the AC40 BRG clock texture.
-    ".clock-text { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:1.08rem; font-weight:800;" +
-    " letter-spacing:.05em; color:#ff5c66; text-shadow:0 0 6px rgba(255,70,80,.9), 0 0 14px rgba(255,50,60,.6), 0 0 30px rgba(255,45,55,.35);" +
+    ".clock-text { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:1.296rem; font-weight:800;" +
+    " letter-spacing:.05em; color:#b7dcff;" +
+    " text-shadow:0 0 6px rgba(120,180,255,.9), 0 0 14px rgba(100,160,255,.6), 0 0 30px rgba(90,140,250,.35);" +
     " white-space:nowrap; font-variant-numeric:tabular-nums; }" +
     // ============ TASK 22 — one black-glitter backdrop for ALL pages ============
-    "body { background:#070a1c; color:#dbe4f6; }" +
+    "body { background:#24272c; color:#dbe4f6; }" +
     "#globalBgVideo { position:fixed; inset:0; z-index:-1; width:100%; height:100%; object-fit:cover; }" +
-    ".global-bg-gif { position:fixed; inset:0; z-index:-1; width:100%; height:100%; object-fit:cover;" +
-    " opacity:.6; pointer-events:none; }" +
     // index pane no longer needs its own dark shell — the video is global now
     "#pageIndex { background:none; border-radius:0; overflow:visible; }" +
     // sticky topbar + tabs as dark liquid glass on the glitter
@@ -4637,7 +4412,7 @@ function getDashboardCss_() {
     ".src-hint { background:rgba(120,130,150,.22); color:#cfe0ff; }" +
     ".repair-strip { background:rgba(10,15,40,.66); border-color:rgba(170,190,255,.20); }" +
     ".rs-label { color:#a9b6d8; } .rs-value { color:#ffffff; }" +
-    ".ph-tile { border-color:rgba(140,160,230,.45); background:linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98)); }" +
+    ".ph-tile { border-color:rgba(140,160,230,.45); background:rgba(28,43,82,.98); }" +
     ".ph-text { color:#c7d2ee; }" +
     ".inc-cat-title { color:#cfe0ff; }" +
     ".wp-head { color:#f2f6ff; }" +
@@ -4648,7 +4423,7 @@ function getDashboardCss_() {
     // walk-in analysis + token creation locked side by side, sharing the width
     ".walkin-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:stretch; }" +
     ".walkin-pair .wp-left, .walkin-pair .wp-right { min-width:0; }" +
-    ".walkin-pair .wp-right { background:rgba(28,43,82,.55); border:1px solid rgba(170,190,255,.18);" +
+    ".walkin-pair .wp-right { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.18);" +
     " border-radius:12px; padding:12px; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }" +
     // job table: entirely left-aligned
     ".jobtable th, .jobtable td { text-align:left; }" +
@@ -4658,7 +4433,7 @@ function getDashboardCss_() {
     " flex-direction:row; flex-wrap:wrap; gap:10px; margin-top:12px; }" +
     ".csat-right .csat-chip { flex:1 1 190px; width:auto; max-width:280px; }" +
     // ---- index tiles: lighter glass, brighter luminous fonts ----
-    ".glass-tile { background:linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98));" +
+    ".glass-tile { background:rgba(28,43,82,.98);" +
     " border:1px solid rgba(255,255,255,.55); color:#f4f8ff; opacity:1; isolation:isolate;" +
     " box-shadow:0 10px 28px rgba(3,7,26,.5), inset 0 1px 0 rgba(255,255,255,.6), inset 0 -10px 18px rgba(255,255,255,.06); }" +
     ".tile-title { color:#ffffff; text-shadow:0 2px 8px rgba(4,8,26,.85); }" +
@@ -4696,7 +4471,7 @@ function getDashboardCss_() {
     ".wp-daytable .scroll-x { width:100%; }" +
     ".wp-daytable .walkintable { width:100%; }" +
     // C-SAT chips: soften the glare — slightly grey-shaded instead of pure white.
-    ".csat-chip { background:linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98)); border-color:rgba(170,190,255,.32); box-shadow:0 2px 8px rgba(10,20,50,.18); }" +
+    ".csat-chip { background:rgba(28,43,82,.98); border-color:rgba(170,190,255,.32); box-shadow:0 2px 8px rgba(10,20,50,.18); }" +
     // Job management: force every cell left (beats .ptable td.num), and bucket
     // bands sweep from sky blue down to deep navy.
     ".jobtable th, .jobtable td { text-align:left !important; }" +
@@ -4745,7 +4520,6 @@ function getDashboardCss_() {
     ".chat-input::placeholder { color:#8fa3d4; } .chat-input:focus { border-color:#4fb3f5; }" +
     ".chat-send { border:none; cursor:pointer; border-radius:999px; padding:8px 14px; color:#fff;" +
     " background:linear-gradient(135deg,#4fb3f5,#0b3672); font-size:.85rem; font-weight:800; }" +
-    ".chat-send.chat-wa { background:linear-gradient(135deg,#25d366,#128c4b); margin-left:6px; }" +
     "@media (max-width:640px){ .brand{font-size:1.1rem;} .card .value{font-size:1rem;} }"
   );
 }
@@ -5353,135 +5127,6 @@ function renderDateWiseTable_(data) {
     "Collapsed view shows the latest " + CONFIG.COLLAPSED_DAYS + " days; expand for every date.</p>" +
     "</div></section>"
   );
-}
-
-/* ============================================================================
- * WHATSAPP (OpenWA gateway) — Task 28
- * ----------------------------------------------------------------------------
- * Three faces:
- *   1) waConfig_()            — reads Script Properties (no secrets in code):
- *        WA_GATEWAY_URL  e.g. https://wa.example.com   (your OpenWA host)
- *        WA_API_KEY      admin/operator key from the OpenWA dashboard
- *        WA_SESSION      session id (default "default")
- *        WA_CHATID       default chat to push replies to (digits or JID)
- *   2) whatsappSendAnswer_(query, chatId) — runs the sheet-search chat bot and
- *      POSTs the reply via OpenWA  POST /api/sessions/{id}/messages/send-text
- *   3) doPost(e)              — inbound webhook target: OpenWA fires
- *      message.received here → we answer over WhatsApp automatically.
- *      If nothing is configured the bot simply won't auto-answer; the page
- *      keeps working and falls back to a "wa.me deep link" share button.
- * ========================================================================= */
-
-function waConfig_() {
-  var p = (typeof PropertiesService !== "undefined")
-    ? PropertiesService.getScriptProperties() : null;
-  function gp(k) { return p ? str_(p.getProperty(k)) : ""; }
-  var cfg = {
-    base: gp("WA_GATEWAY_URL").replace(/\/+$/, ""),
-    key: gp("WA_API_KEY"),
-    session: gp("WA_SESSION") || "default",
-    chat: gp("WA_CHATID"),
-  };
-  cfg.live = !!(cfg.base && cfg.key);
-  return cfg;
-}
-
-/** Normalise any phone/JID/garbage into a WhatsApp chatId ("…@c.us"). */
-function waCleanChatId_(v) {
-  var s = str_(v).trim();
-  if (s.indexOf("@") > -1) return s;              // already a JID
-  s = s.replace(/[^\d]/g, "");
-  if (s.length === 10) s = "91" + s;              // assume India (10 digits)
-  return s ? (s + "@c.us") : "";
-}
-
-/** Strip the bot's <td>-wrapped HTML rows into WhatsApp-friendly plain text. */
-function waPlainRows_(rows) {
-  return (rows || []).map(function (cols) {
-    return cols.map(function (c) {
-      return c.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">").replace(/&#39;/g, "'").replace(/&quot;/g, '"').trim();
-    }).filter(function (s) { return s !== ""; }).join("  ·  ");
-  }).filter(function (s) { return s !== ""; });
-}
-
-function waComposeReply_(query) {
-  var c = chatQuery(query);
-  var scan = chatAllSheetsScan_(query);
-  var out = [c.title];
-  waPlainRows_(c.rows || []).forEach(function (l) { out.push("  " + l); });
-  if (scan.rows.length) {
-    out.push("— matches across all tabs —");
-    waPlainRows_(scan.rows).forEach(function (l) { out.push("  " + l); });
-  }
-  if (c.note) out.push("ℹ︎ " + c.note);
-  if (scan.touched.length) out.push("📑 matched: " + scan.touched.join(", "));
-  return out.filter(function (l) { return str_(l).trim() !== ""; }).join("\n");
-}
-
-/** POST a text reply through the OpenWA gateway. Returns {ok, code, body|link}. */
-function waSendText_(chatId, text, cfg) {
-  cfg = cfg || waConfig_();
-  if (!cfg.live) return { ok: false, offline: true };
-  var url = cfg.base + "/api/sessions/" + encodeURIComponent(cfg.session) + "/messages/send-text";
-  var res = UrlFetchApp.fetch(url, {
-    method: "post",
-    contentType: "application/json",
-    headers: { "X-API-Key": cfg.key },
-    payload: JSON.stringify({ chatId: chatId, text: text }),
-    muteHttpExceptions: true,
-  });
-  var code = res.getResponseCode();
-  return { ok: code >= 200 && code < 300, code: code, body: str_(res.getContentText()).slice(0, 400) };
-}
-
-/**
- * google.script.run endpoint: answer a question and send it to WhatsApp.
- * If the gateway is not configured, returns a wa.me deep link the page opens.
- */
-function sendWhatsAppAnswer(p) {
-  var obj = {};
-  try { obj = (typeof p === "string") ? JSON.parse(p) : (p || {}); } catch (e) { obj = {}; }
-  var query = str_(obj.q);
-  var chatId = waCleanChatId_(obj.chat);
-  var cfg = waConfig_();
-  if (!query) return JSON.stringify({ ok: false, error: "empty query" });
-  var text = waComposeReply_(query);
-  if (!chatId) chatId = cfg.chat;
-  if (!chatId) return JSON.stringify({ ok: false, error: "no chatId", text: text });
-  var sent = waSendText_(chatId, text, cfg);
-  if (sent.offline) {
-    return JSON.stringify({ ok: false, offline: true,
-      link: "https://wa.me/" + chatId.replace(/@.*$/, "") + "?text=" + encodeURIComponent_(text).slice(0, 1800) });
-  }
-  return JSON.stringify({ ok: sent.ok, code: sent.code, error: sent.ok ? null : sent.body });
-}
-
-/** Inbound webhook: OpenWA → Apps Script. Answer over WhatsApp. */
-function doPost(e) {
-  var out = ContentService.createTextOutput(JSON.stringify({ ok: true }));
-  var cfg = waConfig_();
-  if (!cfg.live) return out.setMimeType(ContentService.MimeType.JSON);
-  var msg = {};
-  try { msg = JSON.parse((e && e.postData && e.postData.contents) || "{}"); } catch (ex) { msg = {}; }
-  var type = str_(msg.type || msg.event || "");
-  if (type !== "message.received" && type !== "message.any") {
-    return out.setMimeType(ContentService.MimeType.JSON);
-  }
-  var m = msg.data || msg.message || msg;
-  var from = waCleanChatId_(m.chatId || m.from || m.to || "");
-  var body = str_(m.body || m.text || "");
-  if (!from || !body || m.fromMe || /@g\.us$/.test(from)) {
-    return out.setMimeType(ContentService.MimeType.JSON);
-  }
-  waSendText_(from, waComposeReply_(body), cfg);
-  return out.setMimeType(ContentService.MimeType.JSON);
-}
-/** @internal encode helper — keeps V8 happy in Apps Script eval too. */
-function encodeURIComponent_(s) {
-  return encodeURIComponent(str_(s)).replace(/[!'()*]/g, function (c) {
-    return "%" + c.charCodeAt(0).toString(16).toUpperCase();
-  });
 }
 
 /* ============================================================================

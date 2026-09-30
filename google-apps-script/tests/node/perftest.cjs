@@ -216,8 +216,9 @@ check("DISC/AMC notes hidden",page.indexOf("starts with DISC")===-1&&page.indexO
 check("date-wise GP column",page.indexOf('class="grp grp-0">Gross Profit</th>')>-1);
 check("legend shows GP daily target",page.indexOf("Gross Profit "+"₹"+subha.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
 check("GP daily target in legend for Dinesh",page.indexOf("Gross Profit "+"₹"+dinesh.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
-check("job table 10-col owner order",page.indexOf(
+check("job table 11-col owner order (Task 30 adds CRM Status)",page.indexOf(
   "<th>Repair Bucket</th><th>Aging</th><th>GSX Repair Status</th>"+
+  "<th>CRM Status</th>"+
   "<th>Case ID</th><th>Name</th><th>Number</th><th>Model</th>"+
   "<th>Repair Type</th><th>Communicated</th><th>Comm. Updated</th>")>-1);
 check("old job columns dropped",page.indexOf("<th>Warranty Type</th>")===-1
@@ -354,9 +355,8 @@ check("tile count 14 (Repair Validation tile removed)", (page.match(/class="glas
   (page.match(/class="glass-tile"/g)||[]).length);
 
 console.log("== TASK 21 batch ==");
-check("global starry background at 60% (Task 27)", page.indexOf('id="globalBgGif"')>-1
-  &&page.indexOf("2c7ccfba6490b77f6688ae0d429d3a3a.gif")>-1
-  &&page.indexOf(".global-bg-gif")>-1&&page.indexOf("opacity:.6")>-1);
+check("plain dark-ash background for all pages (Task 30)", page.indexOf("body { background:#24272c")>-1
+  &&page.indexOf('id="globalBgGif"')===-1&&page.indexOf(".global-bg-gif {")===-1);
 check("static background (no keep-alive needed)", page.indexOf("bgGifKeepAlive")===-1);
 check("tile glitter video on hover", page.indexOf('class="tile-glitter-vid"')>-1&&page.indexOf("1064124616")>-1
   &&page.indexOf(".glass-tile:hover .tile-glitter-vid")>-1&&page.indexOf("shining-gold-dust-particles")>-1);
@@ -365,8 +365,8 @@ check("footer removed", page.indexOf('<footer class="foot">')===-1&&page.indexOf
 check("KPI def removed", page.indexOf("Definition: store-level KPI scorecard")===-1);
 check("salesperson def removed", page.indexOf("Definition: per-person target vs achieved. Service and Accessory")===-1);
 check("jobs subtitle removed", page.indexOf("segregated &amp; highlighted by repair bucket")===-1);
-check("live clock card + red-led gif + tick js (Task 25)", page.indexOf('class="topbar-clock"')>-1
-  &&page.indexOf("AC40-01-10-02-R")>-1&&page.indexOf("animation.gif")>-1&&page.indexOf("tickClock")>-1);
+check("live clock card, no gif + tick js (Task 30)", page.indexOf('class="topbar-clock"')>-1
+  &&page.indexOf("AC40")===-1&&page.indexOf("clock-gif")===-1&&page.indexOf("tickClock")>-1);
 check("amc & bundle side-by-side", page.indexOf('class="inc-pair"')>-1);
 check("repair matrix removed so no duo", page.indexOf('class="duo-pair"')===-1);
 check("job table fixed layout", page.indexOf(".jobtable { table-layout:fixed")>-1&&page.indexOf("<colgroup>")>-1);
@@ -378,7 +378,7 @@ check("next-slab balance lines", (page.match(/class="next-slab"/g)||[]).length>=
 check("subha next svc slab ₹1,21,000", subha.nextSvcSlab && subha.nextSvcSlab.need===121000, subha.nextSvcSlab && subha.nextSvcSlab.need);
 
 console.log("== TASK 22 batch ==");
-check("tile glass screenshot-blue + fonts brighter", page.indexOf(",rgba(28,43,82,.98),rgba(22,34,66,.98))")>-1
+check("tile glass flat navy + fonts brighter", page.indexOf("background:rgba(28,43,82,.98)")>-1
   &&page.indexOf(".tile-title { color:#ffffff")>-1);
 check("glitter video fits tile outline", page.indexOf(".tile-glitter-vid { inset:0; border-radius:18px")>-1);
 check("token creation locked side-by-side", page.indexOf(".walkin-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr)")>-1);
@@ -389,7 +389,7 @@ check("dark section shells on all pages", page.indexOf(".sec { background:rgba(1
 check("dark topbar", page.indexOf(".topbar { background:rgba(8,12,32,.78)")>-1);
 
 console.log("== TASK 23 batch ==");
-check("gif backdrop present (video removed)", page.indexOf('id="globalBgGif"')>-1&&page.indexOf('id="globalBgVideo"')===-1);
+check("no gif/video backdrop (Task 30 plain ash)", page.indexOf('id="globalBgGif"')===-1&&page.indexOf('id="globalBgVideo"')===-1);
 check("tile glitter behind text (z-index layering)", page.indexOf("z-index:2")>-1&&page.indexOf(".tile-glitter-vid { z-index:0")>-1);
 check("tile glitter dimmed on hover", page.indexOf("opacity:.55; filter:brightness(.85)")>-1);
 check("tile overflow clips video", page.indexOf(".glass-tile { overflow:hidden")>-1);
@@ -401,7 +401,7 @@ check("day-wise token table full width", page.indexOf('class="wp-daytable"')>-1
   &&page.indexOf('wp-head">📅 Day-wise Walk-in')>-1
   &&page.indexOf(".wp-daytable .walkintable { width:100%")>-1);
 check("walkin analysis split remains", page.indexOf("ptable walksum")>-1&&page.indexOf("ptable walkintable")>-1);
-check("csat chips screenshot-blue + light text", page.indexOf(".csat-chip { background:linear-gradient(145deg,rgba(28,43,82,.98)")
+check("csat chips flat navy + light text", page.indexOf(".csat-chip { background:rgba(28,43,82,.98)")
   >-1&&page.indexOf(".csat-chip .cc-value { font-size:1.5rem; font-weight:800; color:#f4f8ff")>-1);
 check("jobtable forced left", page.indexOf(".jobtable th, .jobtable td { text-align:left !important")>-1);
 check("grphead sky-blue to dark gradient", page.indexOf("linear-gradient(90deg,#4fb3f5")>-1
@@ -412,41 +412,45 @@ check("chat widget on page", page.indexOf('id="chatPanel"')>-1&&page.indexOf('id
   &&page.indexOf("chatToggle")>-1&&page.indexOf("chatSend")>-1
   &&page.indexOf(".serverQuery(q)")>-1);
 
-// ---- chatbot logic against the mock sheets ----
-console.log("== TASK 23 chatbot mocks ==");
+// ---- chatbot logic against the mock sheets (Task 30: limited bot) ----
+console.log("== TASK 30 chatbot mocks ==");
 check("chatDig normalises 91-prefix", chatDig("+91 91987 654321")==="9876543210"||chatDig("919876543210")==="9876543210");
 check("chatDig rejects short input", chatDig("12345")==="");
-var dExtract=chatExtractDates("sale date from 23.09.26");
-check("date extraction", dExtract.length===1&&dExtract[0]==="23-09-2026", dExtract);
-var sales1=chatQuery("sale date from 23.09.26");
-check("sales query finds invoices", sales1.title.indexOf("Sales on")>-1&&sales1.rows.length>0);
-var salesFlat=sales1.rows.map(function(r){return r.join("");}).join("");
-check("sales query revenue+gp rows", salesFlat.indexOf("INV1")>-1&&salesFlat.indexOf("Subha")>-1&&salesFlat.indexOf("7,100")>-1,
-  sales1.title+" | rows="+sales1.rows.length);
-var sales2=chatQuery("sales 23.09.2026 to 23.09.2026");
-check("sales range parse", sales2.rows.length>0&&sales2.title.indexOf("Sales on")>-1);
-var partQ=chatQuery("part number for care+ display");
-check("part query item code", JSON.stringify(partQ.rows).indexOf("CPLUS")>-1, JSON.stringify(partQ).slice(0,140));
-var mobQ=chatQuery("9791994639");
-check("mobile 10-digit query", mobQ.title.indexOf("Mobile")>-1||mobQ.title.indexOf("No records")>-1, mobQ.title);
+// mobile → name / case ID / CRM repair status / product from service sheet
 var mobQ2=chatQuery("919876543210");
-check("mobile lookup across sheets", mobQ2.rows.length>0&&JSON.stringify(mobQ2.rows).indexOf("Ravi")>-1, JSON.stringify(mobQ2).slice(0,140));
-check("mobile lookup case+invoice", JSON.stringify(mobQ2.rows).indexOf("C1001")>-1||mobQ2.note.indexOf("No records")>-1);
+var mobFlat=JSON.stringify(mobQ2.rows);
+check("mobile lookup across sheets", mobQ2.rows.length>0&&mobFlat.indexOf("Ravi")>-1, JSON.stringify(mobQ2).slice(0,140));
+check("mobile lookup gives case+crm status+product", mobFlat.indexOf("C1001")>-1
+  &&mobFlat.indexOf("Original Display Used")>-1&&mobFlat.indexOf("iPhone 13")>-1,
+  JSON.stringify(mobQ2.rows).slice(0,220));
+check("mobile 10-digit query", chatQuery("9791994639").title.indexOf("Mobile")>-1
+  ||chatQuery("9791994639").title.indexOf("No records")>-1);
+// case ID → direct service!CaseId fetch
+var caseQ=chatQuery("C1001");
+var caseFlat=JSON.stringify(caseQ.rows);
+check("case-id query hits service row", caseQ.title.indexOf("C1001")>-1
+  &&caseFlat.indexOf("Ravi")>-1&&caseFlat.indexOf("Original Display Used")>-1
+  &&caseFlat.indexOf("Repair Complete")>-1, JSON.stringify(caseQ).slice(0,200));
+check("case-id query inside sentence", chatQuery("what is status of C1002 please").title.indexOf("C1002")>-1);
+// everything else → guidance (no sales/part/fuzzy/cross-tab)
+var off1=chatQuery("sale date from 23.09.26");
+check("date sales queries redirected", off1.title.indexOf("Give me a mobile number")>-1, off1.title);
+check("name queries redirected", chatQuery("subha").title.indexOf("Give me a mobile number")>-1);
+check("part queries redirected", chatQuery("part number for care+").title.indexOf("Give me a mobile number")>-1);
 var mobJSON=serverQuery("919876543210");
 check("serverQuery returns JSON", mobJSON.charAt(0)==="{");
 var mobParsed=JSON.parse(mobJSON);
 check("serverQuery shape", mobParsed.title!==undefined&&Array.isArray(mobParsed.rows));
 var blankQ=JSON.parse(serverQuery(""));
 check("serverQuery empty guard", blankQ.title==="Say something first");
-
 console.log("== TASK 24 batch ==");
 check("tile video golden-frame asset swap", page.indexOf("1064124616/thumb/8.jpg")>-1
   &&page.indexOf("1063973464")===-1
   &&page.indexOf("1064124616/preview/stock-footage-shining-gold-dust-particles")>-1);
 check("chat bot renamed ask me anything", page.indexOf("ask me anything")>-1&&page.indexOf("Ask the sheets")===-1);
-check("clock uses red-led gif", page.indexOf("AC40-01-10-02-R%20animation.gif")>-1
-  &&page.indexOf("tgsclc821blu_thumbnail.gif")===-1);
-check("clock sized + fully visible (Task 29 raises to 300x86 contain)", page.indexOf("width:300px; height:86px")>-1&&page.indexOf("font-size:1.08rem")>-1);
+check("clock has no gif asset", page.indexOf("AC40-01-10-02-R")===-1
+  &&page.indexOf("tgsclc821blu_thumbnail.gif")===-1&&page.indexOf("animation.gif")===-1);
+check("clock bigger w/o gif (Task 30)", page.indexOf("width:320px; height:88px")>-1&&page.indexOf("font-size:1.296rem")>-1);
 check("deck tab present", page.indexOf('data-page="deck"')>-1&&page.indexOf('id="pageDeck"')>-1);
 check("deck NOT on index tiles", (page.match(/glass-tile[^>]*data-page="deck"/g)||[]).length===0);
 check("deck sections", page.indexOf('id="deck-store"')>-1&&page.indexOf('id="deck-kpi"')>-1
@@ -457,9 +461,9 @@ var gsSrc=fs.readFileSync(__dirname+"/../../SalesDashboard.gs","utf8");
 check("refresh includes deck", page.indexOf("deck:'pageDeck'")>-1&&gsSrc.indexOf("deck: renderDeckHtml_(")>-1);
 
 console.log("== TASK 25 batch ==");
-var NAVY="linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98))";
-check("clock red-led BRG gif", page.indexOf("www.brgprecision.com/phpinclude/saclocks/alpha/double/images/AC40")>-1
-  &&page.indexOf("AC40-01-10-02-R%20animation.gif")>-1);
+var NAVY="rgba(28,43,82,.98)";
+check("clock: plain navy card, blue digits", page.indexOf(".topbar-clock")>-1
+  &&page.indexOf("background:rgba(8,14,36,.92)")>-1&&page.indexOf("brgprecision")===-1);
 check("tables all navy", page.indexOf("table { background:"+NAVY)>-1
   &&page.indexOf("rgba(21,27,68,.84)")===-1);
 check("index tiles navy", page.indexOf(".glass-tile { background:"+NAVY)>-1);
@@ -472,108 +476,44 @@ check("chip text readable on navy", page.indexOf(".csat-chip .cc-label { font-si
   &&page.indexOf("#dde3ee")===-1);
 
 console.log("== TASK 26 batch ==");
-check("pinimg starry bg (dreamstime gone)", page.indexOf("i.pinimg.com/originals/2c/7c/cf/2c7ccfba")>-1
-  &&page.indexOf("ideas-action-innovation")===-1
-  &&page.indexOf("783dbbe3f2d2eb0e437be534bb3d3cb6")===-1);
-check("old navy fully replaced by screenshot blue", (page.match(/rgba\(23,49,84/g)||[]).length===0
+check("no background image assets left", page.indexOf("2c7ccfba")===-1
+  &&page.indexOf("ideas-action-innovation")===-1&&page.indexOf("783dbbe3")===-1);
+check("all tiles share one flat navy (Task 30)", (page.match(/rgba\(23,49,84/g)||[]).length===0
   &&(page.match(/rgba\(28,53,99/g)||[]).length===0
-  &&(page.match(/rgba\(28,43,82/g)||[]).length>=7);
-check("red LED clock digits", page.indexOf("color:#ff5c66")>-1
-  &&page.indexOf("rgba(255,70,80,.9)")>-1);
-check("wp-right panel tinted screenshot blue", page.indexOf(".wp-right { background:rgba(28,43,82,.55)")>-1);
+  &&(page.match(/linear-gradient\(145deg,rgba\(28/g)||[]).length===0
+  &&(page.match(/rgba\(28,43,82,.98\)/g)||[]).length>=8);
+check("pale sky-blue LED clock digits (Task 30)", page.indexOf("color:#b7dcff")>-1
+  &&page.indexOf("rgba(120,180,255,.9)")>-1&&page.indexOf("#ff5c66")===-1);
+check("wp-right panel same flat navy", page.indexOf(".wp-right { background:rgba(28,43,82,.98)")>-1);
 
 console.log("== TASK 27 batch ==");
-check("global bg is the starry gif at opacity .6", page.indexOf("2c7ccfba6490b77f6688ae0d429d3a3a")>-1
-  &&page.indexOf("opacity:.6; pointer-events:none")>-1);
-// chat all-tab scanner: query 'Ravi Kumar' must find him in service; a
-// case id must light up multiple tabs; results labelled by tab name.
-var scan1=chatAllSheetsScan_("Ravi Kumar");
-check("cross-tab scan finds Ravi", JSON.stringify(scan1.rows).indexOf("Ravi")>-1
-  &&scan1.touched.indexOf("service")>-1, JSON.stringify(scan1.touched));
-var scan2=chatAllSheetsScan_("C1001");
-check("cross-tab scan spans walkin+service+comm", scan2.touched.indexOf("walkin")>-1
-  &&scan2.touched.indexOf("service")>-1&&scan2.touched.indexOf("comm")>-1,
-  JSON.stringify(scan2.touched));
-var fullQ=JSON.parse(serverQuery("part number for care+"));
-var fullFlat=JSON.stringify(fullQ.rows);
-check("chatbot result merges cross-tab matches", fullFlat.indexOf("matches across all tabs")>-1
-  &&fullFlat.indexOf("CPLUS")>-1, JSON.stringify(fullQ).slice(0,150));
-check("chatbot note lists touched tabs", fullQ.note.indexOf("Cross-tab matches")>-1);
-check("scan strips stopwords", chatAllSheetsScan_("_").rows.length===0
-  &&chatAllSheetsScan_("the the the").rows.length===0);
-check("scan respects per-sheet cap", chatAllSheetsScan_("919876543210").rows.length<=12);
-
-console.log("== TASK 28 batch ==");
-// (a) no gateway configured -> falls back to wa.me deep link
-global.__WA_PROPS={};
-var r1=JSON.parse(sendWhatsAppAnswer(JSON.stringify({q:"C1001",chat:"91791994639"})));
-check("wa offline fallback gives wa.me link", r1.ok===false&&r1.offline===true
-  &&/wa\.me\/91791994639\?text=/.test(r1.link), JSON.stringify(r1).slice(0,140));
-// (b) chatId normalisation
-check("wa chatId normalised", waCleanChatId_("+91 99876 54321")==="919987654321@c.us"
-  &&waCleanChatId_("919876543210@c.us")==="919876543210@c.us"
-  &&waCleanChatId_(" ")==="");
-// (c) gateway configured -> POSTs to OpenWA send-text endpoint
-global.__WA_PROPS={WA_GATEWAY_URL:"https://wa.example.com/",WA_API_KEY:"k-123",
-  WA_SESSION:"sales",WA_CHATID:"919876543210@c.us"};
-global.__WA_CALLS=[];
-var r2=JSON.parse(sendWhatsAppAnswer(JSON.stringify({q:"Ravi Kumar",chat:"9988776655"})));
-check("wa gateway send ok", r2.ok===true&&r2.code===200, JSON.stringify(r2));
-var call=global.__WA_CALLS[0];
-check("wa endpoint + key + payload", call.url==="https://wa.example.com/api/sessions/sales/messages/send-text"
-  &&call.opts.headers["X-API-Key"]==="k-123"
-  &&JSON.parse(call.opts.payload).chatId==="919988776655@c.us"
-  &&JSON.parse(call.opts.payload).text.indexOf("Ravi")>-1, JSON.stringify(call.url));
-// (d) default chat from properties when none passed
-r2=JSON.parse(sendWhatsAppAnswer(JSON.stringify({q:"C1001"})));
-check("wa default chat honoured", JSON.parse(global.__WA_CALLS[global.__WA_CALLS.length-1].opts.payload)
-  .chatId==="919876543210@c.us");
-// (e) webhook: message.received triggers an answer push
-global.__WA_CALLS=[];
-doPost({postData:{contents:JSON.stringify({type:"message.received",
-  data:{chatId:"919988776655@c.us",body:"Ravi Kumar",fromMe:false}})}});
-check("wa webhook answers inbound messages", global.__WA_CALLS.length===1
-  &&/Ravi/.test(JSON.parse(global.__WA_CALLS[0].opts.payload).text)
-  &&/matches across all tabs/.test(JSON.parse(global.__WA_CALLS[0].opts.payload).text)
-  &&JSON.parse(global.__WA_CALLS[0].opts.payload).chatId==="919988776655@c.us",
-  JSON.parse(global.__WA_CALLS[0]&&global.__WA_CALLS[0].opts.payload||"{}").text);
-// (f) webhook ignores fromMe / group / non-message events
-global.__WA_CALLS=[];
-doPost({postData:{contents:JSON.stringify({type:"message.received",
-  data:{chatId:"919988776655@c.us",body:"hi",fromMe:true}})}});
-doPost({postData:{contents:JSON.stringify({type:"message.received",
-  data:{chatId:"12036878@g.us",body:"hi",fromMe:false}})}});
-doPost({postData:{contents:JSON.stringify({type:"session.status",data:{}})}});
-check("wa webhook filters fromMe/groups/other events", global.__WA_CALLS.length===0);
-// (g) webhook no-op when gateway not configured
-global.__WA_PROPS={};
-global.__WA_CALLS=[];
-doPost({postData:{contents:JSON.stringify({type:"message.received",
-  data:{chatId:"919988776655@c.us",body:"hi"}})}});
-check("wa webhook silent w/o gateway", global.__WA_CALLS.length===0);
-// (h) UI wiring present in the page
-check("wa share button + styles in chat widget",
-  page.indexOf('onclick="waSendLast()"')>-1&&page.indexOf(".chat-send.chat-wa")>-1
-  &&page.indexOf("function waSendLast()")>-1&&page.indexOf("localStorage.getItem('wa_chatid')")>-1
-  &&page.indexOf("sendWhatsAppAnswer")>-1&&page.indexOf("#25d366")>-1);
-check("wa memories saved on answers",
-  page.indexOf("window.__waLastQuery=q")>-1&&page.indexOf("window.__waLastText=waTextOf_(res)")>-1);
-// restore: gateway props off so later tests stay hermetic
-global.__WA_PROPS={};
-
+check("background is flat dark-ash everywhere (Task 30)", page.indexOf("body { background:#24272c; color:#dbe4f6; }")>-1
+  &&page.indexOf("2c7ccfba6490b77f6688ae0d429d3a3a")===-1);
 console.log("== TASK 29 batch ==");
-check("clock gif fully visible (contain, fixed card)", page.indexOf("object-fit:contain; z-index:-2")>-1
-  &&page.indexOf(".topbar-clock { position:relative; overflow:hidden; border-radius:14px; width:300px; height:86px; flex:0 0 auto;")>-1
-  &&page.indexOf("object-fit:cover; z-index:-2; }\n.clock-dim")===-1);
 // client JS must PARSE — a syntax error here silently kills every onclick.
 var m=page.match(/<script>([\s\S]*?)<\/script>/);
 var clientJS=m?m[1]:"";
 var jsErr=null; try{ new Function(clientJS); }catch(e){ jsErr=e.message; }
 check("client script block parses (clicks work)", jsErr===null, jsErr||"");
-check("waTextOf_ emits escaped newline only", page.indexOf(".join('\\n')")>-1);
 check("all click handlers defined", clientJS.indexOf("function switchPage(")>-1
-  &&clientJS.indexOf("function chatSend(")>-1&&clientJS.indexOf("function waSendLast()")>-1
-  &&clientJS.indexOf("function chatToggle(")>-1);
+  &&clientJS.indexOf("function chatSend(")>-1&&clientJS.indexOf("function chatToggle(")>-1);
+check("WhatsApp integration removed", page.indexOf("waSendLast")===-1
+  &&page.indexOf("#25d366")===-1&&page.indexOf("wa_chatid")===-1);
+
+console.log("== TASK 30 batch ==");
+check("jobs table has CRM Status next to GSX", page.indexOf("<th>GSX Repair Status</th>")>-1
+  &&page.indexOf("<th>CRM Status</th>")>-1
+  &&page.indexOf("<th>GSX Repair Status</th><th>CRM Status</th>")>-1);
+check("jobs table rows expose CRM status", page.indexOf("<td>Original Display Used</td>")>-1);
+var gsSrc2=gsSrc;
+check("server-side scan/date/part/fuzzy dead code removed",
+  gsSrc2.indexOf("function chatAllSheetsScan_")===-1
+  &&gsSrc2.indexOf("function chatSalesQuery")===-1
+  &&gsSrc2.indexOf("function chatPartQuery(")===-1
+  &&gsSrc2.indexOf("function chatFuzzyQuery(")===-1
+  &&gsSrc2.indexOf("function chatExtractDates")===-1);
+check("brighter index subtitles", page.indexOf("color:#c9d4f5")>-1
+  &&page.indexOf("color:#e3eafd")>-1&&page.indexOf(".gpie-leg-val { color:#ffffff")>-1);
 
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);
