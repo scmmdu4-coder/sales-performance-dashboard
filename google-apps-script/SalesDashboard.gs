@@ -2436,13 +2436,20 @@ function renderWalkinHtml_(pd) {
     ". Every row is one walk-in — MobileNo identifies the visitor (Unique = distinct mobiles); a row with a CaseId counts as a case, a row with an InvoiceCode as a completed sale. The token table pins which user created each token.</div>" +
     '<div class="walkin-pair">';
 
-  var left = '<div class="wp-left">' + renderWalkinAnalysis_(wl) + "</div>";
+  // Matching heads keep 🚶 Walk-in Analysis and 🎟 Token Creation aligned on
+  // ONE line; the wide day-wise table gets the full page width below the pair.
+  var left =
+    '<div class="wp-left"><div class="wp-head">🚶 Walk-in Analysis</div>' +
+    '<p class="sec-desc" style="margin:-2px 0 10px">month-to-date walk-in summary — visitors, cases, invoices, remarks and dead leads.</p>' +
+    renderWalkinAnalysis_(wl) + "</div>";
   var right =
     '<div class="wp-right"><div class="wp-head">🎟 Token Creation</div>' +
     '<p class="sec-desc" style="margin:-2px 0 10px">how many walk-in tokens each user created, and their share of the month&rsquo;s tokens.</p>' +
     renderTokenCreation_(wl) + "</div>";
 
-  return head + left + right + "</div></div></section>";
+  return head + left + right + "</div>" +
+    '<div class="wp-daytable"><div class="wp-head">📅 Day-wise Walk-in &amp; Token Details</div>' +
+    renderWalkinDayTable_(wl) + "</div></div></section>";
 }
 
 /** OPERATION page: customer satisfaction + repair ops + future sub-modules. */
@@ -2514,6 +2521,477 @@ function refreshDashboardSections() {
     jobs: renderJobsHtml_(perfData),
     date: renderDateHtml_(data),
   });
+}
+
+/* ============================================================================
+ * SHEET-SEARCH CHAT BOT — floating assistant on every page
+ *
+ * serverQuery(q) answers natural-language questions from the SOURCE sheets:
+ *   • "sale date from 15.09.26"          → invoices that day on, revenue +
+ *                                           salesperson-wise gross profit
+ *   • "part number for iphone 3 display" → matching item codes / part rows
+ *   • "9791994639"                       → mobile matched across walk-in,
+ *                                           service, advance & CRM sheets
+ * ========================================================================= */
+
+/**
+ * Public endpoint for the chat widget. No trailing underscore — the Apps
+ * Script editor would treat `serverQuery_` as private and google.script.run
+ * would not reach it.
+ */
+function serverQuery(q) {
+  var result = { title: "Sheet search", rows: [], note: "" };
+  try {
+    var query = str_(q).trim();
+    if (!query) {
+      result.title = "Say something first";
+      result.note = "Try: “sales 23.09.26”, “part number for display”, or a mobile number.";
+      return JSON.stringify(result);
+    }
+
+    var c = chatQuery(query);
+    result.title = c.title;
+    result.rows = c.rows || [];
+    result.note = c.note || "";
+    return JSON.stringify(result);
+  } catch (err) {
+    try {
+      return JSON.stringify({
+        title: "Search failed",
+        rows: [],
+        note: esc_(str_(err && err.message ? err.message : err)),
+      });
+    } catch (e2) {
+      return '{"title":"Search failed","rows":[],"note":"unknown error"}';
+    }
+  }
+}
+
+/**
+ * Small table-cell formatting helpers for chat answers. Returns rows as
+ * arrays of cells [[td-html,...] ...], so HTML stays simple and safe.
+ */
+function chatNum(n) { return '<td class="num">' + Math.round(n || 0).toLocaleString("en-IN") + "</td>"; }
+function chatMoneyCell(n) { return '<td class="num">₹' + Math.round(n || 0).toLocaleString("en-IN") + "</td>"; }
+// chatTxt is HTML-raw: call sites esc_() sheet data themselves; chatPlain wraps + escapes.
+function chatTxt(t) { return "<td>" + t + "</td>"; }
+function chatPlain(t) { return "<td>" + esc_(t) + "</td>"; }
+function chatBlank() { return '<td class="num muted">—</td>'; }
+
+/** Canonical 10-digit mobile (strip +91 / leading 0). */
+function chatDig(q) {
+  var d = str_(q).replace(/\D/g, "");
+  if (d.length > 10) d = d.slice(-10);
+  return d.length === 10 ? d : "";
+}
+
+/**
+ * Route the free-text question to the right search.
+ * Returns { title, rows, note } where rows are table-cell arrays.
+ */
+function chatQuery(q) {
+  var lower = str_(q).toLowerCase();
+
+  // 1) A contiguous 10+ digit run (a real phone number) → customer 360
+  // across sheets. Dates like 23.09.2026 never match — the dots break runs.
+  var phoneMatch = str_(q).match(/[\d+][\d\s().\-]{8,}\d/);
+  var mobile = phoneMatch ? chatDig(phoneMatch[0]) : "";
+  if (mobile) return chatMobileQuery(mobile, q);
+
+  // 2) Asks for a DATE / date range + sales → revenue & GP invoice breakdown.
+  var wantsSales = /sales|sale\b|revenue|invoice|gross\s*profit|\bgp\b/i.test(lower);
+  if (wantsSales) {
+    var dates = chatExtractDates(q);
+    if (dates.length) return chatSalesQuery(dates, q);
+    // "sale date from 15.09.26" — date parsed above; without one, fall through.
+    if (/date\s*from\s*[\d]/.test(lower)) {
+      return {
+        title: "No matching date found",
+        rows: [],
+        note: "I could not parse the date in that question — try “23.09.26” or “23-09-2026”.",
+      };
+    }
+  }
+
+  // 3) "part number for iphone 3 display" → lookup in CRM item codes +
+  // service advance part-ish text. We look in crm ItemCode / PartType /
+  // ItemDescription / SubCategory, and walkin/service repair docs too.
+  if (/part|item\s*code|model|display\b|battery\b|glass\b|product/i.test(lower)) {
+    return chatPartQuery(q);
+  }
+
+  // 4) Fall back to a fuzzy name / invoice / case / text search.
+  return chatFuzzyQuery(q);
+}
+
+/** Extract every date written in the question (dot/slash/hyphen, yy or yyyy). */
+function chatExtractDates(q) {
+  var out = [];
+  var seen = {};
+  str_(q).replace(/\b(\d{1,2})[.\-\/](\d{1,2})[.\-\/](\d{2,4})\b/g, function (m, d, mo, y) {
+    var q = parseInvoiceDate_(m.replace(/[.\/]/g, "-"));
+    if (q.dayKey && !seen[q.dayKey]) {
+      seen[q.dayKey] = true;
+      out.push(q.dayKey);
+    }
+    return m;
+  });
+  out.sort(); // dd-MM-yyyy lexicographic… fine for our equality use; not sorted chronologically
+  return out;
+}
+
+/** Chat answer for a mobile number — the 360 customer profile. */
+function chatMobileQuery(mobile, origQ) {
+  var ss = getSpreadsheet_();
+  var last4 = mobile.slice(-4);
+
+  // crm — invoice rows billed to this mobile (via walkin InvoiceCode links)
+  var crm = chatInvoiceRowsForMobile(ss, mobile);
+
+  // walkin — token history
+  var walkin = chatWalkinRowsForMobile(ss, mobile);
+
+  // service — open/closed cases
+  var service = chatServiceRowsForMobile(ss, mobile);
+
+  // advance — balances
+  var advance = chatAdvanceRowsForMobile(ss, mobile);
+
+  var rows = [];
+  var title = "📱 Mobile …" + last4;
+
+  // Customer name
+  var name = "";
+  if (service.length && (service[0].first || service[0].last)) name = (service[0].first + " " + service[0].last).trim();
+  if (!name && crm.length) name = "customer";
+  if (name) rows.push([chatTxt("<b>Customer</b>"), chatPlain(name)]);
+  rows.push([chatTxt("<b>Mobile</b>"), chatTxt(mobile)]);
+
+  // Cases (service sheet, then walkin case ids not in service)
+  var caseIds = {};
+  service.forEach(function (s) {
+    if (s.caseId) caseIds[s.caseId] = s;
+  });
+  var caseArr = Object.keys(caseIds);
+  if (caseArr.length) {
+    rows.push([chatTxt("<b>Case IDs</b>"), chatPlain(caseArr.join(", "))]);
+    rows.push([chatTxt("<b>Case detail</b>"), chatPlain(caseArr.map(function (c) {
+      var s = caseIds[c];
+      return c + " — " + (s.status || "open") + (s.gsx ? ", " + s.gsx : "");
+    }).join(" · "))]);
+  }
+
+  // Invoices (walkin InvoiceCode joined to crm value)
+  if (crm.invoices.length) {
+    rows.push([chatTxt("<b>Invoices</b>"), chatPlain(crm.invoices.map(function (i) {
+      return i.code + " (₹" + Math.round(i.total).toLocaleString("en-IN") + ")";
+    }).join(" · "))]);
+  }
+  if (crm.total) {
+    rows.push([chatTxt("<b>Invoice value</b>"), chatMoneyCell(crm.total)]);
+    rows.push([chatTxt("<b>Gross profit</b>"), chatMoneyCell(crm.gp)]);
+  }
+  if (walkin.length) {
+    rows.push([chatTxt("<b>Visits</b>"), chatTxt(String(walkin.length) + " visit" + (walkin.length === 1 ? "" : "s"))]);
+  }
+  if (advance && advance.total) {
+    rows.push([chatTxt("<b>Adv. balance</b>"), chatMoneyCell(advance.total)]);
+  }
+  if (!crm.invoices.length && !caseArr.length && !service.length && !(advance && advance.count) && !walkin.length) {
+    return {
+      title: title,
+      rows: [[chatTxt('<span class="muted">No records found for this number in any sheet.</span>')]],
+      note: "Check the number, or try a date / part-number question.",
+    };
+  }
+  return { title: title, rows: rows, note: "criss-crossed through walk-in, service, advance and CRM sheets." };
+}
+
+/** crm rows that reference this mobile (via the invoice-code link from walk-in). */
+function chatInvoiceRowsForMobile(ss, mobile) {
+  var out = { invoices: [], lines: [], total: 0, gp: 0 };
+  var codes = {};
+  // First: which invoice codes belong to this mobile? From walk-in sheet.
+  var ws = getSheetByNames_(ss, CONFIG.WALKIN_SHEET_NAMES);
+  if (ws) {
+    var values = chatSheetData(ws);
+    var col = {
+      mobile: findColumn_(values.header, [/mobile/i, /number/i, /phone/i]),
+      invoiceCode: findColumn_(values.header, [/invoice.*(code|no\.?|number|id)/i]),
+      caseId: findColumn_(values.header, [/case.*id/i]),
+    };
+    values.rows.forEach(function (row) {
+      var m = chatDig(row[col.mobile]);
+      if (m === mobile && col.invoiceCode !== -1 && str_(row[col.invoiceCode]))
+        codes[str_(row[col.invoiceCode])] = true;
+    });
+  }
+  // Also: invoices whose TranType is INVOICE and InvoiceCode appears in walkin service sheets — but for a pure mobile answer we only need the codes we just found.
+  var crmSheet = getSheetByNames_(ss, [CONFIG.CRM_SHEET_NAME]);
+  if (crmSheet) {
+    var values = parseCrmRows(chatSheetData(crmSheet).allValues);
+    var found = {};
+    values.forEach(function (r) {
+      if (codes[r.invoiceCode]) {
+        if (!found[r.invoiceCode]) {
+          found[r.invoiceCode] = { code: r.invoiceCode, total: 0, gp: 0 };
+          out.invoices.push(found[r.invoiceCode]);
+        }
+        found[r.invoiceCode].total += r.taxableAmount;
+        found[r.invoiceCode].gp += r.grossProfit;
+        out.lines.push(r);
+        out.total += r.taxableAmount;
+        out.gp += r.grossProfit;
+      }
+    });
+  }
+  return out;
+}
+
+/** All walk-in rows for this mobile. */
+function chatWalkinRowsForMobile(ss, mobile) {
+  var ws = getSheetByNames_(ss, CONFIG.WALKIN_SHEET_NAMES);
+  if (!ws) return [];
+  var values = chatSheetData(ws);
+  var cMobile = findColumn_(values.header, [/mobile/i, /number/i, /phone/i]);
+  var cDate = findColumn_(values.header, [/token.*date/i, /visit.*date/i, /date/i]);
+  var cCase = findColumn_(values.header, [/case.*id/i]);
+  var cInvoice = findColumn_(values.header, [/invoice.*(code|no\.?|number|id)/i]);
+  var cPurpose = findColumn_(values.header, [/purpose/i]);
+  var cRemark = findColumn_(values.header, [/remark/i]);
+  var out = [];
+  values.rows.forEach(function (r) {
+    if (chatDig(r[cMobile]) === mobile) {
+      out.push({
+        date: cDate !== -1 ? str_(r[cDate]) : "",
+        caseId: cCase !== -1 ? str_(r[cCase]) : "",
+        invoiceCode: cInvoice !== -1 ? str_(r[cInvoice]) : "",
+        purpose: cPurpose !== -1 ? str_(r[cPurpose]) : "",
+        remark: cRemark !== -1 ? str_(r[cRemark]) : "",
+      });
+    }
+  });
+  return out;
+}
+
+/** Service rows for this mobile. */
+function chatServiceRowsForMobile(ss, mobile) {
+  var sh = getSheetByNames_(ss, CONFIG.SERVICE_SHEET_NAMES);
+  if (!sh) return [];
+  var values = chatSheetData(sh);
+  var cMobile = findColumn_(values.header, [/mobile/i, /number/i, /phone/i]);
+  var cFirst = findColumn_(values.header, [/first.*name/i, /name/i]);
+  var cLast = findColumn_(values.header, [/last.*name/i]);
+  var cCase = findColumn_(values.header, [/case.*id/i]);
+  var cStatus = findColumn_(values.header, [/crm.*status/i, /status/i, /job.*status/i]);
+  var cGsx = findColumn_(values.header, [/gsx/i, /repair.*status/i]);
+  var out = [];
+  values.rows.forEach(function (r) {
+    if (chatDig(r[cMobile]) === mobile) {
+      out.push({
+        first: cFirst !== -1 ? str_(r[cFirst]) : "",
+        last: cLast !== -1 ? str_(r[cLast]) : "",
+        caseId: cCase !== -1 ? str_(r[cCase]) : "",
+        status: cStatus !== -1 ? str_(r[cStatus]) : "",
+        gsx: cGsx !== -1 ? str_(r[cGsx]) : "",
+      });
+    }
+  });
+  return out;
+}
+
+/** Advance-balance rows for this mobile. */
+function chatAdvanceRowsForMobile(ss, mobile) {
+  var sh = getSheetByNames_(ss, CONFIG.ADVANCE_SHEET_NAMES);
+  if (!sh) return null;
+  var values = chatSheetData(sh);
+  var cMobile = findColumn_(values.header, [/mobile/i, /number/i, /phone/i]);
+  var cBal = findColumn_(values.header, [/balance/i, /advance/i, /amount/i, /value/i]);
+  var total = 0, count = 0;
+  values.rows.forEach(function (r) {
+    if (chatDig(r[cMobile]) === mobile) { total += num_(r[cBal]); count++; }
+  });
+  return { total: total, count: count };
+}
+
+/**
+ * Read a sheet's values once, returning { allValues, header, rows }.
+ * allValues is the raw grid (header + rows), header/lrows are split views.
+ */
+function chatSheetData(sheet) {
+  var all = sheet.getDataRange().getDisplayValues();
+  return { allValues: all, header: all[0] || [], rows: all.slice(1) };
+}
+
+/**
+ * "sale date from 15.09.26" (plus optional second date "to 20.09.26").
+ * Produces one row per invoice + a salesperson-wise summary with GP.
+ */
+function chatSalesQuery(dayKeys, origQ) {
+  var ss = getSpreadsheet_();
+  var crmSheet = getSheetByNames_(ss, [CONFIG.CRM_SHEET_NAME]);
+  if (!crmSheet) {
+    return { title: "CRM sheet missing", rows: [], note: 'Add a sheet named "' + CONFIG.CRM_SHEET_NAME + '".' };
+  }
+  var rows = parseCrmRows(chatSheetData(crmSheet).allValues);
+  var wanted = {};
+  dayKeys.forEach(function (k) { wanted[k] = true; });
+
+  // If they said "from" and there are >=2 dates, treat as a range.
+  var lower = str_(origQ).toLowerCase();
+  var range = /from/.test(lower) && dayKeys.length >= 2;
+
+  var matched = rows.filter(function (r) {
+    if (!r.dayKey) return false;
+    if (range) return r.dayKey >= dayKeys[0] && r.dayKey <= dayKeys[dayKeys.length - 1];
+    return !!wanted[r.dayKey];
+  });
+
+  if (!matched.length) {
+    return {
+      title: "No invoices found",
+      rows: [[chatTxt('<span class="muted">The crm sheet has no rows for ' +
+        esc_(dayKeys.join(", ")) + ".</span>")]],
+      note: "Try another date — dates are read as <b>dd-MM-yyyy</b> (so 15.09.26 = 15-09-2026).",
+    };
+  }
+
+  // ---- per-invoice lines ----
+  var invoiceMap = matchOrderInvoices_(matched);
+  var title = "🧾 Sales on " + esc_(dayKeys.join(", "));
+  var rows2 = [];
+  invoiceMap.forEach(function (inv) {
+    rows2.push([
+      chatTxt("<b>" + esc_(inv.date) + "</b>"),
+      chatPlain(inv.code),
+      chatTxt(esc_(inv.person)),
+      chatMoneyCell(inv.total),
+      chatMoneyCell(inv.gp),
+    ]);
+  });
+  // ---- salesperson-wise summary ----
+  var people = {};
+  matched.forEach(function (r) {
+    var k = r.salesPerson || "(unassigned)";
+    if (!people[k]) people[k] = { name: k, revenue: 0, gp: 0, invoices: {} };
+    people[k].revenue += r.taxableAmount;
+    people[k].gp += r.grossProfit;
+    people[k].invoices[r.invoiceCode] = true;
+  });
+  var names = Object.keys(people).sort(function (a, b) { return people[b].revenue - people[a].revenue; });
+  var totalRevenue = 0, totalGp = 0;
+  names.forEach(function (n) {
+    totalRevenue += people[n].revenue;
+    totalGp += people[n].gp;
+    rows2.push([
+      chatTxt("<b>by " + esc_(people[n].name) + "</b>"),
+      chatTxt(Object.keys(people[n].invoices).length + " inv"),
+      chatBlank(),
+      chatMoneyCell(people[n].revenue),
+      chatMoneyCell(people[n].gp),
+    ]);
+  });
+  rows2.push([
+    chatTxt("<b>TOTAL</b>"), chatTxt(invoiceMap.length + " inv"), chatBlank(),
+    chatMoneyCell(totalRevenue), chatMoneyCell(totalGp),
+  ]);
+  return { title: title, rows: rows2, note: "Revenue + gross profit per invoice, then per salesperson." };
+}
+
+/** Merge crm lines into one row per invoice, preserving invoice order. */
+function matchOrderInvoices_(rows) {
+  var order = [], byCode = {};
+  rows.forEach(function (r) {
+    if (!byCode[r.invoiceCode]) {
+      byCode[r.invoiceCode] = { code: r.invoiceCode, date: r.dayKey, person: r.salesPerson, total: 0, gp: 0 };
+      order.push(byCode[r.invoiceCode]);
+    }
+    byCode[r.invoiceCode] && (byCode[r.invoiceCode].total += r.taxableAmount, byCode[r.invoiceCode].gp += r.grossProfit);
+  });
+  return order;
+}
+
+/** "part number for iphone 3 display" → fuzzy match on crm item codes + walkin/service text. */
+function chatPartQuery(q) {
+  var ss = getSpreadsheet_();
+  var stopWords = { whats: 1, what: 1, is: 1, the: 1, for: 1, part: 1, number: 1, find: 1, get: 1, give: 1, tell: 1, me: 1, show: 1, item: 1, code: 1, model: 1, details: 1, please: 1, inventory: 1, list: 1, price: 1 };
+  var tokens = str_(q).toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(function (t) { return t && !stopWords[t] && t.length >= 2; });
+  if (!tokens.length) {
+    return {
+      title: "Unclear part name",
+      rows: [],
+      note: 'Say something like "part number for iPhone display" or "battery for Galaxy S23".',
+    };
+  }
+
+  var crmSheet = getSheetByNames_(ss, [CONFIG.CRM_SHEET_NAME]);
+  if (!crmSheet) return { title: "CRM sheet missing", rows: [], note: "" };
+  var rows = parseCrmRows(chatSheetData(crmSheet).allValues);
+
+  // Score every row: how many query tokens appear in a haystack of its fields.
+  var scored = rows.map(function (r) {
+    var hay = (r.itemCode + " " + r.itemDescription + " " + r.subCategory + " " + r.partType + " " + r.schemeCode + " " + r.revenueType).toLowerCase();
+    var hits = tokens.filter(function (t) { return hay.indexOf(t) > -1; }).length;
+    return { r: r, hits: hits };
+  }).filter(function (s) { return s.hits > 0; });
+  scored.sort(function (a, b) { return b.hits - a.hits || (b.r.taxableAmount - a.r.taxableAmount); });
+
+  if (!scored.length) {
+    return {
+      title: "No matches",
+      rows: [[chatTxt('<span class="muted">Nothing found for “' + esc_(tokens.join(" ")) + '” in the CRM sheet.</span>')]],
+      note: "Check spelling, or ask for a date or mobile-number search.",
+    };
+  }
+
+  var title = "🔧 Part: " + esc_(tokens.join(" "));
+  var out = [[chatTxt("<b>Item code</b>"), chatTxt("<b>Description</b>"), chatTxt("<b>Part type</b>"), chatTxt("<b>On invoice</b>"), chatTxt("<b>₹</b>")]];
+  var seen = {};
+  scored.slice(0, 12).forEach(function (s) {
+    var key = s.r.itemCode + "|" + s.r.itemDescription;
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push([
+      chatTxt("<b>" + esc_(s.r.itemCode || "—") + "</b>"),
+      chatPlain(s.r.itemDescription || "—"),
+      chatPlain(s.r.partType || s.r.subCategory || "—"),
+      chatPlain(s.r.invoiceCode),
+      chatMoneyCell(s.r.taxableAmount),
+    ]);
+  });
+  return { title: title, rows: out, note: "Item codes / part types matched against crm!ItemCode, ItemDescription, SubCategory, PartType." };
+}
+
+/** Last resort: fuzzy search on invoice code, case id, names, descriptions. */
+function chatFuzzyQuery(q) {
+  var ss = getSpreadsheet_();
+  var needle = str_(q).toLowerCase();
+  var crmSheet = getSheetByNames_(ss, [CONFIG.CRM_SHEET_NAME]);
+  if (crmSheet) {
+    var rows = parseCrmRows(chatSheetData(crmSheet).allValues);
+    var matches = rows.filter(function (r) {
+      var hay = (r.invoiceCode + " " + r.salesPerson + " " + r.itemDescription + " " + r.itemCode + " " + r.subCategory + " " + r.partType + " " + r.schemeCode).toLowerCase();
+      return needle.split(/\s+/).filter(function (t) { return t.length > 2; }).every(function (t) { return hay.indexOf(t) > -1; });
+    });
+    if (matches.length) {
+      return {
+        title: "🔎 Matches in crm",
+        rows: matches.slice(0, 10).map(function (r) {
+          return [chatTxt(r.dayKey), chatPlain(r.invoiceCode), chatPlain(r.salesPerson),
+            chatPlain(r.itemDescription || r.itemCode || ""), chatMoneyCell(r.taxableAmount)];
+        }),
+        note: "",
+      };
+    }
+  }
+  return {
+    title: "Not sure what you mean",
+    rows: [],
+    note: 'Try a date: “sales 23.09.26”, a part: “part number for iPhone display”, or a mobile: “919876543210”.',
+  };
 }
 
 /* ============================================================================
@@ -2874,6 +3352,19 @@ function buildDashboardPage_(data) {
     "    p(h)+':'+p(d.getMinutes())+':'+p(d.getSeconds())+' '+ap;" +
     "}" +
     "tickClock(); setInterval(tickClock,1000);" +
+    // Keep the page-gif looping forever: pre-load a cache-busted copy every
+    // 25s, and only once it has fully decoded swap it in — the background
+    // never goes blank, it just keeps on reloading frame one.
+    "function bgGifKeepAlive(){" +
+    "  var el=document.getElementById('globalBgGif'); if(!el) return;" +
+    "  var src=el.src.split('?')[0];" +
+    "  setInterval(function(){" +
+    "    var pre=new Image();" +
+    "    pre.onload=function(){ if(el) el.src=pre.src; };" +
+    "    pre.src=src+'?r='+Date.now();" +
+    "  },25000);" +
+    "}" +
+    "bgGifKeepAlive();" +
     "function dashRefresh(btn){" +
     "  if(btn.disabled) return;" +
     "  btn.classList.add('loading'); btn.disabled=true;" +
@@ -2910,13 +3401,53 @@ function buildDashboardPage_(data) {
     "      }" +
     "      done();" +
     "    })" +
-    "    .withFailureHandler(function(err){" +
+    "  .withFailureHandler(function(err){" +
     "      var n=document.getElementById('note');" +
     "      n.textContent='Refresh failed: '+(err && err.message ? err.message : err);" +
     "      n.className='note err';" +
     "      done();" +
     "    })" +
     "    .refreshDashboardSections();" +
+    "}" +
+    // ---- chat bot: toggle / send / answer ----
+    "function chatToggle(){" +
+    "  var p=document.getElementById('chatPanel'); if(!p) return;" +
+    "  p.classList.toggle('open');" +
+    "  if(p.classList.contains('open')){var i=document.getElementById('chatInput'); if(i) i.focus();}" +
+    "}" +
+    "function chatBubble(cls,html){" +
+    "  var log=document.getElementById('chatLog'); if(!log) return null;" +
+    "  var d=document.createElement('div'); d.className='chat-msg '+cls; d.innerHTML=html;" +
+    "  log.appendChild(d); log.scrollTop=log.scrollHeight; return d;" +
+    "}" +
+    "function chatSend(){" +
+    "  var inp=document.getElementById('chatInput'); if(!inp) return;" +
+    "  var q=(inp.value||'').trim(); if(!q) return;" +
+    "  inp.value='';" +
+    "  var safe=q.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');" +
+    "  chatBubble('user',safe);" +
+    "  var thinking=chatBubble('bot','<span class=\\\"chat-dots\\\"><i></i><i></i><i></i></span>');" +
+    "  var finish=function(html){ if(thinking) thinking.innerHTML=html; };" +
+    "  if(!(window.google && google.script && google.script.run)){" +
+    "    finish('Chat replies need the live web app (this is a static preview).');" +
+    "    return;" +
+    "  }" +
+    "  google.script.run" +
+    "    .withSuccessHandler(function(raw){" +
+    "      var res; try{res=JSON.parse(raw);}catch(e){res={title:'Reply error',rows:[],note:String(e)};}" +
+    "      var h='<div class=\\\"chat-title\\\">'+res.title+'</div>';" +
+    "      if(res.rows && res.rows.length){" +
+    "        h+='<table class=\\\"chat-table\\\"><tbody>';" +
+    "        for(var i=0;i<res.rows.length;i++){h+='<tr>'+res.rows[i].join('')+'</tr>';}" +
+    "        h+='</tbody></table>';" +
+    "      }" +
+    "      if(res.note){h+='<div class=\\\"muted\\\">'+res.note+'</div>';}" +
+    "      finish(h);" +
+    "    })" +
+    "    .withFailureHandler(function(err){" +
+    "      finish('Search failed: '+(err && err.message ? err.message : err));" +
+    "    })" +
+    "    .serverQuery(q);" +
     "}" +
     "</script>";
 
@@ -2925,11 +3456,13 @@ function buildDashboardPage_(data) {
   return (
     "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
     "<title>" + esc_(pageTitle) + "</title><style>" + css + "</style></head><body>" +
-    // Black glittering backdrop for EVERY page: one fixed video behind the
-    // entire app body (same bokeh asset the index pane used before).
-    '<video id="globalBgVideo" autoplay muted loop playsinline preload="metadata" ' +
-      'src="https://www.shutterstock.com/shutterstock/videos/3677550523/preview/stock-footage-heart-shaped-golden-particles-fly-toward-the-camera-creating-a-blurred-bokeh-tunnel-perfect-for.webm">' +
-    '</video>' +
+    // Owner-approved animated backdrop for EVERY page at 50% transparency.
+    // bgGifKeepAlive() (in clientScript) periodically pre-loads a cache-busted
+    // copy and swaps it in only once decoded — the animation keeps reloading
+    // without ever blanking or stopping for a visible moment.
+    '<img id="globalBgGif" class="global-bg-gif" ' +
+      'src="https://i.pinimg.com/originals/78/3d/bb/783dbbe3f2d2eb0e437be534bb3d3cb6.gif" ' +
+      'alt="" aria-hidden="true">' +
     '<header class="topbar"><div class="topbar-inner">' +
     "<div class=\"topbar-left\">" +
     '<div class="brand">' + esc_(pageTitle) + "</div>" +
@@ -2949,6 +3482,30 @@ function buildDashboardPage_(data) {
     '<div class="tabs-row"><div class="tabs tabs-wide" role="tablist">' + tabs + "</div></div>" +
     "</div></header>" +
     mains +
+    // ---- floating sheet-search chat bot, present on every page ----
+    '<div class="chat-widget" id="chatWidget">' +
+      '<div class="chat-fab" id="chatFab" onclick="chatToggle()" role="button" tabindex="0" ' +
+        'aria-label="Open sheet search chat">' +
+        '<span class="chat-fab-icon">💬</span><span>Ask the sheets</span>' +
+      '</div>' +
+      '<div class="chat-panel" id="chatPanel" role="dialog" aria-label="Sheet search chat">' +
+        '<div class="chat-head"><b>🤖 Sheet search</b>' +
+          '<span class="chat-sub">ask about sales, parts, customers</span>' +
+          '<button class="chat-close" onclick="chatToggle()" aria-label="Close chat">&times;</button>' +
+        "</div>" +
+        '<div class="chat-log" id="chatLog">' +
+          '<div class="chat-msg bot">Ask me anything from the source sheets — e.g. ' +
+            "<i>sale date from 23.09.26</i>, <i>part number for display</i>, " +
+            "or a mobile number like <i>919876543210</i>.</div>" +
+        "</div>" +
+        '<div class="chat-inputrow">' +
+          '<input class="chat-input" id="chatInput" type="text" autocomplete="off" ' +
+            'placeholder="Try: sales 23.09.26, part number for…, or a mobile number" ' +
+            "onkeydown=\"if(event.key==='Enter')chatSend()\">" +
+          '<button class="chat-send" onclick="chatSend()" aria-label="Send">➤</button>' +
+        "</div>" +
+      "</div>" +
+    "</div>" +
     clientScript +
     "</body></html>"
   );
@@ -3001,6 +3558,14 @@ function renderWalkinAnalysis_(wl) {
     '<tr class="deadsum"><td><b>Dead Leads</b></td>' + '<td class="num dead"><b>' + t.deadLeads + "</b></td>" +
       "<td>no case, no invoice, no remark</td></tr>" +
     "</tbody></table></div>";
+
+  return head;
+}
+
+/** WALK-IN page: the wide day-wise breakdown table (full page width). */
+function renderWalkinDayTable_(wl) {
+  if (!wl.available) return "";
+  var t = wl.totals;
 
   function c0(n) { return n ? ('<td class="num">' + n + "</td>") : '<td class="num muted">—</td>'; }
 
@@ -3063,7 +3628,7 @@ function renderWalkinAnalysis_(wl) {
     "<tr>" + purpHeads + "</tr>" +
     "</thead><tbody>" + rows + foot + "</tbody></table></div>";
 
-  return head + table;
+  return table;
 }
 
 function renderTokenCreation_(wl) {
@@ -3554,7 +4119,8 @@ function getDashboardCss_() {
     // subtle tinted column groups, one per salesperson
     // Person bands are STRONGLY distinct solids (owner asked for an instant
     // "whose column is this" read on the date-wise matrix).
-    "td.cell-0 { background:rgba(52,84,196,.09); } th.grp-0 { background:linear-gradient(180deg,#3353c0,#2a43a0); }" +
+    // Subha's band: soft periwinkle instead of the loud royal blue (Task 23).
+    "td.cell-0 { background:rgba(146,161,214,.12); } th.grp-0 { background:linear-gradient(180deg,#8a9bd4,#6f7fb8); }" +
     "td.cell-1 { background:rgba(196,138,22,.11); } th.grp-1 { background:linear-gradient(180deg,#b8860b,#9c7309); }" +
     "td.cell-2 { background:rgba(15,157,143,.09); } th.grp-2 { background:linear-gradient(180deg,#0f9d8f,#0c8377); }" +
     "td.cell-3 { background:rgba(122,63,212,.10); } th.grp-3 { background:linear-gradient(180deg,#7a3fd4,#6134ad); }" +
@@ -3840,6 +4406,8 @@ function getDashboardCss_() {
     // ============ TASK 22 — one black-glitter backdrop for ALL pages ============
     "body { background:#070a1c; color:#dbe4f6; }" +
     "#globalBgVideo { position:fixed; inset:0; z-index:-1; width:100%; height:100%; object-fit:cover; }" +
+    ".global-bg-gif { position:fixed; inset:0; z-index:-1; width:100%; height:100%; object-fit:cover;" +
+    " opacity:.5; pointer-events:none; }" +
     // index pane no longer needs its own dark shell — the video is global now
     "#pageIndex { background:none; border-radius:0; overflow:visible; }" +
     // sticky topbar + tabs as dark liquid glass on the glitter
@@ -3900,6 +4468,77 @@ function getDashboardCss_() {
     ".glass-tile:hover .tile-glitter-vid, .glass-tile:focus-visible .tile-glitter-vid { opacity:.8; }" +
     ".glass-tile:hover, .glass-tile:focus-visible {" +
     " box-shadow:0 16px 36px rgba(3,7,26,.6), inset 0 1px 0 rgba(255,255,255,.7), 0 0 28px rgba(255,205,90,.35); }" +
+    // ============ TASK 23 — gif backdrop, tile fit, tables & chatbot ============
+    // Golden-glitter hover video hugs each tile's outline exactly and always
+    // sits BEHIND the text — it can never block what the tile says.
+    ".glass-tile { overflow:hidden; }" +
+    ".tile-glitter-vid { z-index:0; }" +
+    ".glass-tile .tile-icon, .glass-tile .tile-title, .glass-tile .tile-blurb," +
+    " .glass-tile .tile-data, .glass-tile .tile-soon, .glass-tile .tile-soon-sub," +
+    " .glass-tile .tile-go { position:relative; z-index:2; }" +
+    ".glass-tile .tile-sparkle { z-index:1; }" +
+    ".glass-tile:hover .tile-glitter-vid, .glass-tile:focus-visible .tile-glitter-vid {" +
+    " opacity:.55; filter:brightness(.85) saturate(1.3); }" +
+    // KPI table: expand to the entire page width, hugging the left edge.
+    ".kpi-pair { flex-direction:column; align-items:stretch; }" +
+    ".kpi-pair .kp-left { flex:0 0 auto; width:100%; }" +
+    ".kpi-pair .kp-left table { width:100%; min-width:0; }" +
+    ".kpi-pair .kp-right { flex:0 0 auto; width:100%; }" +
+    // Walk-in / token pair: both sides top-aligned on one line; day-wise
+    // table breaks out below and spans the full page width.
+    ".wp-daytable { margin-top:16px; width:100%; }" +
+    ".wp-daytable .scroll-x { width:100%; }" +
+    ".wp-daytable .walkintable { width:100%; }" +
+    // C-SAT chips: soften the glare — slightly grey-shaded instead of pure white.
+    ".csat-chip { background:#dde3ee; border-color:#c2cbdc; box-shadow:0 2px 8px rgba(10,20,50,.18); }" +
+    // Job management: force every cell left (beats .ptable td.num), and bucket
+    // bands sweep from sky blue down to deep navy.
+    ".jobtable th, .jobtable td { text-align:left !important; }" +
+    ".grphead td { background:linear-gradient(90deg,#4fb3f5 0%,#2b8ae0 34%,#175fb0 68%,#0b3672 100%) !important;" +
+    " border-bottom-color:#8cc9ff !important; box-shadow:0 3px 10px rgba(11,54,114,.5); }" +
+    // ---- floating sheet-search chat bot (every page, bottom-right) ----
+    ".chat-widget { position:fixed; right:18px; bottom:18px; z-index:90; display:flex;" +
+    " flex-direction:column; align-items:flex-end; gap:10px; font-family:inherit; }" +
+    ".chat-fab { display:flex; align-items:center; gap:8px; border:none; cursor:pointer; color:#fff;" +
+    " background:linear-gradient(135deg,#4fb3f5,#0b3672); border-radius:999px; padding:11px 18px;" +
+    " font-size:.82rem; font-weight:800; letter-spacing:.02em;" +
+    " box-shadow:0 10px 26px rgba(4,10,34,.6), inset 0 1px 0 rgba(255,255,255,.4); }" +
+    ".chat-fab:hover { transform:translateY(-2px); box-shadow:0 14px 32px rgba(4,10,34,.7); }" +
+    ".chat-fab-icon { font-size:1.05rem; }" +
+    ".chat-panel { display:none; width:358px; max-width:calc(100vw - 30px); height:430px;" +
+    " max-height:calc(100vh - 110px); flex-direction:column; overflow:hidden; border-radius:16px;" +
+    " background:rgba(10,15,40,.95); border:1px solid rgba(170,190,255,.3);" +
+    " backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);" +
+    " box-shadow:0 18px 46px rgba(2,6,26,.75); }" +
+    ".chat-panel.open { display:flex; }" +
+    ".chat-head { display:flex; align-items:center; gap:8px; padding:10px 12px;" +
+    " border-bottom:1px solid rgba(170,190,255,.22); color:#f2f6ff; font-size:.85rem; }" +
+    ".chat-head .chat-sub { font-size:.68rem; color:#9fb4e8; font-weight:500; }" +
+    ".chat-close { margin-left:auto; background:none; border:none; color:#9fb4e8; font-size:1.15rem;" +
+    " cursor:pointer; line-height:1; padding:2px 4px; } .chat-close:hover { color:#fff; }" +
+    ".chat-log { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px; }" +
+    ".chat-msg { max-width:92%; padding:8px 11px; border-radius:12px; font-size:.78rem; line-height:1.5; }" +
+    ".chat-msg.user { align-self:flex-end; color:#fff; border-radius:12px 12px 4px 12px;" +
+    " background:linear-gradient(135deg,#2b8ae0,#175fb0); }" +
+    ".chat-msg.bot { align-self:flex-start; color:#e8eefc; border-radius:12px 12px 12px 4px;" +
+    " background:rgba(255,255,255,.09); border:1px solid rgba(170,190,255,.16); }" +
+    ".chat-msg.bot b { color:#ffd477; } .chat-msg.bot .muted { color:#93a5d4; }" +
+    ".chat-title { font-weight:800; color:#cfe0ff; margin-bottom:6px; }" +
+    ".chat-table { width:100%; border-collapse:collapse; margin:6px 0 2px; font-size:.7rem; }" +
+    ".chat-table th { text-align:left; color:#9fb4e8; font-weight:800; padding:3px 5px;" +
+    " border-bottom:1px solid rgba(170,190,255,.28); }" +
+    ".chat-table td { padding:3px 5px; border-bottom:1px solid rgba(170,190,255,.12); vertical-align:top; }" +
+    ".chat-table .num { text-align:right; font-variant-numeric:tabular-nums; }" +
+    ".chat-dots i { display:inline-block; width:5px; height:5px; margin-right:3px; border-radius:50%;" +
+    " background:#9fb4e8; animation:chatBlink 1s infinite; }" +
+    ".chat-dots i:nth-child(2){animation-delay:.2s;} .chat-dots i:nth-child(3){animation-delay:.4s;}" +
+    "@keyframes chatBlink { 0%,80%,100%{opacity:.25;} 40%{opacity:1;} }" +
+    ".chat-inputrow { display:flex; gap:8px; padding:10px 12px; border-top:1px solid rgba(170,190,255,.22); }" +
+    ".chat-input { flex:1; border:1px solid rgba(170,190,255,.3); border-radius:999px; background:rgba(255,255,255,.08);" +
+    " color:#fff; padding:8px 14px; font-size:.8rem; outline:none; }" +
+    ".chat-input::placeholder { color:#8fa3d4; } .chat-input:focus { border-color:#4fb3f5; }" +
+    ".chat-send { border:none; cursor:pointer; border-radius:999px; padding:8px 14px; color:#fff;" +
+    " background:linear-gradient(135deg,#4fb3f5,#0b3672); font-size:.85rem; font-weight:800; }" +
     "@media (max-width:640px){ .brand{font-size:1.1rem;} .card .value{font-size:1rem;} }"
   );
 }
@@ -4487,9 +5126,6 @@ function renderDateWiseTable_(data) {
 
   return (
     '<section class="section" id="sec-datewise"><h2>📆 Date-wise Sales Revenue Analysis (by salesperson)</h2><div class="body">' +
-    '<div class="sec-desc">Definition: every invoice date, split per on-roster salesperson (target!C1:J1) —' +
-    ' Service / Accessory / Repair revenue and Gross Profit from crm rows (achieved values sit in oval pills,' +
-    ' green = hit that person\'s daily target, red = missed). Month-to-date total row pinned at the bottom.</div>' +
     '<div class="cards" style="margin-bottom:14px">' +
     '<div class="card"><div class="label">Store Daily Target</div><div class="value">' + money_(dailyTarget) +
     '</div><div class="sub">total target ÷ ' + data.store.totalWorkingDays + " working days</div></div>" +

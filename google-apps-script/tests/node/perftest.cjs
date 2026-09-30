@@ -343,7 +343,9 @@ check("tile count 14 (Repair Validation tile removed)", (page.match(/class="glas
   (page.match(/class="glass-tile"/g)||[]).length);
 
 console.log("== TASK 21 batch ==");
-check("global glitter background video", page.indexOf('id="globalBgVideo"')>-1&&page.indexOf("3677550523")>-1);
+check("global gif background at 50%", page.indexOf('id="globalBgGif"')>-1&&page.indexOf("783dbbe3f2d2eb0e437be534bb3d3cb6.gif")>-1
+  &&page.indexOf(".global-bg-gif")>-1&&page.indexOf("opacity:.5")>-1);
+check("gif keep-alive reload", page.indexOf("bgGifKeepAlive")>-1&&page.indexOf("setInterval")>-1);
 check("tile glitter video on hover", page.indexOf('class="tile-glitter-vid"')>-1&&page.indexOf("1063973464")>-1
   &&page.indexOf(".glass-tile:hover .tile-glitter-vid")>-1);
 check("index subtitle removed", page.indexOf('class="index-sub"')===-1);
@@ -356,7 +358,7 @@ check("live clock card + gif + tick js", page.indexOf('class="topbar-clock"')>-1
 check("amc & bundle side-by-side", page.indexOf('class="inc-pair"')>-1);
 check("repair matrix removed so no duo", page.indexOf('class="duo-pair"')===-1);
 check("job table fixed layout", page.indexOf(".jobtable { table-layout:fixed")>-1&&page.indexOf("<colgroup>")>-1);
-check("distinct person band colours", page.indexOf("#3353c0")>-1&&page.indexOf("#b8860b")>-1&&page.indexOf("#0f9d8f")>-1);
+check("distinct person band colours", page.indexOf("#8a9bd4")>-1&&page.indexOf("#b8860b")>-1&&page.indexOf("#0f9d8f")>-1);
 check("liquid glass material on tables", page.indexOf("backdrop-filter:blur(12px) saturate(1.2)")>-1);
 check("csat chips below table", page.indexOf(".csat-flex { flex-direction:column")>-1
   &&page.indexOf(".csat-flex .csat-right { flex:0 0 auto; width:100%")>-1);
@@ -373,6 +375,56 @@ check("advance paid tile removed", page.indexOf('class="label">Advance Paid</div
 check("advance totals still computed", j.totals.advanceTotal===2049);
 check("dark section shells on all pages", page.indexOf(".sec { background:rgba(10,15,40,.66)")>-1);
 check("dark topbar", page.indexOf(".topbar { background:rgba(8,12,32,.78)")>-1);
+
+console.log("== TASK 23 batch ==");
+check("gif backdrop present (video removed)", page.indexOf('id="globalBgGif"')>-1&&page.indexOf('id="globalBgVideo"')===-1);
+check("tile glitter behind text (z-index layering)", page.indexOf("z-index:2")>-1&&page.indexOf(".tile-glitter-vid { z-index:0")>-1);
+check("tile glitter dimmed on hover", page.indexOf("opacity:.55; filter:brightness(.85)")>-1);
+check("tile overflow clips video", page.indexOf(".glass-tile { overflow:hidden")>-1);
+check("kpi table full width left", page.indexOf(".kpi-pair { flex-direction:column")>-1
+  &&page.indexOf(".kpi-pair .kp-left table { width:100%")>-1);
+check("walkin heads aligned on one line", page.indexOf('wp-head">🚶 Walk-in Analysis')>-1
+  &&page.indexOf('wp-head">🎟 Token Creation')>-1);
+check("day-wise token table full width", page.indexOf('class="wp-daytable"')>-1
+  &&page.indexOf('wp-head">📅 Day-wise Walk-in')>-1
+  &&page.indexOf(".wp-daytable .walkintable { width:100%")>-1);
+check("walkin analysis split remains", page.indexOf("ptable walksum")>-1&&page.indexOf("ptable walkintable")>-1);
+check("csat chips grey-shaded", page.indexOf(".csat-chip { background:#dde3ee")>-1);
+check("jobtable forced left", page.indexOf(".jobtable th, .jobtable td { text-align:left !important")>-1);
+check("grphead sky-blue to dark gradient", page.indexOf("linear-gradient(90deg,#4fb3f5")>-1
+  &&page.indexOf("#0b3672")>-1);
+check("datewise definition removed", page.indexOf("Definition: every invoice date")===-1);
+check("subha band softened", page.indexOf("#8a9bd4")>-1&&page.indexOf("#3353c0")===-1);
+check("chat widget on page", page.indexOf('id="chatPanel"')>-1&&page.indexOf('id="chatFab"')>-1
+  &&page.indexOf("chatToggle")>-1&&page.indexOf("chatSend")>-1
+  &&page.indexOf(".serverQuery(q)")>-1);
+
+// ---- chatbot logic against the mock sheets ----
+console.log("== TASK 23 chatbot mocks ==");
+check("chatDig normalises 91-prefix", chatDig("+91 91987 654321")==="9876543210"||chatDig("919876543210")==="9876543210");
+check("chatDig rejects short input", chatDig("12345")==="");
+var dExtract=chatExtractDates("sale date from 23.09.26");
+check("date extraction", dExtract.length===1&&dExtract[0]==="23-09-2026", dExtract);
+var sales1=chatQuery("sale date from 23.09.26");
+check("sales query finds invoices", sales1.title.indexOf("Sales on")>-1&&sales1.rows.length>0);
+var salesFlat=sales1.rows.map(function(r){return r.join("");}).join("");
+check("sales query revenue+gp rows", salesFlat.indexOf("INV1")>-1&&salesFlat.indexOf("Subha")>-1&&salesFlat.indexOf("7,100")>-1,
+  sales1.title+" | rows="+sales1.rows.length);
+var sales2=chatQuery("sales 23.09.2026 to 23.09.2026");
+check("sales range parse", sales2.rows.length>0&&sales2.title.indexOf("Sales on")>-1);
+var partQ=chatQuery("part number for care+ display");
+check("part query item code", JSON.stringify(partQ.rows).indexOf("CPLUS")>-1, JSON.stringify(partQ).slice(0,140));
+var mobQ=chatQuery("9791994639");
+check("mobile 10-digit query", mobQ.title.indexOf("Mobile")>-1||mobQ.title.indexOf("No records")>-1, mobQ.title);
+var mobQ2=chatQuery("919876543210");
+check("mobile lookup across sheets", mobQ2.rows.length>0&&JSON.stringify(mobQ2.rows).indexOf("Ravi")>-1, JSON.stringify(mobQ2).slice(0,140));
+check("mobile lookup case+invoice", JSON.stringify(mobQ2.rows).indexOf("C1001")>-1||mobQ2.note.indexOf("No records")>-1);
+var mobJSON=serverQuery("919876543210");
+check("serverQuery returns JSON", mobJSON.charAt(0)==="{");
+var mobParsed=JSON.parse(mobJSON);
+check("serverQuery shape", mobParsed.title!==undefined&&Array.isArray(mobParsed.rows));
+var blankQ=JSON.parse(serverQuery(""));
+check("serverQuery empty guard", blankQ.title==="Say something first");
 
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);
