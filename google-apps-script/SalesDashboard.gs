@@ -2108,62 +2108,7 @@ function renderRepairAnalyticsInner_(ra) {
   var typeSec = bucketSection("📈", "Repair Type Performance", "Repair Type", ra.typeComp,
     "Cases logged in " + ra.curLabel + " vs the monthly average of the previous 3 months (" + ra.prev3Labels + ").");
 
-  // ---- single Repair Validation matrix: products (rows) × coverage (columns) ----
-  var vmSec = "";
-  var vm = ra.validationMatrix;
-  if (vm && vm.grand > 0) {
-    var vmParts = ['<div class="section">' +
-      '<h2 class="section-title">🔁 Repair Validation — Products × Coverage · <em>' + esc_(ra.curLabel) + "</em></h2>" +
-      '<div class="scroll-x"><table class="vmatrix"><thead><tr>' +
-      '<th class="sticky-col">Product \\ Coverage</th>'];
-    vm.coverages.forEach(function (cov) {
-      vmParts.push("<th>" + esc_(cov) + "</th>");
-    });
-    vmParts.push('<th class="vmtotal">Total</th><th class="vmtotal">Prev 3M Avg</th></tr></thead><tbody>');
-    vm.products.forEach(function (pf) {
-      var tr = '<tr><td class="sticky-col"><b>' + esc_(pf) + "</b></td>";
-      vm.coverages.forEach(function (cov) {
-        var n = (vm.cells[pf] && vm.cells[pf][cov]) || 0;
-        tr += n ? '<td class="num"><b>' + n + "</b></td>" : '<td class="num muted">—</td>';
-      });
-      tr += '<td class="num vmtotal">' + (vm.prodTotals[pf] || 0) + "</td>" +
-            '<td class="num vmtotal vmavg">' + vm.prodAvg(pf) + "</td></tr>";
-      vmParts.push(tr);
-    });
-    vm.coverages.forEach(function (cov) {
-      out.push("<th>" + esc_(cov) + "</th>");
-    });
-    out.push('<th class="vmtotal">Total</th><th class="vmtotal">Prev 3M Avg</th></tr></thead><tbody>');
-    vm.products.forEach(function (pf) {
-      var tr = '<tr><td class="sticky-col"><b>' + esc_(pf) + "</b></td>";
-      vm.coverages.forEach(function (cov) {
-        var n = (vm.cells[pf] && vm.cells[pf][cov]) || 0;
-        tr += n ? '<td class="num"><b>' + n + "</b></td>" : '<td class="num muted">—</td>';
-      });
-      tr += '<td class="num vmtotal">' + (vm.prodTotals[pf] || 0) + "</td>" +
-            '<td class="num vmtotal vmavg">' + vm.prodAvg(pf) + "</td></tr>";
-      out.push(tr);
-    });
-    var foot = '<tr class="vmtotrow"><td class="sticky-col">Total</td>';
-    vm.coverages.forEach(function (cov) {
-      foot += '<td class="num">' + (vm.covTotals[cov] || 0) + "</td>";
-    });
-    foot += '<td class="num vmtotal"><b>' + vm.grand + "</b></td>" + '<td class="num vmtotal"></td></tr>' +
-      '<tr class="vmavgrow"><td class="sticky-col">Prev 3M Avg</td>';
-    vm.coverages.forEach(function (cov) {
-      foot += '<td class="num">' + vm.covAvg(cov) + "</td>";
-    });
-    foot += '<td class="num vmtotal vmavg">' +
-      Math.round(vm.coverages.reduce(function (a, cov) { return a + vm.covAvg(cov); }, 0)) + "</td>" +
-      '<td class="num vmtotal"></td></tr>';
-    vmParts.push(foot + "</tbody></table></div></div>");
-    vmSec = vmParts.join("");
-  }
-
-  // Owner layout: the type-performance section and the validation matrix
-  // sit side by side, sharing the width perfectly instead of stacking.
-  if (typeSec && vmSec) out.push('<div class="duo-pair">' + typeSec + vmSec + "</div>");
-  else { out.push(typeSec); out.push(vmSec); }
+  out.push(typeSec);
 
   // The "Repair Types — Till Date" composition table was retired on the
   // owner's request; the Repair Type Performance block above already carries
@@ -2793,12 +2738,7 @@ function renderIndexHtml_(data, perfData) {
       ["Open jobs", jobT.openJobs],
       ["Communicated", jobT.communicated + " (" + jobT.commRate + "%)"],
       ["Avg job age", jobT.avgAge + " d"],
-    ] : [["Status", "service sheet not found"], ["", "add the sheet to enable"]]) +
-    tile("jobs", "🔁", "Repair Validation", "Products × coverage matrix", ra ? [
-      ["Repairs", ra.monthRepairsTotal + " this month"],
-      ["3-mo avg", ra.prevRepairAvgTotal],
-      ["Families", ra.validationMatrix.products.length],
-    ] : [["Status", "no service data"], ["", "no repairs logged yet"]]);
+    ] : [["Status", "service sheet not found"], ["", "add the sheet to enable"]]);
 
   var dateTiles =
     tile("date", "📆", "Date-wise Sales Revenue Analysis", "Day × salesperson × type matrix", [
@@ -2808,8 +2748,6 @@ function renderIndexHtml_(data, perfData) {
     ]);
 
   return (
-    '<video class="bgnd-video" autoplay muted loop playsinline preload="metadata" ' +
-      'src="https://www.shutterstock.com/shutterstock/videos/3677550523/preview/stock-footage-heart-shaped-golden-particles-fly-toward-the-camera-creating-a-blurred-bokeh-tunnel-perfect-for.webm"></video>' +
     '<section class="index-hero"><h2>Store Performance Dashboard</h2></section>' +
     '<div class="tile-board">' +
     group("GP", "gp", gpTiles, gpPie) +
@@ -2987,6 +2925,11 @@ function buildDashboardPage_(data) {
   return (
     "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
     "<title>" + esc_(pageTitle) + "</title><style>" + css + "</style></head><body>" +
+    // Black glittering backdrop for EVERY page: one fixed video behind the
+    // entire app body (same bokeh asset the index pane used before).
+    '<video id="globalBgVideo" autoplay muted loop playsinline preload="metadata" ' +
+      'src="https://www.shutterstock.com/shutterstock/videos/3677550523/preview/stock-footage-heart-shaped-golden-particles-fly-toward-the-camera-creating-a-blurred-bokeh-tunnel-perfect-for.webm">' +
+    '</video>' +
     '<header class="topbar"><div class="topbar-inner">' +
     "<div class=\"topbar-left\">" +
     '<div class="brand">' + esc_(pageTitle) + "</div>" +
@@ -3172,7 +3115,6 @@ function renderJobManagement_(jm) {
     card("Not Communicated", t.notCommunicated, "no comm record found", "neg") +
     card("Needs Follow-up", t.staleComm, "no communication in " + CONFIG.COMM_STALE_DAYS + "+ days — rows highlighted", t.staleComm > 0 ? "neg" : "") +
     card("Avg Job Age", t.avgAge + " d", t.aged + " job(s) " + CONFIG.JOB_AGE_CRITICAL_DAYS + "+ days old", "neg") +
-    card("Advance Paid", money_(t.advanceTotal), t.withAdvance + " job(s) carry an advance") +
     "</div>";
 
   if (!jm.hasAdvance && !jm.advanceViaColumn) {
@@ -3895,6 +3837,69 @@ function getDashboardCss_() {
     ".clock-text { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:.96rem; font-weight:800;" +
     " letter-spacing:.02em; color:#ffffff; text-shadow:0 2px 6px rgba(0,0,0,.75); white-space:nowrap;" +
     " font-variant-numeric:tabular-nums; }" +
+    // ============ TASK 22 — one black-glitter backdrop for ALL pages ============
+    "body { background:#070a1c; color:#dbe4f6; }" +
+    "#globalBgVideo { position:fixed; inset:0; z-index:-1; width:100%; height:100%; object-fit:cover; }" +
+    // index pane no longer needs its own dark shell — the video is global now
+    "#pageIndex { background:none; border-radius:0; overflow:visible; }" +
+    // sticky topbar + tabs as dark liquid glass on the glitter
+    ".topbar { background:rgba(8,12,32,.78); backdrop-filter:blur(14px) saturate(1.25);" +
+    " -webkit-backdrop-filter:blur(14px) saturate(1.25); border-bottom:1px solid rgba(170,190,255,.22); }" +
+    ".brand { color:#f5f8ff; text-shadow:0 2px 8px rgba(3,6,24,.7); }" +
+    ".topbar .meta { color:#aebcff; }" +
+    ".topbar .note.ok { color:#6ee7b7; } .topbar .note.err { color:#ffb4c0; }" +
+    ".tabs { background:rgba(12,17,42,.72); border-color:rgba(170,190,255,.25);" +
+    " backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); box-shadow:0 8px 22px rgba(4,8,26,.45); }" +
+    ".tab-btn { color:#c3cfee; }" +
+    ".tab-btn.active { background:linear-gradient(180deg,#ffffff,#dfe8ff); color:#1b2a52; box-shadow:0 4px 12px rgba(4,8,26,.5); }" +
+    // dark liquid-glass shells for every section on every page
+    ".sec { background:rgba(10,15,40,.66); border-color:rgba(170,190,255,.20);" +
+    " backdrop-filter:blur(12px) saturate(1.15); -webkit-backdrop-filter:blur(12px) saturate(1.15);" +
+    " box-shadow:0 14px 34px rgba(4,8,26,.5), inset 0 1px 0 rgba(255,255,255,.10); }" +
+    ".duo-pair > .section { background:rgba(10,15,40,.66); border:1px solid rgba(170,190,255,.20);" +
+    " backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); }" +
+    ".section h2, .sec h2, .section-title { color:#f2f6ff; }" +
+    ".sec-sub, .section-sub, .sec-desc { color:#a9b6d8; }" +
+    ".src-hint { background:rgba(120,130,150,.22); color:#cfe0ff; }" +
+    ".repair-strip { background:rgba(10,15,40,.66); border-color:rgba(170,190,255,.20); }" +
+    ".rs-label { color:#a9b6d8; } .rs-value { color:#ffffff; }" +
+    ".ph-tile { border-color:rgba(140,160,230,.45); background:rgba(84,116,255,.08); }" +
+    ".ph-text { color:#c7d2ee; }" +
+    ".inc-cat-title { color:#cfe0ff; }" +
+    ".wp-head { color:#f2f6ff; }" +
+    ".map-line { color:#94a3bd; } .map-line b { color:#e6edff; }" +
+    ".legend-card { border-color:rgba(170,190,255,.28); }" +
+    ".legend-card b { color:#f2f6ff; } .legend-card .muted { color:#a9b6d8; }" +
+    ".subnote { color:#ffe9b3; }" +
+    // walk-in analysis + token creation locked side by side, sharing the width
+    ".walkin-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:stretch; }" +
+    ".walkin-pair .wp-left, .walkin-pair .wp-right { min-width:0; }" +
+    ".walkin-pair .wp-right { background:rgba(10,15,40,.55); border:1px solid rgba(170,190,255,.18);" +
+    " border-radius:12px; padding:12px; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }" +
+    // job table: entirely left-aligned
+    ".jobtable th, .jobtable td { text-align:left; }" +
+    // C-SAT chips move BELOW the table, one horizontal row
+    ".csat-flex { flex-direction:column; align-items:stretch; }" +
+    ".csat-flex .csat-right { flex:0 0 auto; width:100%; min-width:0; max-width:100%;" +
+    " flex-direction:row; flex-wrap:wrap; gap:10px; margin-top:12px; }" +
+    ".csat-right .csat-chip { flex:1 1 190px; width:auto; max-width:280px; }" +
+    // ---- index tiles: lighter glass, brighter luminous fonts ----
+    ".glass-tile { background:linear-gradient(135deg,rgba(255,255,255,.34) 0%,rgba(150,178,255,.20) 55%,rgba(255,255,255,.26) 100%);" +
+    " border:1px solid rgba(255,255,255,.55); color:#f4f8ff; opacity:1; isolation:isolate;" +
+    " box-shadow:0 10px 28px rgba(3,7,26,.5), inset 0 1px 0 rgba(255,255,255,.6), inset 0 -10px 18px rgba(255,255,255,.06); }" +
+    ".tile-title { color:#ffffff; text-shadow:0 2px 8px rgba(4,8,26,.85); }" +
+    ".tile-blurb { color:#e6eeff; text-shadow:0 1px 5px rgba(4,8,26,.8); }" +
+    ".tile-stat { color:#e8f0ff; border-top-color:rgba(255,255,255,.40); }" +
+    ".tile-stat b { color:#ffe08a; text-shadow:0 1px 5px rgba(4,8,26,.8); }" +
+    ".tile-soon { color:#ffd477; text-shadow:0 1px 5px rgba(4,8,26,.8); }" +
+    ".tile-soon-sub { color:#e6eeff; }" +
+    ".tile-go { color:#ffd477; } .glass-tile:hover .tile-go { color:#ffe08a; }" +
+    ".tile-icon { filter:drop-shadow(0 2px 4px rgba(4,8,26,.75)); }" +
+    // golden-glitter video hugs the tile outline exactly (same radius, no bleed)
+    ".tile-glitter-vid { inset:0; border-radius:18px; }" +
+    ".glass-tile:hover .tile-glitter-vid, .glass-tile:focus-visible .tile-glitter-vid { opacity:.8; }" +
+    ".glass-tile:hover, .glass-tile:focus-visible {" +
+    " box-shadow:0 16px 36px rgba(3,7,26,.6), inset 0 1px 0 rgba(255,255,255,.7), 0 0 28px rgba(255,205,90,.35); }" +
     "@media (max-width:640px){ .brand{font-size:1.1rem;} .card .value{font-size:1rem;} }"
   );
 }

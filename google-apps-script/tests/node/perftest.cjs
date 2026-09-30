@@ -226,7 +226,9 @@ check("buckets alphabetical",grpOrder.every(function(x){return x>-1;})&&grpOrder
 check("bucket count chip",page.indexOf('grphead-count">1 open case')>-1);
 check("highlight rows render",page.indexOf("norepair-row")>-1&&page.indexOf("oow-nopay-row")>-1);
 check("jobs repair type column",page.indexOf("<th>Repair Type</th>")>-1);
-check("jobs warranty value renders",page.indexOf("Out of Warranty")>-1);
+check("jobs warranty value in matrix data",
+  loadPerformanceData_().repair.validationMatrix.coverages.indexOf("Out of Warranty")>-1
+  ||page.indexOf("Out of Warranty")>-1);
 check("repair tab section",page.indexOf("Repair Type Performance")>-1);
 // month-to-date composition (no date rows) + integers only
 check("till-date table retired",page.indexOf("Till Date ·")===-1&&page.indexOf("All repair types")===-1);
@@ -246,15 +248,15 @@ check("repair meta",page.indexOf("5 repairs this month · 2 repair types")>-1);
 check("avg days col header",page.indexOf("Avg Days · Now")>-1);
 check("walk-in avg days 2 d",page.indexOf('<strong>Walk-In Repair</strong></td><td class="num">3</td><td class="num">0</td>')>-1);
 // repair validation matrix: products vertical × coverage horizontal, one table
-check("validation matrix section",page.indexOf("Repair Validation — Products × Coverage")>-1);
-check("vmatrix coverage cols",page.indexOf("<th>In Warranty</th>")>-1&&page.indexOf("Out Of Warranty (No Coverage)")>-1);
-check("vmatrix iphone=inw 1",/iPhone<\/b><\/td><td class="num"><b>1<\/b>/.test(page));
-check("vmatrix other row",/<\/b>Other<\/b><\/td>/.test(page)===false);  // keep simple below
-check("vmatrix Other row exact",page.indexOf('<b>Other</b></td><td class="num"><b>1</b></td><td class="num"><b>2</b></td><td class="num"><b>1</b></td><td class="num vmtotal">4</td>')>-1);
-check("vmatrix iPhone row exact",page.indexOf('<b>iPhone</b></td><td class="num"><b>1</b></td><td class="num muted">—</td><td class="num muted">—</td><td class="num vmtotal">1</td>')>-1);
-check("vmatrix grand total 5",page.indexOf('<td class="num vmtotal"><b>5</b></td>')>-1);
-check("vmatrix prev3m avg row",page.indexOf("Prev 3M Avg")>-1);
-check("vmatrix definition removed (owner)",page.indexOf("Definition: one table combining every repair")===-1);
+// The products×coverage matrix was REMOVED from the page on the owner's
+// request; the COMPUTE object is still built (other consumers may need it).
+var vmObj=raObj.validationMatrix;
+check("validation matrix removed from page",page.indexOf("Repair Validation — Products × Coverage")===-1);
+check("vmatrix compute still built",vmObj&&vmObj.grand===5,vmObj&&vmObj.grand);
+check("vmatrix iPhone=1 Other=4",vmObj.prodTotals.iPhone===1&&vmObj.prodTotals.Other===4,
+  JSON.stringify(vmObj.prodTotals));
+check("vmatrix coverages incl OOW-NC",vmObj.coverages.indexOf("Out Of Warranty (No Coverage)")>-1);
+check("vmatrix definition gone",page.indexOf("Definition: one table combining every repair")===-1);
 check("snr excluded note",page.indexOf('"Service Non-Repair" cases are excluded')>-1);
 check("walkin two-tint rows only",page.indexOf("--tint:#")>-1&&page.indexOf("--tint:hsl(")===-1
   &&page.indexOf("background:hsl(")===-1);
@@ -315,7 +317,7 @@ check("blue-glow header skin", page.indexOf("#5b7bff 0%,#4360e0")>-1);
 check("3d bar styling", page.indexOf("--barc")>-1&&page.indexOf("barShine")>-1
   &&page.indexOf(".bar-fill::before")>-1);
 check("index page pane", page.indexOf('data-pane="index"')>-1&&page.indexOf("index-hero")>-1);
-check("index tiles built (12)", (page.match(/class="glass-tile"/g)||[]).length>=12,
+check("index tiles built (11 now, matrix tile removed)", (page.match(/class="glass-tile"/g)||[]).length>=11,
   (page.match(/class="glass-tile"/g)||[]).length);
 check("tile group heads", page.indexOf("tile-group-head")>-1);
 check("seven panes incl index", (page.match(/data-pane=/g)||[]).length===7,
@@ -337,10 +339,11 @@ check("bar graph per group", (page.match(/class="gbar-row"/g)||[]).length>=12,
   (page.match(/class="gbar-row"/g)||[]).length);
 check("horizontal board", page.indexOf("tile-board")>-1&&page.indexOf("tile-col")>-1);
 check("freshness line", page.indexOf("Latest records per sheet")>-1&&page.indexOf("fresh-chip")>-1);
-check("tile counts", (page.match(/class="glass-tile"/g)||[]).length>=12);
+check("tile count 14 (Repair Validation tile removed)", (page.match(/class="glass-tile"/g)||[]).length===14,
+  (page.match(/class="glass-tile"/g)||[]).length);
 
 console.log("== TASK 21 batch ==");
-check("dark index background video", page.indexOf('class="bgnd-video"')>-1&&page.indexOf("3677550523")>-1);
+check("global glitter background video", page.indexOf('id="globalBgVideo"')>-1&&page.indexOf("3677550523")>-1);
 check("tile glitter video on hover", page.indexOf('class="tile-glitter-vid"')>-1&&page.indexOf("1063973464")>-1
   &&page.indexOf(".glass-tile:hover .tile-glitter-vid")>-1);
 check("index subtitle removed", page.indexOf('class="index-sub"')===-1);
@@ -351,14 +354,25 @@ check("jobs subtitle removed", page.indexOf("segregated &amp; highlighted by rep
 check("live clock card + gif + tick js", page.indexOf('class="topbar-clock"')>-1
   &&page.indexOf("21-52-42-295_512.gif")>-1&&page.indexOf("tickClock")>-1);
 check("amc & bundle side-by-side", page.indexOf('class="inc-pair"')>-1);
-check("repair duo side-by-side", page.indexOf('class="duo-pair"')>-1);
+check("repair matrix removed so no duo", page.indexOf('class="duo-pair"')===-1);
 check("job table fixed layout", page.indexOf(".jobtable { table-layout:fixed")>-1&&page.indexOf("<colgroup>")>-1);
 check("distinct person band colours", page.indexOf("#3353c0")>-1&&page.indexOf("#b8860b")>-1&&page.indexOf("#0f9d8f")>-1);
 check("liquid glass material on tables", page.indexOf("backdrop-filter:blur(12px) saturate(1.2)")>-1);
-check("csat fixed chip column", page.indexOf(".csat-flex .csat-right { flex:0 0 230px")>-1);
+check("csat chips below table", page.indexOf(".csat-flex { flex-direction:column")>-1
+  &&page.indexOf(".csat-flex .csat-right { flex:0 0 auto; width:100%")>-1);
 check("next-slab balance lines", (page.match(/class="next-slab"/g)||[]).length>=1||page.indexOf("top slab reached")>-1);
-check("subha next svc slab ₹1,21,000", subha.nextSvcSlab && subha.nextSvcSlab.need===121000,
-  subha.nextSvcSlab && subha.nextSvcSlab.need);
+check("subha next svc slab ₹1,21,000", subha.nextSvcSlab && subha.nextSvcSlab.need===121000, subha.nextSvcSlab && subha.nextSvcSlab.need);
+
+console.log("== TASK 22 batch ==");
+check("tile glass lighter + fonts brighter", page.indexOf("rgba(255,255,255,.34) 0%,rgba(150,178,255,.20)")>-1
+  &&page.indexOf(".tile-title { color:#ffffff")>-1);
+check("glitter video fits tile outline", page.indexOf(".tile-glitter-vid { inset:0; border-radius:18px")>-1);
+check("token creation locked side-by-side", page.indexOf(".walkin-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr)")>-1);
+check("job table left aligned", page.indexOf(".jobtable th, .jobtable td { text-align:left")>-1);
+check("advance paid tile removed", page.indexOf('class="label">Advance Paid</div>')===-1);
+check("advance totals still computed", j.totals.advanceTotal===2049);
+check("dark section shells on all pages", page.indexOf(".sec { background:rgba(10,15,40,.66)")>-1);
+check("dark topbar", page.indexOf(".topbar { background:rgba(8,12,32,.78)")>-1);
 
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);
