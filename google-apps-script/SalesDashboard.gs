@@ -1210,6 +1210,11 @@ function computeDashboard(allRows, target) {
     arAttachment: arAttachment,
   };
 
+  // Store-level repair gate gatekeeper: combined store repair ÷ store
+  // repair target (0..1). Judged once for the whole store.
+  var storeRepairGatePctNow = target.store.repair > 0
+    ? sStore.repair / Math.max(1, target.store.repair) : 0;
+
   // ---- salesperson revenue & incentive ----
   var salespeople = peopleKeys.map(function (key) {
     var t = target.salespeople[key] || { service: 0, accessory: 0, repair: 0, total: 0, grossProfit: 0 };
@@ -1236,15 +1241,31 @@ function computeDashboard(allRows, target) {
     var accInc = incentiveForPct_(target.serviceIncentive.accessory, pct_(ach.accessory, t.accessory));
     var earnedIncentive = svcInc + accInc;
 
-    // Repair earns nothing itself — it is a GATE. The person only actually
-    // receives the earned service+accessory incentive once repair revenue
-    // reaches CONFIG.REPAIR_INCENTIVE_GATE_PCT of the STORE repair target
-    // (fixed store target data, not the employee's 50% target).
-    var repairPct = pct_(ach.repair, storeRepairTarget);
+    // Repair earns nothing itself — it is a STORE-LEVEL GATE (owner's rule):
+    // once the STORE's combined repair revenue reaches
+    // CONFIG.REPAIR_INCENTIVE_GATE_PCT of the store repair target, EVERY
+    // salesperson becomes eligible and receives the incentive they earned.
+    // No per-person repair threshold is applied.
+    var storeRepairPct = storeRepairTarget > 0 ? storeRepairGatePctNow : 0;
     var gatePct = CONFIG.REPAIR_INCENTIVE_GATE_PCT;
     var gateNeeded = Math.round((gatePct / 100) * storeRepairTarget);
-    var repairGateMet = storeRepairTarget > 0 ? repairPct >= gatePct : false;
+    var repairGateMet = storeRepairTarget > 0 ? (storeRepairPct * 100) >= gatePct : false;
     var payableIncentive = repairGateMet ? earnedIncentive : 0;
+
+    // Balance still needed to step into the NEXT incentive slab for the two
+    // incentive-bearing types. Slab ranges live in target!A18:D25 as % of the
+    // personal target, so the money gap is (nextSlab.minPct × target) − won.
+    function nextSlab_(slabs, pctVal, tgt, achVal) {
+      if (!slabs || !slabs.length || tgt <= 0) return null;
+      var sorted = slabs.slice().sort(function (x, y) { return x.minPct - y.minPct; });
+      for (var i = 0; i < sorted.length; i++) {
+        if (pctVal < sorted[i].minPct) {
+          var need = Math.max(0, Math.ceil((sorted[i].minPct / 100) * tgt) - achVal);
+          return { label: sorted[i].label, pct: sorted[i].minPct, amount: sorted[i].value, need: need };
+        }
+      }
+      return null;
+    }
 
     function mk(tg, a, inc) {
       return { target: tg, achieved: a, pct: pct_(a, tg), balance: Math.max(0, tg - a), incentive: inc || 0 };
@@ -1261,6 +1282,9 @@ function computeDashboard(allRows, target) {
       service: mk(t.service, ach.service, svcInc),
       accessory: mk(t.accessory, ach.accessory, accInc),
       repair: mk(storeRepairTarget, ach.repair, 0),
+      // Balance to the NEXT slab (target!A18:D25) so they can chase more incentive.
+      nextSvcSlab: nextSlab_(target.serviceIncentive.service, pct_(ach.service, t.service), t.service, ach.service),
+      nextAccSlab: nextSlab_(target.serviceIncentive.accessory, pct_(ach.accessory, t.accessory), t.accessory, ach.accessory),
       grossProfit: mk(t.grossProfit, achGrossProfit, 0),
       // Per-day target for this engineer = the BALANCE still needed for that
       // revenue type ÷ the number of working days REMAINING in the month.
@@ -1275,9 +1299,9 @@ function computeDashboard(allRows, target) {
       // incentive gate details, surfaced in the UI
       repairGate: {
         requiredPct: gatePct,
-        achievedPct: repairPct,
+        achievedPct: storeRepairPct * 100,
         requiredValue: gateNeeded,
-        shortfall: Math.max(0, gateNeeded - ach.repair),
+        shortfall: Math.max(0, gateNeeded - sStore.repair),
         met: repairGateMet,
       },
       earnedIncentive: earnedIncentive,
@@ -2081,21 +2105,31 @@ function renderRepairAnalyticsInner_(ra) {
     return o.join("");
   }
 
-  out.push(bucketSection("📈", "Repair Type Performance", "Repair Type", ra.typeComp,
-    "Cases logged in " + ra.curLabel + " vs the monthly average of the previous 3 months (" + ra.prev3Labels + ")."));
+  var typeSec = bucketSection("📈", "Repair Type Performance", "Repair Type", ra.typeComp,
+    "Cases logged in " + ra.curLabel + " vs the monthly average of the previous 3 months (" + ra.prev3Labels + ").");
 
   // ---- single Repair Validation matrix: products (rows) × coverage (columns) ----
+  var vmSec = "";
   var vm = ra.validationMatrix;
   if (vm && vm.grand > 0) {
-    out.push('<div class="section">' +
+    var vmParts = ['<div class="section">' +
       '<h2 class="section-title">🔁 Repair Validation — Products × Coverage · <em>' + esc_(ra.curLabel) + "</em></h2>" +
-      '<div class="section-sub">Definition: one table combining every repair logged in ' + esc_(ra.curLabel) +
-      ' — each row is a <b>product family</b> (<span class="src-hint">service!productDescription</span>), each column is a <b>coverage code</b> ' +
-      '(<span class="src-hint">service!CoverageCodeDescription</span>); a cell holds the number of repairs with that combination. ' +
-      'Every iPhone variant (incl. exports like "VIN") rolls up under iPhone; iPad / AirPods / Watch / Mac families likewise. ' +
-      '"Service Non-Repair" is excluded. Trailing column/row shows the monthly average of the previous 3 months.</div>' +
       '<div class="scroll-x"><table class="vmatrix"><thead><tr>' +
-      '<th class="sticky-col">Product \\ Coverage</th>');
+      '<th class="sticky-col">Product \\ Coverage</th>'];
+    vm.coverages.forEach(function (cov) {
+      vmParts.push("<th>" + esc_(cov) + "</th>");
+    });
+    vmParts.push('<th class="vmtotal">Total</th><th class="vmtotal">Prev 3M Avg</th></tr></thead><tbody>');
+    vm.products.forEach(function (pf) {
+      var tr = '<tr><td class="sticky-col"><b>' + esc_(pf) + "</b></td>";
+      vm.coverages.forEach(function (cov) {
+        var n = (vm.cells[pf] && vm.cells[pf][cov]) || 0;
+        tr += n ? '<td class="num"><b>' + n + "</b></td>" : '<td class="num muted">—</td>';
+      });
+      tr += '<td class="num vmtotal">' + (vm.prodTotals[pf] || 0) + "</td>" +
+            '<td class="num vmtotal vmavg">' + vm.prodAvg(pf) + "</td></tr>";
+      vmParts.push(tr);
+    });
     vm.coverages.forEach(function (cov) {
       out.push("<th>" + esc_(cov) + "</th>");
     });
@@ -2122,8 +2156,14 @@ function renderRepairAnalyticsInner_(ra) {
     foot += '<td class="num vmtotal vmavg">' +
       Math.round(vm.coverages.reduce(function (a, cov) { return a + vm.covAvg(cov); }, 0)) + "</td>" +
       '<td class="num vmtotal"></td></tr>';
-    out.push(foot + "</tbody></table></div></div>");
+    vmParts.push(foot + "</tbody></table></div></div>");
+    vmSec = vmParts.join("");
   }
+
+  // Owner layout: the type-performance section and the validation matrix
+  // sit side by side, sharing the width perfectly instead of stacking.
+  if (typeSec && vmSec) out.push('<div class="duo-pair">' + typeSec + vmSec + "</div>");
+  else { out.push(typeSec); out.push(vmSec); }
 
   // The "Repair Types — Till Date" composition table was retired on the
   // owner's request; the Repair Type Performance block above already carries
@@ -2541,11 +2581,24 @@ function refreshDashboardSections() {
  * ========================================================================= */
 
 /* ---------------------------------------------------------------------------
- * Small inline-SVG donut used under each index group title — one pie per
- * group, combining that group's sub-title values into a single chart.
+ * Small horizontal bar chart used under each index group title — one bar row
+ * per sub-title value, combining the group's numbers into a skimmable graph.
  * segments: [[label, value, color], ...]
  * ------------------------------------------------------------------------- */
 var PIE_PALETTE = ["#3f5ce0","#63e6b7","#ffd477","#ff9da7","#8fc7ff","#dfb2ff"];
+function barBlockHtml_(title, segments) {
+  var max = 1;
+  (segments || []).forEach(function (sg) { if (sg[1] > max) max = sg[1]; });
+  var rows = (segments || []).map(function (sg) {
+    var w = Math.max(2, Math.round((sg[1] / max) * 100));
+    return '<div class="gbar-row"><span class="gbar-lbl">' + esc_(sg[0]) + "</span>" +
+      '<span class="gbar-track"><i class="gbar-fill" style="width:' + w + "%;background:" + sg[2] + '"></i></span>' +
+      '<b class="gbar-val">' + esc_(String(sg[1])) + "</b></div>";
+  }).join("");
+  if (!(segments || []).length) rows = '<div class="gpie-empty">no data yet</div>';
+  return '<div class="gpie-wrap"><div class="gpie-title">' + esc_(title) + "</div>" +
+    '<div class="gbar-group">' + rows + "</div></div>";
+}
 function pieSvgHtml_(segments, cx, cy, radius, thick) {
   cx = cx || 60; cy = cy || 60; radius = radius || 44; thick = thick || 16;
   var segs = (segments || []).filter(function (sg) { return sg[1] > 0; });
@@ -2575,20 +2628,11 @@ function pieSvgHtml_(segments, cx, cy, radius, thick) {
   return parts.join("");
 }
 
-function pieBlockHtml_(title, segments) {
-  var legend = (segments || []).map(function (sg) {
-    return '<div class="gpie-leg-item"><span class="gpie-dot" style="background:' + sg[2] + '"></span>' +
-      '<span class="gpie-leg-lbl">' + esc_(sg[0]) + '</span><b class="gpie-leg-val">' + esc_(String(sg[1])) + "</b></div>";
-  }).join("");
-  return '<div class="gpie-wrap"><div class="gpie-title">' + esc_(title) + "</div>" +
-    '<div class="gpie-body">' + pieSvgHtml_(segments) + '<div class="gpie-leg">' + legend + "</div></div></div>";
-}
-
 /* ============================================================================
  * INDEX LANDING PAGE — liquid-glass tiles laid out HORIZONTALLY by group,
- * each group's sub-title tiles stacked one below the other, and a donut pie
- * under every group title combining that group's sub-title numbers.
- * Hover: the glass brightens and a golden glitter shimmer plays over it.
+ * each group's sub-title tiles stacked one below the other, and a horizontal
+ * bar chart under every group title combining that group's sub-title numbers.
+ * Hover: the glass brightens and the golden glitter video plays over it.
  * ========================================================================= */
 
 function renderIndexHtml_(data, perfData) {
@@ -2610,6 +2654,8 @@ function renderIndexHtml_(data, perfData) {
       '<button type="button" class="glass-tile" data-page="' + esc_(page) +
       '" onclick="gotoPage(\'' + esc_(page) + "', this)\" aria-label=\"" + esc_(title) + "\">" +
       '<span class="tile-sparkle" aria-hidden="true"></span>' +
+      '<video class="tile-glitter-vid" autoplay muted loop playsinline preload="metadata" ' +
+        'src="https://www.shutterstock.com/shutterstock/videos/1063973464/preview/stock-footage-golden-particles-and-sparkles-gift-card-with-copy-space-for-text-golden-glitter-with-flickering.webm" aria-hidden="true"></video>' +
       '<span class="tile-icon">' + icon + "</span>" +
       '<span class="tile-title">' + esc_(title) + "</span>" +
       '<span class="tile-blurb">' + esc_(blurb) + "</span>" +
@@ -2629,7 +2675,7 @@ function renderIndexHtml_(data, perfData) {
   var C = PIE_PALETTE;
 
   // ---------- pies: one per group, combining its sub-title numbers ----------
-  var gpPie = pieBlockHtml_("Revenue won so far, by type", [
+  var gpPie = barBlockHtml_("Revenue won so far, by type", [
     ["Service", Math.round(s.service.achieved), C[0]],
     ["Accessory", Math.round(s.accessory.achieved), C[1]],
     ["Repair", Math.round(s.repair.achieved), C[2]],
@@ -2637,7 +2683,7 @@ function renderIndexHtml_(data, perfData) {
 
   var kpis = data.kpi;
   function kpiDone(rows) { var t = 0; rows.forEach(function (k) { t += k.achieved; }); return t; }
-  var kpiPie = pieBlockHtml_("KPIs hit so far, by category", [
+  var kpiPie = barBlockHtml_("KPIs hit so far, by category", [
     ["AR", kpiDone(kpis.ar), C[0]],
     ["RR", kpiDone(kpis.rr), C[1]],
     ["SR", kpiDone(kpis.sr), C[2]],
@@ -2645,7 +2691,7 @@ function renderIndexHtml_(data, perfData) {
 
   var wlT = walkT || { walkins: 0, unique: 0, cases: 0, invoices: 0, deadLeads: 0 };
   var wlLive = Math.max(0, wlT.walkins - wlT.cases - wlT.deadLeads);
-  var walkinPie = pieBlockHtml_("This month's walk-ins, split", [
+  var walkinPie = barBlockHtml_("This month's walk-ins, split", [
     ["Cases", wlT.cases, C[0]],
     ["Invoices", wlT.invoices, C[1]],
     ["Live leads", wlLive, C[4]],
@@ -2654,7 +2700,7 @@ function renderIndexHtml_(data, perfData) {
 
   var csatNeutral = 0;
   if (csatT) csatNeutral = Math.max(0, csatT.totalRow.total - csatT.satTotal - csatT.disTotal);
-  var opPie = pieBlockHtml_("Feedback balance", [
+  var opPie = barBlockHtml_("Feedback balance", [
     ["Satisfied", csatT ? csatT.satTotal : 0, C[1]],
     ["Neutral", csatT ? csatNeutral : 0, C[4]],
     ["Dissatisfied", csatT ? csatT.disTotal : 0, C[3]],
@@ -2663,14 +2709,14 @@ function renderIndexHtml_(data, perfData) {
   var jobsList = (perfData && perfData.jobs && perfData.jobs.jobs) || [];
   var commOk = 0, commNo = 0;
   jobsList.forEach(function (jb) { if (jb.communicated) commOk++; else commNo++; });
-  var jobsPie = pieBlockHtml_("Open jobs, communication cover", [
+  var jobsPie = barBlockHtml_("Open jobs, communication cover", [
     ["Communicated", commOk, C[1]],
     ["Not communicated", commNo, C[3]],
   ]);
 
   var days = data.days || [];
   var dated = days.filter(function (d) { return !d.undated; }).length;
-  var datePie = pieBlockHtml_("Month coverage", [
+  var datePie = barBlockHtml_("Month coverage", [
     ["Days with sales", dated, C[0]],
     ["Working days used", s.consumedWorkingDays, C[1]],
     ["Working days left", s.balanceWorkingDays, C[4]],
@@ -2762,9 +2808,9 @@ function renderIndexHtml_(data, perfData) {
     ]);
 
   return (
-    '<section class="index-hero"><h2>Store Performance Dashboard</h2>' +
-    '<p class="index-sub">Groups run <b>left → right</b>; each group&rsquo;s sub-tiles stack one below the other with a quick pie above them. ' +
-    "Hover a tile to see it glitter — click to jump into that page. Press <b>Refresh data</b> to re-read all sheets.</p></section>" +
+    '<video class="bgnd-video" autoplay muted loop playsinline preload="metadata" ' +
+      'src="https://www.shutterstock.com/shutterstock/videos/3677550523/preview/stock-footage-heart-shaped-golden-particles-fly-toward-the-camera-creating-a-blurred-bokeh-tunnel-perfect-for.webm"></video>' +
+    '<section class="index-hero"><h2>Store Performance Dashboard</h2></section>' +
     '<div class="tile-board">' +
     group("GP", "gp", gpTiles, gpPie) +
     group("KPI", "kpi", kpiTiles, kpiPie) +
@@ -2882,6 +2928,14 @@ function buildDashboardPage_(data) {
     "  for(var i=0;i<tabs.length;i++){tabs[i].classList.toggle('active', tabs[i].dataset.page===page);}" +
     "  showPane(page);" +
     "}" +
+    "function tickClock(){" +
+    "  var el=document.getElementById('liveClock'); if(!el) return;" +
+    "  var d=new Date(); function p(n){return (n<10?'0':'')+n;}" +
+    "  var h=d.getHours(), ap=h>=12?'PM':'AM'; h=h%12||12;" +
+    "  el.textContent=p(d.getDate())+'-'+p(d.getMonth()+1)+'-'+d.getFullYear()+' '+" +
+    "    p(h)+':'+p(d.getMinutes())+':'+p(d.getSeconds())+' '+ap;" +
+    "}" +
+    "tickClock(); setInterval(tickClock,1000);" +
     "function dashRefresh(btn){" +
     "  if(btn.disabled) return;" +
     "  btn.classList.add('loading'); btn.disabled=true;" +
@@ -2939,15 +2993,19 @@ function buildDashboardPage_(data) {
     '<div class="meta" id="meta">' + esc_(bizMeta) + "</div>" +
     '<div class="note" id="note"></div>' +
     "</div>" +
+    // ---- live clock, top-middle: owner-supplied gif as the card background ----
+    '<div class="topbar-clock" role="timer">' +
+    '<img class="clock-gif" aria-hidden="true" alt="" ' +
+    'src="https://cdn.pixabay.com/animation/2023/05/20/21/52/21-52-42-295_512.gif">' +
+    '<span class="clock-dim" aria-hidden="true"></span>' +
+    '<span class="clock-text" id="liveClock">—</span>' +
+    "</div>" +
     '<button class="refresh-btn" onclick="dashRefresh(this)">' +
     '<span class="spin"></span><span class="txt">↻ Refresh data</span></button>' +
     // ---- tabs: Index / GP / KPI / Walk-in / Operation / Open Jobs / Date ----
     '<div class="tabs-row"><div class="tabs tabs-wide" role="tablist">' + tabs + "</div></div>" +
     "</div></header>" +
     mains +
-    '<footer class="foot">Six pages, one data run: Salesperson roster = target!C1:J1 · C-SAT block = target!K1 / L1:U5 · KPI grid = target!B14:L16 · ' +
-    "Walk-in reads the walkin sheet · Open Jobs reads service / advance / comm · Operation reads service!RepairDocType / productDescription / CoverageCodeDescription / CaseDate / Ready_For_Pickup_Date_CRM. " +
-    "Repair % is measured against the store repair target for everyone. Press “Refresh data” to pull the latest values.</footer>" +
     clientScript +
     "</body></html>"
   );
@@ -3224,7 +3282,13 @@ function renderJobManagement_(jm) {
   }
 
   var table =
-    '<div class="scroll-x"><table class="ptable jobtable">' +
+    '<div class="scroll-x jobwrap"><table class="ptable jobtable">' +
+    '<colgroup>' +
+    '<col style="width:10.5%"><col style="width:5.5%"><col style="width:12%">' +
+    '<col style="width:11%"><col style="width:11%"><col style="width:9.5%">' +
+    '<col style="width:14%"><col style="width:11%"><col style="width:7.5%">' +
+    '<col style="width:8%">' +
+    '</colgroup>' +
     '<thead><tr>' +
     "<th>Repair Bucket</th><th>Aging</th><th>GSX Repair Status</th>" +
     "<th>Case ID</th><th>Name</th><th>Number</th><th>Model</th>" +
@@ -3252,16 +3316,6 @@ function renderJobsSection_(pd) {
   return (
     '<section class="sec"><div class="sec-head">' +
     '<h2>🔧 Job Management — Open Jobs</h2>' +
-    '<p class="sec-sub">source: ' + esc_(jm.sheetName) + '. One row per <b>unique CaseId</b> (repeated rows are merged, latest case date wins' +
-    (jm.totals.duplicatesMerged ? ' — ' + jm.totals.duplicatesMerged + " duplicate row(s) merged" : "") +
-    '). Rows are <b>segregated &amp; highlighted by repair bucket</b> (CRM repair status) and laid out in the owner&rsquo;s column order: ' +
-    "<b>Repair bucket · Aging · GSX repair status · Case ID · Name · Number · Model · Repair type · Communicated · Comm. updated</b>. " +
-    'Only cases whose <b>JobStatus is “open”</b> are listed. Repair bucket comes from <b>CRM repair status</b>, Model from <b>productDescription</b>, ' +
-    'Repair Type from <b>RepairDocType</b>. Service Non-Repair cases that are ready for pickup show GSX as <b>Completed</b>. ' +
-    "Highlights: no repair date + case &gt; 2 days (rose), <b>Out Of Warranty (No Coverage)</b> with no advance (violet), Unclaimed Device (amber). " +
-    "Advance is matched on the customer mobile with the advance sheet. Communicated = Yes when a comm record matches the case id — the latest update shows " +
-    '<span style="color:#6dffc7;font-weight:700">green</span> when within ' + CONFIG.COMM_STALE_DAYS + ' days of today, ' +
-    '<span style="color:#ff9da7;font-weight:700">red</span> when older or “Not updated”.</p>' +
     "</div>" + renderJobManagement_(jm) + "</section>"
   );
 }
@@ -3446,7 +3500,8 @@ function getDashboardCss_() {
     ".rs-value { font-size:20px; font-weight:800; color:#17263a; }" +
     ".csat-flex { display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap; }" +
     ".csat-flex .csat-left { flex:0 0 auto; max-width:100%; }" +
-    ".csat-flex .csat-right { flex:1 1 300px; min-width:260px; max-width:420px; display:flex; flex-direction:column; gap:10px; }" +
+    ".csat-flex table.csat-table { width:auto; min-width:0; }" +
+    ".csat-flex .csat-right { flex:0 0 230px; width:230px; min-width:230px; max-width:230px; display:flex; flex-direction:column; gap:10px; }" +
     ".csat-right .csat-chip { flex:0 0 auto; width:100%; }" +
     ".csat-chips { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:12px; }" +
     ".csat-chip { flex:1 1 150px; background:#fff; border:1px solid #d5dde6; border-radius:10px;" +
@@ -3555,11 +3610,13 @@ function getDashboardCss_() {
     "table.matrix thead .sticky-col { z-index:4; background:#3350c2; }" +
     "table.matrix td .tgt { display:block; font-size:.66rem; font-weight:600; color:#94a2d2; margin-top:2px; }" +
     // subtle tinted column groups, one per salesperson
-    "th.grp-0, td.cell-0 { background:rgba(143,199,255,.055); } th.grp-0 { background:rgba(143,199,255,.12); }" +
-    "th.grp-1, td.cell-1 { background:rgba(251,191,36,.055); } th.grp-1 { background:rgba(251,191,36,.12); }" +
-    "th.grp-2, td.cell-2 { background:rgba(99,230,183,.055); } th.grp-2 { background:rgba(99,230,183,.12); }" +
-    "th.grp-3, td.cell-3 { background:rgba(223,178,255,.055); } th.grp-3 { background:rgba(223,178,255,.12); }" +
-    "th.grp-4, td.cell-4 { background:rgba(255,157,167,.055); } th.grp-4 { background:rgba(255,157,167,.12); }" +
+    // Person bands are STRONGLY distinct solids (owner asked for an instant
+    // "whose column is this" read on the date-wise matrix).
+    "td.cell-0 { background:rgba(52,84,196,.09); } th.grp-0 { background:linear-gradient(180deg,#3353c0,#2a43a0); }" +
+    "td.cell-1 { background:rgba(196,138,22,.11); } th.grp-1 { background:linear-gradient(180deg,#b8860b,#9c7309); }" +
+    "td.cell-2 { background:rgba(15,157,143,.09); } th.grp-2 { background:linear-gradient(180deg,#0f9d8f,#0c8377); }" +
+    "td.cell-3 { background:rgba(122,63,212,.10); } th.grp-3 { background:linear-gradient(180deg,#7a3fd4,#6134ad); }" +
+    "td.cell-4 { background:rgba(192,74,104,.10); } th.grp-4 { background:linear-gradient(180deg,#c04a68,#a03c55); }" +
     "table.matrix tr.holiday .sticky-col { background:rgba(255,212,119,.16) !important; }" +
     "table.matrix tr.total-row td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; border-top:1px solid rgba(142,170,255,.6); }" +
     // ---- AR attachment sub-panel inside section 6 (light panel like old summary items) ----
@@ -3729,9 +3786,9 @@ function getDashboardCss_() {
     ".glass-tile:hover .tile-sparkle, .glass-tile:focus-visible .tile-sparkle { opacity:1;" +
     " animation:tileTwinkle 1.1s ease-in-out infinite alternate; }" +
     "@keyframes tileTwinkle { 0% { opacity:.35; } 100% { opacity:1; } }" +
-    ".tile-icon { font-size:1.45rem; line-height:1; position:relative; }" +
-    ".tile-title { font-size:.94rem; font-weight:850; color:#1d2f63; letter-spacing:-.005em; position:relative; }" +
-    ".tile-blurb { font-size:.7rem; color:#4d5d8a; line-height:1.4; position:relative; }" +
+    ".tile-icon { font-size:2.5rem; line-height:1.1; position:relative; z-index:1; }" +
+    ".tile-title { font-size:1rem; font-weight:850; color:#1d2f63; letter-spacing:-.005em; position:relative; z-index:1; }" +
+    ".tile-blurb { font-size:.76rem; color:#45558a; line-height:1.45; position:relative; z-index:1; }" +
     // hidden numbers that fade in when the tile brightens on hover
     ".tile-data { margin-top:2px; opacity:0; max-height:0; overflow:hidden; position:relative;" +
     " transition:opacity .18s ease, max-height .22s ease; }" +
@@ -3765,6 +3822,79 @@ function getDashboardCss_() {
     " border:1px solid rgba(150,170,255,.4); border-radius:999px; padding:4px 12px; font-size:.68rem; }" +
     ".fresh-chip i { font-style:normal; color:#5a6a99; font-weight:700; }" +
     ".fresh-chip b { color:#1d2f63; font-weight:800; }" +
+    // ============ TASK 21 — dark liquid-glass index + glass material ============
+    // Bokeh-hearts video is the always-on background layer of the index pane.
+    "#pageIndex { position:relative; background:radial-gradient(1200px 420px at 50% -80px,#1a2350 0%,#0a0f2c 60%,#06091c 100%);" +
+    " border-radius:22px; overflow:hidden; }" +
+    "#pageIndex > *:not(.bgnd-video) { position:relative; z-index:1; }" +
+    ".bgnd-video { position:absolute; z-index:0; inset:0; width:100%; height:100%; object-fit:cover;" +
+    " opacity:.8; pointer-events:none; }" +
+    "#pageIndex .index-hero h2 { color:#f5f8ff; text-shadow:0 2px 10px rgba(3,6,24,.7); }" +
+    "#pageIndex .tile-board { background:rgba(9,13,34,.55); border:1px solid rgba(255,255,255,.14);" +
+    " backdrop-filter:blur(10px) saturate(1.2); -webkit-backdrop-filter:blur(10px) saturate(1.2);" +
+    " box-shadow:0 16px 40px rgba(2,5,24,.55), inset 0 1px 0 rgba(255,255,255,.14); }" +
+    "#pageIndex .tile-group-head, #pageIndex .tile-group-link { color:#e6ecff; }" +
+    "#pageIndex .tile-group-link:hover { color:#ffd477; }" +
+    // golden-glitter video layer: invisible until the tile is hovered
+    ".tile-glitter-vid { position:absolute; z-index:0; inset:0; width:100%; height:100%; object-fit:cover;" +
+    " border-radius:inherit; opacity:0; transition:opacity .2s ease; pointer-events:none; }" +
+    ".glass-tile:hover .tile-glitter-vid, .glass-tile:focus-visible .tile-glitter-vid { opacity:.62; }" +
+    ".glass-tile .tile-data, .glass-tile .tile-go { z-index:1; }" +
+    // index-side group charts & freshness strip on the dark backdrop
+    "#pageIndex .gpie-wrap { background:rgba(255,255,255,.72); }" +
+    "#pageIndex .fresh-line { background:rgba(12,17,44,.62); border-color:rgba(255,255,255,.18);" +
+    " backdrop-filter:blur(10px); }" +
+    "#pageIndex .fresh-line-head { color:#aebcff; }" +
+    "#pageIndex .fresh-chip { background:rgba(255,255,255,.10); border-color:rgba(255,255,255,.22); }" +
+    "#pageIndex .fresh-chip i { color:#aebcff; } #pageIndex .fresh-chip b { color:#ffffff; }" +
+    // ---- horizontal bar chart under each group title ----
+    ".gbar-group { display:flex; flex-direction:column; gap:5px; }" +
+    ".gbar-row { display:flex; align-items:center; gap:7px; }" +
+    ".gbar-lbl { width:74px; flex-shrink:0; font-size:.6rem; font-weight:800; color:#44548c; letter-spacing:.02em;" +
+    " white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }" +
+    ".gbar-track { flex:1; height:8px; border-radius:999px; background:rgba(90,110,190,.18); overflow:hidden;" +
+    " box-shadow:inset 0 1px 2px rgba(20,30,80,.3); }" +
+    ".gbar-fill { display:block; height:100%; border-radius:inherit;" +
+    " box-shadow:0 0 8px rgba(80,120,255,.45), inset 0 -1px 2px rgba(0,0,0,.25), inset 0 1px 1px rgba(255,255,255,.5); }" +
+    ".gbar-val { width:30px; flex-shrink:0; text-align:right; font-size:.64rem; font-weight:850; color:#1d2f63; }" +
+    // ---- liquid-glass material for every table & tile (owner's dribbble ref) ----
+    "table { background:rgba(21,27,68,.84); border:1px solid rgba(170,190,255,.32);" +
+    " backdrop-filter:blur(12px) saturate(1.2); -webkit-backdrop-filter:blur(12px) saturate(1.2);" +
+    " box-shadow:0 12px 30px rgba(8,12,48,.45), inset 0 1px 0 rgba(255,255,255,.10), 0 2px 10px rgba(76,111,255,.14); }" +
+    "td { background:rgba(29,35,84,.78); }" +
+    "tbody tr:hover td { background:rgba(38,46,104,.85); }" +
+    ".card, .person-card, .tile {" +
+    " backdrop-filter:blur(12px) saturate(1.2); -webkit-backdrop-filter:blur(12px) saturate(1.2);" +
+    " box-shadow:0 12px 28px rgba(8,14,44,.32), inset 0 1px 0 rgba(255,255,255,.14); }" +
+    ".card { border:1px solid rgba(170,190,255,.28); }" +
+    ".person-card { border:1px solid rgba(170,190,255,.30); }" +
+    ".csat-chip { backdrop-filter:blur(10px); }" +
+    // ---- AMC & Bundle tables: side by side, splitting the width ----
+    ".inc-pair { display:flex; gap:14px; align-items:stretch; flex-wrap:wrap; }" +
+    ".inc-pair .inc-cat { flex:1 1 46%; min-width:340px; margin-bottom:0; }" +
+    ".inc-pair table { width:100%; }" +
+    // ---- repair type performance + validation matrix: side by side ----
+    ".duo-pair { display:flex; gap:16px; align-items:stretch; flex-wrap:wrap; }" +
+    ".duo-pair > .section { flex:1 1 47%; min-width:460px; margin-bottom:0; border:1px solid #d5dde6;" +
+    " border-radius:9px; background:#ffffff; padding:10px 12px 14px; }" +
+    // ---- job table: fixed layout compressed to the page width ----
+    ".jobwrap { overflow-x:auto; }" +
+        ".jobtable { table-layout:fixed; width:100%; min-width:0; }" +
+    ".jobtable th, .jobtable td { font-size:.72rem; padding:6px 7px; white-space:nowrap;" +
+    " overflow:hidden; text-overflow:ellipsis; font-weight:500; }" +
+    ".jobtable th { font-weight:800; }" +
+
+    // ---- next-slab chase line on the salesperson cards ----
+    ".next-slab { color:#8fc7ff; font-weight:700; }" +
+    // ---- live clock card, top-middle of the page ----
+    ".topbar-clock { position:relative; overflow:hidden; border-radius:14px; min-width:235px; padding:10px 20px;" +
+    " display:flex; align-items:center; justify-content:center; border:1px solid rgba(140,160,230,.5);" +
+    " box-shadow:0 8px 22px rgba(6,10,34,.4), inset 0 1px 0 rgba(255,255,255,.25); isolation:isolate; }" +
+    ".clock-gif { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; z-index:-2; }" +
+    ".clock-dim { position:absolute; inset:0; z-index:-1; background:rgba(6,10,30,.52); }" +
+    ".clock-text { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:.96rem; font-weight:800;" +
+    " letter-spacing:.02em; color:#ffffff; text-shadow:0 2px 6px rgba(0,0,0,.75); white-space:nowrap;" +
+    " font-variant-numeric:tabular-nums; }" +
     "@media (max-width:640px){ .brand{font-size:1.1rem;} .card .value{font-size:1rem;} }"
   );
 }
@@ -3861,17 +3991,26 @@ function renderWorkingDaysCard_(data) {
 
 function renderSalespersonCards_(data) {
   // Incentive-bearing revenue types show target vs achieved, the balance
-  // still needed in (brackets), and the incentive that type has earned.
-  function incentiveLine_(label, b) {
+  // still needed in (brackets), the incentive that type has earned, and —
+  // from the slab table at target!A18:D25 — the extra revenue that jumps
+  // this person into the NEXT (more rewarding) slab.
+  function incentiveLine_(label, b, nextSlab) {
     var balTxt = b.balance > 0
       ? ' <span class="muted">(' + money_(b.balance) + " to go)</span>"
       : ' <span class="pos">(target met)</span>';
+    var slabLine = nextSlab
+      ? '<div class="incentive-line"><span class="muted">Next slab (' + esc_(nextSlab.pct) + '% &rarr; ' +
+        esc_(nextSlab.label) + ')</span><span class="next-slab">' + money_(nextSlab.need) +
+        ' more &rarr; earns ' + money_(nextSlab.amount) + "</span></div>"
+      : '<div class="incentive-line"><span class="muted">Next slab</span>' +
+        '<span class="pos">🏆 top slab reached</span></div>';
     return (
       '<div class="row-line"><span><b>' + esc_(label) + "</b></span>" +
       "<span>" + money_(b.achieved) + ' <span class="muted">/ ' + money_(b.target) + "</span> " +
       pctBadgeHtml_(b.pct) + "</span></div>" +
       barHtml_(b.pct) +
       '<div class="incentive-line"><span class="muted">Balance to target' + "</span><span>" + balTxt + "</span></div>" +
+      slabLine +
       '<div class="incentive-line"><span class="muted">Incentive earned</span><span class="' +
       (b.incentive > 0 ? "pos" : "muted") + '">' + money_(b.incentive) + "</span></div>"
     );
@@ -3879,36 +4018,28 @@ function renderSalespersonCards_(data) {
 
   if (!data.salespeople.length) {
     return '<section class="section" id="sec-person"><h2>👤 Sales Person Performance</h2><div class="body">' +
-      '<div class="sec-desc">Definition: per-person target vs achieved, targets from the target!C1:J1 roster.</div>' +
       '<div class="empty-state">No salespersons on the roster — add names to <b>target!C1:J1</b> (empty cells are skipped). ' +
       "People named in the CRM but not on the roster count only toward the store totals.</div></div></section>";
   }
   var cards = data.salespeople.map(function (p) {
     var gate = p.repairGate;
 
-    // Repair: the number YOU personally won, shown plainly. The store repair
-    // target is used ONLY inside the 80% incentive-unlock gate below — it is
-    // never divide-compared against this person's own achievement on display.
-    var storeRep = data.store.repair;
+    // Repair: the number YOU personally won, shown plainly. No store-target
+    // detail is printed on the card (owner's call) — the 80%-of-store-repair
+    // eligibility is reported by the shared gate banner beneath the grid.
     var repairBlock =
       '<div class="row-line" style="margin-top:12px"><span><b>Repair</b> ' +
-      '<span class="muted">(no incentive — unlock gate)</span></span>' +
-      '<span><b class="rr-val">' + money_(p.repair.achieved) + "</b> " +
-      '<span class="muted">won by you</span></span></div>' +
-      '<div class="row-line" style="margin-top:4px"><span class="muted">Store Repair Target (shared)</span>' +
-      '<span class="muted"><b>' + money_(storeRep.target) + '</b> · store won <b>' +
-      money_(storeRep.achieved) + '</b> (' + storeRep.pct.toFixed(1) + '%)</span></div>' +
-      '<div class="row-line" style="margin-top:2px"><span class="muted">Store Total Revenue Target</span>' +
-      '<span class="muted"><b>' + money_(data.store.total.target) + "</b></span></div>";
+      '<span class="muted">(no incentive — store unlock gate)</span></span>' +
+      '<span><b class="rr-val">' + money_(p.repair.achieved) + '</b> ' +
+      '<span class="muted">won by you</span></span></div>';
 
     var gateBlock = gate.met
-      ? '<div class="gate met">✅ <b>Incentive unlocked.</b> Repair revenue is at ' +
-        gate.achievedPct.toFixed(1) + "% of target (needs " + gate.requiredPct + "%). " +
-        "Payable incentive: <b>" + money_(p.payableIncentive) + "</b>.</div>"
-      : '<div class="gate blocked">🔒 <b>Incentive locked.</b> Repair revenue is at ' +
-        gate.achievedPct.toFixed(1) + "% of target — must reach " + gate.requiredPct + "% (" +
-        money_(gate.requiredValue) + "). Still needed: <b>" + money_(gate.shortfall) + "</b>.<br>" +
-        "Earned but withheld: " + money_(p.earnedIncentive) + ".</div>";
+      ? '<div class="gate met">✅ <b>Incentive unlocked for everyone</b> — the store crossed ' +
+        gate.requiredPct + '% of its repair target (store at ' + gate.achievedPct.toFixed(1) + '%). ' +
+        'You receive what you earned: <b>' + money_(p.payableIncentive) + '</b>.</div>'
+      : '<div class="gate blocked">🔒 <b>Incentive on hold for everyone</b> — the store has reached ' +
+        gate.achievedPct.toFixed(1) + '% of its repair target; eligibility opens at ' + gate.requiredPct +
+        '%. Your earned amount so far: <b>' + money_(p.earnedIncentive) + '</b>.</div>';
 
     return (
       '<div class="person-card"><h3>' + esc_(p.name) + "</h3>" +
@@ -3919,9 +4050,9 @@ function renderSalespersonCards_(data) {
       '<div class="row-line"><span><b>Payable Incentive</b></span><span class="' +
       (p.payableIncentive > 0 ? "pos" : "neg") + '"><b>' + money_(p.payableIncentive) + "</b></span></div>" +
       '<hr style="border:none;border-top:1px solid #e6ebf3;margin:10px 0">' +
-      incentiveLine_("Service", p.service) +
+      incentiveLine_("Service", p.service, p.nextSvcSlab) +
       '<div style="height:10px"></div>' +
-      incentiveLine_("Accessory", p.accessory) +
+      incentiveLine_("Accessory", p.accessory, p.nextAccSlab) +
       repairBlock +
       gateBlock +
       "</div>"
@@ -3930,13 +4061,11 @@ function renderSalespersonCards_(data) {
 
   return (
     '<section class="section" id="sec-person"><h2>👤 Sales Person Performance</h2><div class="body">' +
-    '<div class="sec-desc">Definition: per-person target vs achieved. Service and Accessory use each person&rsquo;s own targets from the <b>target!C1:J1</b> roster (empty cells are skipped); the Repair row shows the value <b>won by that salesperson, unblocked</b>. The fixed STORE repair target is used <b>only inside the incentive calculation</b> — the gate releases the service+accessory incentive once repair revenue reaches <b>' + CONFIG.REPAIR_INCENTIVE_GATE_PCT + '%</b> of the store repair target. Daily requirement = remaining balance ÷ working days left.</div>' +
     '<div class="person-grid">' + cards + "</div>" +
     '<p class="muted" style="font-size:12.5px;margin:14px 0 0">' +
-    "Only <b>Service</b> and <b>Accessory</b> revenue earn incentive. <b>Repair</b> revenue pays nothing on its own — " +
-    "it acts as a gate: it pays nothing itself, but once repair revenue reaches <b>" +
-    CONFIG.REPAIR_INCENTIVE_GATE_PCT + "%</b> of the <b>store</b> repair target the service+accessory incentive is released. " +
-    "The card shows your own repair amount — the store target is used only for this incentive calculation.</p>" +
+    "Only <b>Service</b> and <b>Accessory</b> revenue earn incentive; each also shows the balance that jumps you to the next slab (slab levels from <b>target!A18:D25</b>). " +
+    "<b>Repair</b> revenue pays nothing on its own — it is one shared store gate: once the store&rsquo;s combined repair achievement passes <b>" +
+    CONFIG.REPAIR_INCENTIVE_GATE_PCT + "%</b> of the store repair target, <b>every salesperson is eligible to receive the incentive they earned</b>.</p>" +
     "</div></section>"
   );
 }
@@ -3973,14 +4102,14 @@ function renderIncentiveTable_(data) {
 
   return (
     '<section class="section" id="sec-incentive"><h2>💰 Sales Person Incentive — AMC &amp; Bundle</h2><div class="body">' +
-    '<div class="sec-desc">Definition: slab-wise incentive money, split by category — each AMC sale and each accessory-slab crossing pays a rate from the target sheet; bundle (DISC scheme) sales pay per-bundle slab amounts.</div>' +
+    '<div class="inc-pair">' +
     '<div class="inc-cat"><div class="inc-cat-title">Category 1 · AMC</div>' +
     '<div class="scroll-x"><table><thead><tr><th>Salesperson</th><th>AMC Count</th><th>AMC Eligible</th>' +
     "<th>Acc-AMC Count</th><th>Acc-AMC Eligible</th><th>AMC To Next</th><th>AMC Incentive</th></tr></thead><tbody>" +
     amcRows + amcFoot + "</tbody></table></div></div>" +
     '<div class="inc-cat"><div class="inc-cat-title">Category 2 · Bundle (DISC scheme)</div>' +
     '<div class="scroll-x"><table><thead><tr><th>Salesperson</th><th>Bundle Count</th><th>Bundle Incentive</th></tr></thead><tbody>' +
-    bunRows + bunFoot + "</tbody></table></div></div>" +
+    bunRows + bunFoot + "</tbody></table></div></div></div>" +
     "</div></section>"
   );
 }
@@ -4017,11 +4146,10 @@ function renderKpiSection_(data) {
 
   return (
     '<section class="section" id="sec-kpi"><h2>📊 KPI Target — Store KPI Parameters</h2><div class="body">' +
-    '<div class="sec-desc">Definition: store-level KPI scorecard — KPI names from <b>target!B14:L14</b>, target counts from <b>target!B15:L15</b>; each KPI type AR (attachment) / RR (repair) / SR (service) shows achieved count, %, balance, and the money still winnable (balance × approx unit value).</div>' +
     '<div class="scroll-x">' +
     "<table><thead><tr><th>KPI</th><th>Type</th><th>Target</th><th>Achieved</th><th>Achieved %</th>" +
     "<th>Balance</th><th>Approx Achievable Value</th><th>Achieved Value</th><th>Achieved GP</th></tr></thead><tbody>" + rows +
-    "</tbody></table>" +
+    "</tbody></table></div>" +
     '<p class="muted" style="font-size:12.5px;margin:12px 0 0">Targets read from <b>target!B12:L14</b>. ' +
     "<b>Approx Achievable Value</b> = the balance count still needed × that KPI’s approximate unit value in <b>target!B15:L15</b> — the amount still winnable to close the balance target.</p>" +
     "</div></section>"
@@ -4041,7 +4169,7 @@ function renderInvoiceValuation_(data) {
     '<div class="sec-desc">Definition: what invoices are really worth — line count, unique invoice count, revenue and gross profit per revenue type, plus AR (accessory attachment) rate next to invoices that qualified for one.</div>' +
     '<div class="scroll-x">' +
     "<table class=\"hdr-deep\"><thead><tr><th>Revenue Type</th><th>Invoice Lines</th><th>Unique Invoices</th><th>Revenue</th>" +
-    "<th>Gross Profit</th></tr></thead><tbody>" + rows + totalRow + "</tbody></table>" +
+    "<th>Gross Profit</th></tr></thead><tbody>" + rows + totalRow + "</tbody></table></div>" +
     '<div class="cards" style="margin-top:14px">' +
     '<div class="card"><div class="label">Bundle Unique Invoices</div><div class="value">' +
     data.invoiceValuation.bundleUniqueInvoices + "</div></div>" +
@@ -4243,11 +4371,6 @@ function renderWeeklyAnalysis_(data) {
     '<div class="sec-desc">Current month split into ' + wa.weeks.length + ' weeks — achieved vs weekly target, per revenue type</div>' +
     '<div class="scroll-x" style="margin-top:12px"><table class="matrix hdr-deep">' +
       "<thead>" + head1 + head2 + "</thead><tbody>" + body + foot + "</tbody></table></div>" +
-    '<p class="muted" style="font-size:12.5px;margin:12px 0 0">' +
-    "Weekly target plan: <b>week target = month target ÷ actual working days (" +
-    wa.totalWorkingDays + ") × that week's working days</b> — the target is first split evenly across the month's real working days, " +
-    "then rebuilt for each week. Achieved values come from <b>crm!TaxableAmount</b> (and <b>crm!GrossProfit</b>) for " + esc_(wa.monthName) +
-    " dates only. Pills turn <b>green</b> once a week clears its target.</p>" +
     "</div></section>"
   );
 }

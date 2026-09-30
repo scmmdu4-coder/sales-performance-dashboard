@@ -177,7 +177,7 @@ check("approx achieved ₹400",page.indexOf("₹400")>-1);
 check("approx achievable value ₹9,600",page.indexOf("<th>Approx Achievable Value</th>")>-1&&page.indexOf("₹9,600")>-1);
 check("review tile big = gain +19",page.indexOf('class="value pos">+19</div>')>-1);
 check("review caption small",page.indexOf("1494 this month")>-1&&page.indexOf("previous 1475")>-1);
-check("store target under repair line",page.indexOf("Store Total Revenue Target")>-1);
+check("no store-total text on person cards (owner removed it)",page.indexOf("Store Total Revenue Target")===-1);
 // Section 7 oval pills: mint/salmon fills with dark text, pill markup present
 check("oval pill green css",page.indexOf(".apill.ok { background:#63e6b7")>-1);
 check("oval pill red css",page.indexOf(".apill.no { background:#ff9da7")>-1);
@@ -254,8 +254,8 @@ check("vmatrix Other row exact",page.indexOf('<b>Other</b></td><td class="num"><
 check("vmatrix iPhone row exact",page.indexOf('<b>iPhone</b></td><td class="num"><b>1</b></td><td class="num muted">—</td><td class="num muted">—</td><td class="num vmtotal">1</td>')>-1);
 check("vmatrix grand total 5",page.indexOf('<td class="num vmtotal"><b>5</b></td>')>-1);
 check("vmatrix prev3m avg row",page.indexOf("Prev 3M Avg")>-1);
-check("vmatrix definition line",page.indexOf("Definition: one table combining every repair")>-1);
-check("snr excluded note",page.indexOf('"Service Non-Repair" is excluded')>-1);
+check("vmatrix definition removed (owner)",page.indexOf("Definition: one table combining every repair")===-1);
+check("snr excluded note",page.indexOf('"Service Non-Repair" cases are excluded')>-1);
 check("walkin two-tint rows only",page.indexOf("--tint:#")>-1&&page.indexOf("--tint:hsl(")===-1
   &&page.indexOf("background:hsl(")===-1);
 check("token table",page.indexOf("% of creation")>-1&&page.indexOf("Total tokens generated")>-1);
@@ -296,9 +296,9 @@ check("Subha repair target fixed to store", subha.repair.target===200000, subha.
 check("Dinesh repair target fixed to store", dinesh.repair.target===200000, dinesh.repair.target);
 check("repair gate on store target (80% of 200000)", subha.repairGate.requiredValue===160000,
   subha.repairGate.requiredValue);
-check("person card marks store repair", page.indexOf("store</b> repair target")>-1
-  ||page.indexOf("fixed STORE repair target")>-1);
-check("weekly formula stated", page.indexOf("week target = month target ÷ actual working days")>-1);
+check("person card marks store-eligibility rule", page.indexOf("eligible to receive the incentive they earned")>-1
+  ||page.indexOf("Incentive unlocked for everyone")>-1||page.indexOf("Incentive on hold for everyone")>-1);
+check("weekly formula paragraph removed (owner)", page.indexOf("week target = month target ÷ actual working days")===-1);
 check("walkin unique total 7", w.totals.unique===7, w.totals.unique);
 check("walkin day unique 5", w.days[0].unique===5, w.days[0].unique);
 check("walkin conversion headers gone", page.indexOf("Case conv.")===-1&&page.indexOf("Invoice conv.")===-1);
@@ -323,8 +323,8 @@ check("seven panes incl index", (page.match(/data-pane=/g)||[]).length===7,
 
 console.log("== TASK 20 polish ==");
 check("person repair shows own win", page.indexOf('class="rr-val"')>-1&&page.indexOf("won by you")>-1);
-check("store target scoped to gate", page.indexOf("used <b>only inside the incentive calculation</b>")>-1
-  &&subha.repairGate.requiredValue===160000);
+check("store gate is store-level (80% of 200000)", subha.repairGate.requiredValue===160000
+  &&page.indexOf("used <b>only inside the incentive calculation</b>")===-1);
 check("kpi pair layout", page.indexOf('class="kpi-pair"')>-1&&page.indexOf('class="kp-right"')>-1);
 check("incentive split categories", page.indexOf("Category 1 · AMC")>-1
   &&page.indexOf("Category 2 · Bundle (DISC scheme)")>-1);
@@ -333,11 +333,32 @@ check("deep header applied", (page.match(/hdr-deep/g)||[]).length>=3&&page.index
 check("csat flex", page.indexOf("csat-flex")>-1&&page.indexOf("csat-right")>-1);
 check("liquid glass css", page.indexOf("backdrop-filter:blur(14px)")>-1&&page.indexOf("tile-sparkle")>-1);
 check("glitter animation", page.indexOf("tileTwinkle")>-1);
-check("pie per group", (page.match(/svg class="gpie"/g)||[]).length>=6,
-  (page.match(/svg class="gpie"/g)||[]).length);
+check("bar graph per group", (page.match(/class="gbar-row"/g)||[]).length>=12,
+  (page.match(/class="gbar-row"/g)||[]).length);
 check("horizontal board", page.indexOf("tile-board")>-1&&page.indexOf("tile-col")>-1);
 check("freshness line", page.indexOf("Latest records per sheet")>-1&&page.indexOf("fresh-chip")>-1);
 check("tile counts", (page.match(/class="glass-tile"/g)||[]).length>=12);
+
+console.log("== TASK 21 batch ==");
+check("dark index background video", page.indexOf('class="bgnd-video"')>-1&&page.indexOf("3677550523")>-1);
+check("tile glitter video on hover", page.indexOf('class="tile-glitter-vid"')>-1&&page.indexOf("1063973464")>-1
+  &&page.indexOf(".glass-tile:hover .tile-glitter-vid")>-1);
+check("index subtitle removed", page.indexOf('class="index-sub"')===-1);
+check("footer removed", page.indexOf('<footer class="foot">')===-1&&page.indexOf("Six pages, one data run")===-1);
+check("KPI def removed", page.indexOf("Definition: store-level KPI scorecard")===-1);
+check("salesperson def removed", page.indexOf("Definition: per-person target vs achieved. Service and Accessory")===-1);
+check("jobs subtitle removed", page.indexOf("segregated &amp; highlighted by repair bucket")===-1);
+check("live clock card + gif + tick js", page.indexOf('class="topbar-clock"')>-1
+  &&page.indexOf("21-52-42-295_512.gif")>-1&&page.indexOf("tickClock")>-1);
+check("amc & bundle side-by-side", page.indexOf('class="inc-pair"')>-1);
+check("repair duo side-by-side", page.indexOf('class="duo-pair"')>-1);
+check("job table fixed layout", page.indexOf(".jobtable { table-layout:fixed")>-1&&page.indexOf("<colgroup>")>-1);
+check("distinct person band colours", page.indexOf("#3353c0")>-1&&page.indexOf("#b8860b")>-1&&page.indexOf("#0f9d8f")>-1);
+check("liquid glass material on tables", page.indexOf("backdrop-filter:blur(12px) saturate(1.2)")>-1);
+check("csat fixed chip column", page.indexOf(".csat-flex .csat-right { flex:0 0 230px")>-1);
+check("next-slab balance lines", (page.match(/class="next-slab"/g)||[]).length>=1||page.indexOf("top slab reached")>-1);
+check("subha next svc slab ₹1,21,000", subha.nextSvcSlab && subha.nextSvcSlab.need===121000,
+  subha.nextSvcSlab && subha.nextSvcSlab.need);
 
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);
