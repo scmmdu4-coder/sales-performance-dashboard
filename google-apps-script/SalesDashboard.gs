@@ -3462,19 +3462,6 @@ function buildDashboardPage_(data) {
     "    p(h)+':'+p(d.getMinutes())+':'+p(d.getSeconds())+' '+ap;" +
     "}" +
     "tickClock(); setInterval(tickClock,1000);" +
-    // Keep the page-gif looping forever: pre-load a cache-busted copy every
-    // 25s, and only once it has fully decoded swap it in — the background
-    // never goes blank, it just keeps on reloading frame one.
-    "function bgGifKeepAlive(){" +
-    "  var el=document.getElementById('globalBgGif'); if(!el) return;" +
-    "  var src=el.src.split('?')[0];" +
-    "  setInterval(function(){" +
-    "    var pre=new Image();" +
-    "    pre.onload=function(){ if(el) el.src=pre.src; };" +
-    "    pre.src=src+'?r='+Date.now();" +
-    "  },25000);" +
-    "}" +
-    "bgGifKeepAlive();" +
     "function dashRefresh(btn){" +
     "  if(btn.disabled) return;" +
     "  btn.classList.add('loading'); btn.disabled=true;" +
@@ -3566,12 +3553,11 @@ function buildDashboardPage_(data) {
   return (
     "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
     "<title>" + esc_(pageTitle) + "</title><style>" + css + "</style></head><body>" +
-    // Owner-approved animated backdrop for EVERY page at 50% transparency.
-    // bgGifKeepAlive() (in clientScript) periodically pre-loads a cache-busted
-    // copy and swaps it in only once decoded — the animation keeps reloading
-    // without ever blanking or stopping for a visible moment.
+    // Owner-approved backdrop for EVERY page (Task 26): the dreamstime
+    // "ideas / action / innovation" business-success image at 50% opacity
+    // behind the navy tables. Static asset — no keep-alive loop needed.
     '<img id="globalBgGif" class="global-bg-gif" ' +
-      'src="https://i.pinimg.com/originals/78/3d/bb/783dbbe3f2d2eb0e437be534bb3d3cb6.gif" ' +
+      'src="https://thumbs.dreamstime.com/b/ideas-action-innovation-strategy-business-success-concept-471659693.jpg" ' +
       'alt="" aria-hidden="true">' +
     '<header class="topbar"><div class="topbar-inner">' +
     "<div class=\"topbar-left\">" +
@@ -4006,7 +3992,7 @@ function getDashboardCss_() {
     ".section .body { padding:0; }" +
     // ---- cards: the old .kpi-card dark navy tile ----
     ".cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,225px),1fr)); gap:10px; margin-bottom:16px; }" +
-    ".card { background:linear-gradient(145deg,rgba(23,49,84,.98),rgba(11,25,47,.98));" +
+    ".card { background:linear-gradient(145deg,rgba(28,53,99,.98),rgba(17,33,66,.98));" +
     " border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 20px rgba(0,0,0,.18);" +
     " min-width:0; overflow:hidden; padding:13px; }" +
     ".card .label { color:var(--muted); display:block; font-size:.6rem; font-weight:800;" +
@@ -4172,7 +4158,7 @@ function getDashboardCss_() {
     ".scroll-x { overflow-x:auto; border-radius:11px; }" +
     // Performance-page tile row: one navy card per bucket, fits any width.
     ".tile-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr)); gap:10px; margin-bottom:14px; }" +
-    ".tile { background:linear-gradient(145deg,rgba(23,49,84,.98),rgba(11,25,47,.98));" +
+    ".tile { background:linear-gradient(145deg,rgba(28,53,99,.98),rgba(17,33,66,.98));" +
     " border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 20px rgba(0,0,0,.18);" +
     " min-width:0; overflow:hidden; padding:13px; }" +
     ".tile .label { color:var(--muted); display:block; font-size:.6rem; font-weight:800;" +
@@ -4460,11 +4446,11 @@ function getDashboardCss_() {
     ".glass-tile:hover .tile-glitter-vid, .glass-tile:focus-visible .tile-glitter-vid { opacity:.62; }" +
     ".glass-tile .tile-data, .glass-tile .tile-go { z-index:1; }" +
     // index-side group charts & freshness strip on the dark backdrop
-    "#pageIndex .gpie-wrap { background:linear-gradient(145deg,rgba(23,49,84,.98),rgba(11,25,47,.98)); }" +
+    "#pageIndex .gpie-wrap { background:linear-gradient(145deg,rgba(28,53,99,.98),rgba(17,33,66,.98)); }" +
     "#pageIndex .fresh-line { background:rgba(12,17,44,.62); border-color:rgba(255,255,255,.18);" +
     " backdrop-filter:blur(10px); }" +
     "#pageIndex .fresh-line-head { color:#aebcff; }" +
-    "#pageIndex .fresh-chip { background:linear-gradient(145deg,rgba(23,49,84,.98),rgba(11,25,47,.98)); border-color:rgba(170,190,255,.28); }" +
+    "#pageIndex .fresh-chip { background:linear-gradient(145deg,rgba(28,53,99,.98),rgba(17,33,66,.98)); border-color:rgba(170,190,255,.28); }" +
     "#pageIndex .fresh-chip i { color:#aebcff; } #pageIndex .fresh-chip b { color:#ffffff; }" +
     // ---- horizontal bar chart under each group title ----
     ".gbar-group { display:flex; flex-direction:column; gap:5px; }" +
@@ -4477,7 +4463,7 @@ function getDashboardCss_() {
     " box-shadow:0 0 8px rgba(80,120,255,.45), inset 0 -1px 2px rgba(0,0,0,.25), inset 0 1px 1px rgba(255,255,255,.5); }" +
     ".gbar-val { width:30px; flex-shrink:0; text-align:right; font-size:.64rem; font-weight:850; color:#1d2f63; }" +
     // ---- liquid-glass material for every table & tile (owner's dribbble ref) ----
-    "table { background:linear-gradient(145deg,rgba(23,49,84,.98),rgba(11,25,47,.98)); border:1px solid rgba(170,190,255,.32);" +
+    "table { background:linear-gradient(145deg,rgba(28,53,99,.98),rgba(17,33,66,.98)); border:1px solid rgba(170,190,255,.32);" +
     " backdrop-filter:blur(12px) saturate(1.2); -webkit-backdrop-filter:blur(12px) saturate(1.2);" +
     " box-shadow:0 12px 30px rgba(8,12,48,.45), inset 0 1px 0 rgba(255,255,255,.10), 0 2px 10px rgba(76,111,255,.14); }" +
     "td { background:rgba(29,35,84,.78); }" +
@@ -4511,9 +4497,10 @@ function getDashboardCss_() {
     " box-shadow:0 8px 22px rgba(6,10,34,.4), inset 0 1px 0 rgba(255,255,255,.25); isolation:isolate; }" +
     ".clock-gif { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; z-index:-2; }" +
     ".clock-dim { position:absolute; inset:0; z-index:-1; background:rgba(6,10,30,.52); }" +
+    // Task 25/26: digits glow red-LED to match the AC40 BRG clock texture.
     ".clock-text { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:1.08rem; font-weight:800;" +
-    " letter-spacing:.02em; color:#ffffff; text-shadow:0 2px 6px rgba(0,0,0,.75); white-space:nowrap;" +
-    " font-variant-numeric:tabular-nums; }" +
+    " letter-spacing:.05em; color:#ff5c66; text-shadow:0 0 6px rgba(255,70,80,.9), 0 0 14px rgba(255,50,60,.6), 0 0 30px rgba(255,45,55,.35);" +
+    " white-space:nowrap; font-variant-numeric:tabular-nums; }" +
     // ============ TASK 22 — one black-glitter backdrop for ALL pages ============
     "body { background:#070a1c; color:#dbe4f6; }" +
     "#globalBgVideo { position:fixed; inset:0; z-index:-1; width:100%; height:100%; object-fit:cover; }" +
@@ -4542,7 +4529,7 @@ function getDashboardCss_() {
     ".src-hint { background:rgba(120,130,150,.22); color:#cfe0ff; }" +
     ".repair-strip { background:rgba(10,15,40,.66); border-color:rgba(170,190,255,.20); }" +
     ".rs-label { color:#a9b6d8; } .rs-value { color:#ffffff; }" +
-    ".ph-tile { border-color:rgba(140,160,230,.45); background:linear-gradient(145deg,rgba(23,49,84,.98),rgba(11,25,47,.98)); }" +
+    ".ph-tile { border-color:rgba(140,160,230,.45); background:linear-gradient(145deg,rgba(28,53,99,.98),rgba(17,33,66,.98)); }" +
     ".ph-text { color:#c7d2ee; }" +
     ".inc-cat-title { color:#cfe0ff; }" +
     ".wp-head { color:#f2f6ff; }" +
@@ -4553,7 +4540,7 @@ function getDashboardCss_() {
     // walk-in analysis + token creation locked side by side, sharing the width
     ".walkin-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:stretch; }" +
     ".walkin-pair .wp-left, .walkin-pair .wp-right { min-width:0; }" +
-    ".walkin-pair .wp-right { background:rgba(10,15,40,.55); border:1px solid rgba(170,190,255,.18);" +
+    ".walkin-pair .wp-right { background:rgba(30,58,107,.55); border:1px solid rgba(170,190,255,.18);" +
     " border-radius:12px; padding:12px; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }" +
     // job table: entirely left-aligned
     ".jobtable th, .jobtable td { text-align:left; }" +
@@ -4563,7 +4550,7 @@ function getDashboardCss_() {
     " flex-direction:row; flex-wrap:wrap; gap:10px; margin-top:12px; }" +
     ".csat-right .csat-chip { flex:1 1 190px; width:auto; max-width:280px; }" +
     // ---- index tiles: lighter glass, brighter luminous fonts ----
-    ".glass-tile { background:linear-gradient(145deg,rgba(23,49,84,.98),rgba(11,25,47,.98));" +
+    ".glass-tile { background:linear-gradient(145deg,rgba(28,53,99,.98),rgba(17,33,66,.98));" +
     " border:1px solid rgba(255,255,255,.55); color:#f4f8ff; opacity:1; isolation:isolate;" +
     " box-shadow:0 10px 28px rgba(3,7,26,.5), inset 0 1px 0 rgba(255,255,255,.6), inset 0 -10px 18px rgba(255,255,255,.06); }" +
     ".tile-title { color:#ffffff; text-shadow:0 2px 8px rgba(4,8,26,.85); }" +
@@ -4601,7 +4588,7 @@ function getDashboardCss_() {
     ".wp-daytable .scroll-x { width:100%; }" +
     ".wp-daytable .walkintable { width:100%; }" +
     // C-SAT chips: soften the glare — slightly grey-shaded instead of pure white.
-    ".csat-chip { background:linear-gradient(145deg,rgba(23,49,84,.98),rgba(11,25,47,.98)); border-color:rgba(170,190,255,.32); box-shadow:0 2px 8px rgba(10,20,50,.18); }" +
+    ".csat-chip { background:linear-gradient(145deg,rgba(28,53,99,.98),rgba(17,33,66,.98)); border-color:rgba(170,190,255,.32); box-shadow:0 2px 8px rgba(10,20,50,.18); }" +
     // Job management: force every cell left (beats .ptable td.num), and bucket
     // bands sweep from sky blue down to deep navy.
     ".jobtable th, .jobtable td { text-align:left !important; }" +
