@@ -3579,10 +3579,10 @@ function buildDashboardPage_(data) {
     '<div class="meta" id="meta">' + esc_(bizMeta) + "</div>" +
     '<div class="note" id="note"></div>' +
     "</div>" +
-    // ---- live clock, top-middle: owner-supplied gif as the card background ----
+    // ---- live clock, top-middle: owner-supplied red-LED BRG clock gif as the card background ----
     '<div class="topbar-clock" role="timer">' +
     '<img class="clock-gif" aria-hidden="true" alt="" ' +
-    'src="https://brgprecision-com.3dcartstores.com/assets/images/thumbnails/tgsclc821blu_thumbnail.gif">' +
+    'src="https://www.brgprecision.com/phpinclude/saclocks/alpha/double/images/AC40-01-10-02-R%20animation.gif">' +
     '<span class="clock-dim" aria-hidden="true"></span>' +
     '<span class="clock-text" id="liveClock">—</span>' +
     "</div>" +
@@ -4123,11 +4123,12 @@ function getDashboardCss_() {
     ".csat-chips { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:12px; }" +
     ".csat-chip { flex:1 1 150px; background:#fff; border:1px solid #d5dde6; border-radius:10px;" +
     " padding:10px 14px; display:flex; flex-direction:column; gap:2px; box-shadow:0 2px 6px rgba(15,23,42,.06); }" +
-    ".csat-chip .cc-label { font-size:11.5px; font-weight:700; color:#5b6675; text-transform:uppercase; letter-spacing:.05em; }" +
-    ".csat-chip .cc-value { font-size:1.5rem; font-weight:800; color:#17263a; }" +
-    ".csat-chip .cc-sub { font-size:11.5px; color:#8592a5; }" +
-    ".csat-chip.pos { border-left:4px solid #2fb97f; } .csat-chip.pos .cc-value { color:#1d7d56; }" +
-    ".csat-chip.neg { border-left:4px solid #e25567; } .csat-chip.neg .cc-value { color:#b93a4a; }" +
+    // Task 25: navy chip → light text so labels stay readable.
+    ".csat-chip .cc-label { font-size:11.5px; font-weight:700; color:#9fb4e8; text-transform:uppercase; letter-spacing:.05em; }" +
+    ".csat-chip .cc-value { font-size:1.5rem; font-weight:800; color:#f4f8ff; }" +
+    ".csat-chip .cc-sub { font-size:11.5px; color:#93a5d4; }" +
+    ".csat-chip.pos { border-left:4px solid #2fb97f; } .csat-chip.pos .cc-value { color:#4fe0a8; }" +
+    ".csat-chip.neg { border-left:4px solid #e25567; } .csat-chip.neg .cc-value { color:#ff8fa1; }" +
     ".csat-chip.warn { border-left:4px solid #e0a12d; }" +
     ".csat-chip.info { border-left:4px solid #2f5aa8; }" +
     // C-SAT: columns size to their DATA, long headers wrap instead of
@@ -4459,11 +4460,11 @@ function getDashboardCss_() {
     ".glass-tile:hover .tile-glitter-vid, .glass-tile:focus-visible .tile-glitter-vid { opacity:.62; }" +
     ".glass-tile .tile-data, .glass-tile .tile-go { z-index:1; }" +
     // index-side group charts & freshness strip on the dark backdrop
-    "#pageIndex .gpie-wrap { background:rgba(255,255,255,.72); }" +
+    "#pageIndex .gpie-wrap { background:linear-gradient(145deg,rgba(23,49,84,.98),rgba(11,25,47,.98)); }" +
     "#pageIndex .fresh-line { background:rgba(12,17,44,.62); border-color:rgba(255,255,255,.18);" +
     " backdrop-filter:blur(10px); }" +
     "#pageIndex .fresh-line-head { color:#aebcff; }" +
-    "#pageIndex .fresh-chip { background:rgba(255,255,255,.10); border-color:rgba(255,255,255,.22); }" +
+    "#pageIndex .fresh-chip { background:linear-gradient(145deg,rgba(23,49,84,.98),rgba(11,25,47,.98)); border-color:rgba(170,190,255,.28); }" +
     "#pageIndex .fresh-chip i { color:#aebcff; } #pageIndex .fresh-chip b { color:#ffffff; }" +
     // ---- horizontal bar chart under each group title ----
     ".gbar-group { display:flex; flex-direction:column; gap:5px; }" +
@@ -4476,7 +4477,7 @@ function getDashboardCss_() {
     " box-shadow:0 0 8px rgba(80,120,255,.45), inset 0 -1px 2px rgba(0,0,0,.25), inset 0 1px 1px rgba(255,255,255,.5); }" +
     ".gbar-val { width:30px; flex-shrink:0; text-align:right; font-size:.64rem; font-weight:850; color:#1d2f63; }" +
     // ---- liquid-glass material for every table & tile (owner's dribbble ref) ----
-    "table { background:rgba(21,27,68,.84); border:1px solid rgba(170,190,255,.32);" +
+    "table { background:linear-gradient(145deg,rgba(23,49,84,.98),rgba(11,25,47,.98)); border:1px solid rgba(170,190,255,.32);" +
     " backdrop-filter:blur(12px) saturate(1.2); -webkit-backdrop-filter:blur(12px) saturate(1.2);" +
     " box-shadow:0 12px 30px rgba(8,12,48,.45), inset 0 1px 0 rgba(255,255,255,.10), 0 2px 10px rgba(76,111,255,.14); }" +
     "td { background:rgba(29,35,84,.78); }" +
@@ -4541,7 +4542,7 @@ function getDashboardCss_() {
     ".src-hint { background:rgba(120,130,150,.22); color:#cfe0ff; }" +
     ".repair-strip { background:rgba(10,15,40,.66); border-color:rgba(170,190,255,.20); }" +
     ".rs-label { color:#a9b6d8; } .rs-value { color:#ffffff; }" +
-    ".ph-tile { border-color:rgba(140,160,230,.45); background:rgba(84,116,255,.08); }" +
+    ".ph-tile { border-color:rgba(140,160,230,.45); background:linear-gradient(145deg,rgba(23,49,84,.98),rgba(11,25,47,.98)); }" +
     ".ph-text { color:#c7d2ee; }" +
     ".inc-cat-title { color:#cfe0ff; }" +
     ".wp-head { color:#f2f6ff; }" +
@@ -4562,7 +4563,7 @@ function getDashboardCss_() {
     " flex-direction:row; flex-wrap:wrap; gap:10px; margin-top:12px; }" +
     ".csat-right .csat-chip { flex:1 1 190px; width:auto; max-width:280px; }" +
     // ---- index tiles: lighter glass, brighter luminous fonts ----
-    ".glass-tile { background:linear-gradient(135deg,rgba(255,255,255,.34) 0%,rgba(150,178,255,.20) 55%,rgba(255,255,255,.26) 100%);" +
+    ".glass-tile { background:linear-gradient(145deg,rgba(23,49,84,.98),rgba(11,25,47,.98));" +
     " border:1px solid rgba(255,255,255,.55); color:#f4f8ff; opacity:1; isolation:isolate;" +
     " box-shadow:0 10px 28px rgba(3,7,26,.5), inset 0 1px 0 rgba(255,255,255,.6), inset 0 -10px 18px rgba(255,255,255,.06); }" +
     ".tile-title { color:#ffffff; text-shadow:0 2px 8px rgba(4,8,26,.85); }" +
@@ -4600,7 +4601,7 @@ function getDashboardCss_() {
     ".wp-daytable .scroll-x { width:100%; }" +
     ".wp-daytable .walkintable { width:100%; }" +
     // C-SAT chips: soften the glare — slightly grey-shaded instead of pure white.
-    ".csat-chip { background:#dde3ee; border-color:#c2cbdc; box-shadow:0 2px 8px rgba(10,20,50,.18); }" +
+    ".csat-chip { background:linear-gradient(145deg,rgba(23,49,84,.98),rgba(11,25,47,.98)); border-color:rgba(170,190,255,.32); box-shadow:0 2px 8px rgba(10,20,50,.18); }" +
     // Job management: force every cell left (beats .ptable td.num), and bucket
     // bands sweep from sky blue down to deep navy.
     ".jobtable th, .jobtable td { text-align:left !important; }" +

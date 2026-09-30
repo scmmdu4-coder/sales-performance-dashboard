@@ -67,5 +67,10 @@ T[15][5]="incentive per amc";T[16][5]="1-10";T[16][6]="₹150";T[16][8]=5;T[16][
 ALL=[mockSheet("target",T),mockSheet("crm",crm),mockSheet("walkin",wl),mockSheet("service",sv),mockSheet("advance",av),mockSheet("comm",cm)];
 var loaded=loadDashboardData_();
 var page=buildDashboardPage_(loaded.data);
+// /tmp/preview occasionally vanishes between Node invocations, so re-make it.
+fs.mkdirSync("/tmp/preview",{recursive:true});
+// Also mirror into the workspace so the artifact survives sandbox tmp cleanup.
+try{ fs.mkdirSync("/home/user/_preview",{recursive:true}); }catch(e){}
 fs.writeFileSync("/tmp/preview/index.html",page);
+try{ fs.writeFileSync("/home/user/_preview/index.html",page); }catch(e){}
 console.log("preview written:",page.length,"chars");

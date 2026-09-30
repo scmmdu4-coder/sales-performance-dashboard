@@ -353,8 +353,8 @@ check("footer removed", page.indexOf('<footer class="foot">')===-1&&page.indexOf
 check("KPI def removed", page.indexOf("Definition: store-level KPI scorecard")===-1);
 check("salesperson def removed", page.indexOf("Definition: per-person target vs achieved. Service and Accessory")===-1);
 check("jobs subtitle removed", page.indexOf("segregated &amp; highlighted by repair bucket")===-1);
-check("live clock card + blue-led gif + tick js (Task 24)", page.indexOf('class="topbar-clock"')>-1
-  &&page.indexOf("tgsclc821blu_thumbnail.gif")>-1&&page.indexOf("tickClock")>-1);
+check("live clock card + red-led gif + tick js (Task 25)", page.indexOf('class="topbar-clock"')>-1
+  &&page.indexOf("AC40-01-10-02-R")>-1&&page.indexOf("animation.gif")>-1&&page.indexOf("tickClock")>-1);
 check("amc & bundle side-by-side", page.indexOf('class="inc-pair"')>-1);
 check("repair matrix removed so no duo", page.indexOf('class="duo-pair"')===-1);
 check("job table fixed layout", page.indexOf(".jobtable { table-layout:fixed")>-1&&page.indexOf("<colgroup>")>-1);
@@ -366,7 +366,7 @@ check("next-slab balance lines", (page.match(/class="next-slab"/g)||[]).length>=
 check("subha next svc slab ₹1,21,000", subha.nextSvcSlab && subha.nextSvcSlab.need===121000, subha.nextSvcSlab && subha.nextSvcSlab.need);
 
 console.log("== TASK 22 batch ==");
-check("tile glass lighter + fonts brighter", page.indexOf("rgba(255,255,255,.34) 0%,rgba(150,178,255,.20)")>-1
+check("tile glass navy + fonts brighter", page.indexOf(",rgba(23,49,84,.98),rgba(11,25,47,.98))")>-1
   &&page.indexOf(".tile-title { color:#ffffff")>-1);
 check("glitter video fits tile outline", page.indexOf(".tile-glitter-vid { inset:0; border-radius:18px")>-1);
 check("token creation locked side-by-side", page.indexOf(".walkin-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr)")>-1);
@@ -389,7 +389,8 @@ check("day-wise token table full width", page.indexOf('class="wp-daytable"')>-1
   &&page.indexOf('wp-head">📅 Day-wise Walk-in')>-1
   &&page.indexOf(".wp-daytable .walkintable { width:100%")>-1);
 check("walkin analysis split remains", page.indexOf("ptable walksum")>-1&&page.indexOf("ptable walkintable")>-1);
-check("csat chips grey-shaded", page.indexOf(".csat-chip { background:#dde3ee")>-1);
+check("csat chips navy + light text (Task 25)", page.indexOf(".csat-chip { background:linear-gradient(145deg,rgba(23,49,84,.98)")
+  >-1&&page.indexOf(".csat-chip .cc-value { font-size:1.5rem; font-weight:800; color:#f4f8ff")>-1);
 check("jobtable forced left", page.indexOf(".jobtable th, .jobtable td { text-align:left !important")>-1);
 check("grphead sky-blue to dark gradient", page.indexOf("linear-gradient(90deg,#4fb3f5")>-1
   &&page.indexOf("#0b3672")>-1);
@@ -431,7 +432,8 @@ check("tile video golden-frame asset swap", page.indexOf("1064124616/thumb/8.jpg
   &&page.indexOf("1063973464")===-1
   &&page.indexOf("1064124616/preview/stock-footage-shining-gold-dust-particles")>-1);
 check("chat bot renamed ask me anything", page.indexOf("ask me anything")>-1&&page.indexOf("Ask the sheets")===-1);
-check("clock uses blue-led gif", page.indexOf("tgsclc821blu_thumbnail.gif")>-1&&page.indexOf("21-52-42-295_512.gif")===-1);
+check("clock uses red-led gif", page.indexOf("AC40-01-10-02-R%20animation.gif")>-1
+  &&page.indexOf("tgsclc821blu_thumbnail.gif")===-1);
 check("clock bigger", page.indexOf("min-width:295px")>-1&&page.indexOf("font-size:1.08rem")>-1);
 check("deck tab present", page.indexOf('data-page="deck"')>-1&&page.indexOf('id="pageDeck"')>-1);
 check("deck NOT on index tiles", (page.match(/glass-tile[^>]*data-page="deck"/g)||[]).length===0);
@@ -441,6 +443,21 @@ check("deck store table rows", (page.match(/decktable[\s\S]{0,4000}Gross Profit/
 check("deck csat totals", page.indexOf("85.71%")>-1||page.indexOf("Satisfied")>-1);
 var gsSrc=fs.readFileSync(__dirname+"/../../SalesDashboard.gs","utf8");
 check("refresh includes deck", page.indexOf("deck:'pageDeck'")>-1&&gsSrc.indexOf("deck: renderDeckHtml_(")>-1);
+
+console.log("== TASK 25 batch ==");
+var NAVY="linear-gradient(145deg,rgba(23,49,84,.98),rgba(11,25,47,.98))";
+check("clock red-led BRG gif", page.indexOf("www.brgprecision.com/phpinclude/saclocks/alpha/double/images/AC40")>-1
+  &&page.indexOf("AC40-01-10-02-R%20animation.gif")>-1);
+check("tables all navy", page.indexOf("table { background:"+NAVY)>-1
+  &&page.indexOf("rgba(21,27,68,.84)")===-1);
+check("index tiles navy", page.indexOf(".glass-tile { background:"+NAVY)>-1);
+check("ph-tiles navy", page.indexOf(".ph-tile { border-color:rgba(140,160,230,.45); background:"+NAVY)>-1);
+check("gpie-wrap + fresh chips navy", page.indexOf("#pageIndex .gpie-wrap { background:"+NAVY)>-1
+  &&page.indexOf("#pageIndex .fresh-chip { background:"+NAVY)>-1);
+check("chip text readable on navy", page.indexOf(".csat-chip .cc-label { font-size:11.5px; font-weight:700; color:#9fb4e8")>-1
+  &&page.indexOf(".csat-chip.pos .cc-value { color:#4fe0a8")>-1
+  &&page.indexOf(".csat-chip.neg .cc-value { color:#ff8fa1")>-1
+  &&page.indexOf("#dde3ee")===-1);
 
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);
