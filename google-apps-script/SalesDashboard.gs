@@ -3599,6 +3599,7 @@ function buildDashboardPage_(data) {
     "  google.script.run" +
     "    .withSuccessHandler(function(raw){" +
     "      var res; try{res=JSON.parse(raw);}catch(e){res={title:'Reply error',rows:[],note:String(e)};}" +
+    "      window.__waLastQuery=q; window.__waLastText=waTextOf_(res);" +
     "      var h='<div class=\\\"chat-title\\\">'+res.title+'</div>';" +
     "      if(res.rows && res.rows.length){" +
     "        h+='<table class=\\\"chat-table\\\"><tbody>';" +
@@ -3612,6 +3613,39 @@ function buildDashboardPage_(data) {
     "      finish('Search failed: '+(err && err.message ? err.message : err));" +
     "    })" +
     "    .serverQuery(q);" +
+    "}" +
+    // ---- WhatsApp share of the last bot answer (Task 28) ----
+    "function waTextOf_(res){" +
+    "  var rows=(res.rows||[]).map(function(r){return r.map(function(c){return c.replace(/<[^>]+>/g,'');}).filter(Boolean).join('  ·  ');});" +
+    "  return [res.title].concat(rows).concat(res.note?[res.note]:[]).slice(0,22).join('\n');" +
+    "}" +
+    "function waSendLast(){" +
+    "  var q=window.__waLastQuery, msg=window.__waLastText;" +
+    "  if(!q||!msg){chatBubble('bot','Ask something first, then send the answer to WhatsApp.');return;}" +
+    "  var chat=(localStorage.getItem('wa_chatid')||'').trim();" +
+    "  if(!chat){" +
+    "    chat=(prompt('WhatsApp number (with country code, e.g. 919876543210):')||'').trim();" +
+    "    if(chat){localStorage.setItem('wa_chatid',chat);}" +
+    "  }" +
+    "  if(!chat){chatBubble('bot','No WhatsApp number set — cancelled.');return;}" +
+    "  chatBubble('user','WhatsApp→'+chat.replace(/&/g,'&amp;').replace(/</g,'&lt;'));" +
+    "  var thinking=chatBubble('bot','<span class=\\\"chat-dots\\\"><i></i><i></i><i></i></span>');" +
+    "  var finish=function(html){ if(thinking) thinking.innerHTML=html; };" +
+    "  if(!(window.google && google.script && google.script.run)){" +
+    "    finish('WhatsApp send needs the live web app (static preview).'); return;" +
+    "  }" +
+    "  var payload=JSON.stringify({q:q,chat:chat,text:msg});" +
+    "  google.script.run" +
+    "    .withSuccessHandler(function(raw){" +
+    "      var r; try{r=JSON.parse(raw);}catch(e){r={};}" +
+    "      if(r.ok){finish('✅ Sent to '+chat+' via OpenWA gateway.');return;}" +
+    "      if(r.offline && r.link){finish('Gateway not configured — opening WhatsApp directly…');window.open(r.link,'_blank');return;}" +
+    "      finish('WhatsApp send failed: '+(r.error||'unknown'));" +
+    "    })" +
+    "    .withFailureHandler(function(err){" +
+    "      finish('WhatsApp send failed: '+(err && err.message ? err.message : err));" +
+    "    })" +
+    "    .sendWhatsAppAnswer(payload);" +
     "}" +
     "</script>";
 
@@ -3658,13 +3692,17 @@ function buildDashboardPage_(data) {
         '<div class="chat-log" id="chatLog">' +
           '<div class="chat-msg bot">Ask me anything from the source sheets — e.g. ' +
             "<i>sale date from 23.09.26</i>, <i>part number for display</i>, " +
-            "or a mobile number like <i>919876543210</i>.</div>" +
+            "or a mobile number like <i>919876543210</i>." +
+            '<br>Tap <b>✆</b> to send an answer over WhatsApp (OpenWA gateway — set ' +
+            '<code>WA_GATEWAY_URL/WA_API_KEY/WA_CHATID</code> in Script Properties).</div>' +
         "</div>" +
         '<div class="chat-inputrow">' +
           '<input class="chat-input" id="chatInput" type="text" autocomplete="off" ' +
             'placeholder="Try: sales 23.09.26, part number for…, or a mobile number" ' +
             "onkeydown=\"if(event.key==='Enter')chatSend()\">" +
           '<button class="chat-send" onclick="chatSend()" aria-label="Send">➤</button>' +
+          '<button class="chat-send chat-wa" onclick="waSendLast()" ' +
+            'aria-label="Send last answer to WhatsApp" title="Send last answer to WhatsApp">✆</button>' +
         "</div>" +
       "</div>" +
     "</div>" +
@@ -4703,6 +4741,7 @@ function getDashboardCss_() {
     ".chat-input::placeholder { color:#8fa3d4; } .chat-input:focus { border-color:#4fb3f5; }" +
     ".chat-send { border:none; cursor:pointer; border-radius:999px; padding:8px 14px; color:#fff;" +
     " background:linear-gradient(135deg,#4fb3f5,#0b3672); font-size:.85rem; font-weight:800; }" +
+    ".chat-send.chat-wa { background:linear-gradient(135deg,#25d366,#128c4b); margin-left:6px; }" +
     "@media (max-width:640px){ .brand{font-size:1.1rem;} .card .value{font-size:1rem;} }"
   );
 }
@@ -5310,6 +5349,135 @@ function renderDateWiseTable_(data) {
     "Collapsed view shows the latest " + CONFIG.COLLAPSED_DAYS + " days; expand for every date.</p>" +
     "</div></section>"
   );
+}
+
+/* ============================================================================
+ * WHATSAPP (OpenWA gateway) — Task 28
+ * ----------------------------------------------------------------------------
+ * Three faces:
+ *   1) waConfig_()            — reads Script Properties (no secrets in code):
+ *        WA_GATEWAY_URL  e.g. https://wa.example.com   (your OpenWA host)
+ *        WA_API_KEY      admin/operator key from the OpenWA dashboard
+ *        WA_SESSION      session id (default "default")
+ *        WA_CHATID       default chat to push replies to (digits or JID)
+ *   2) whatsappSendAnswer_(query, chatId) — runs the sheet-search chat bot and
+ *      POSTs the reply via OpenWA  POST /api/sessions/{id}/messages/send-text
+ *   3) doPost(e)              — inbound webhook target: OpenWA fires
+ *      message.received here → we answer over WhatsApp automatically.
+ *      If nothing is configured the bot simply won't auto-answer; the page
+ *      keeps working and falls back to a "wa.me deep link" share button.
+ * ========================================================================= */
+
+function waConfig_() {
+  var p = (typeof PropertiesService !== "undefined")
+    ? PropertiesService.getScriptProperties() : null;
+  function gp(k) { return p ? str_(p.getProperty(k)) : ""; }
+  var cfg = {
+    base: gp("WA_GATEWAY_URL").replace(/\/+$/, ""),
+    key: gp("WA_API_KEY"),
+    session: gp("WA_SESSION") || "default",
+    chat: gp("WA_CHATID"),
+  };
+  cfg.live = !!(cfg.base && cfg.key);
+  return cfg;
+}
+
+/** Normalise any phone/JID/garbage into a WhatsApp chatId ("…@c.us"). */
+function waCleanChatId_(v) {
+  var s = str_(v).trim();
+  if (s.indexOf("@") > -1) return s;              // already a JID
+  s = s.replace(/[^\d]/g, "");
+  if (s.length === 10) s = "91" + s;              // assume India (10 digits)
+  return s ? (s + "@c.us") : "";
+}
+
+/** Strip the bot's <td>-wrapped HTML rows into WhatsApp-friendly plain text. */
+function waPlainRows_(rows) {
+  return (rows || []).map(function (cols) {
+    return cols.map(function (c) {
+      return c.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">").replace(/&#39;/g, "'").replace(/&quot;/g, '"').trim();
+    }).filter(function (s) { return s !== ""; }).join("  ·  ");
+  }).filter(function (s) { return s !== ""; });
+}
+
+function waComposeReply_(query) {
+  var c = chatQuery(query);
+  var scan = chatAllSheetsScan_(query);
+  var out = [c.title];
+  waPlainRows_(c.rows || []).forEach(function (l) { out.push("  " + l); });
+  if (scan.rows.length) {
+    out.push("— matches across all tabs —");
+    waPlainRows_(scan.rows).forEach(function (l) { out.push("  " + l); });
+  }
+  if (c.note) out.push("ℹ︎ " + c.note);
+  if (scan.touched.length) out.push("📑 matched: " + scan.touched.join(", "));
+  return out.filter(function (l) { return str_(l).trim() !== ""; }).join("\n");
+}
+
+/** POST a text reply through the OpenWA gateway. Returns {ok, code, body|link}. */
+function waSendText_(chatId, text, cfg) {
+  cfg = cfg || waConfig_();
+  if (!cfg.live) return { ok: false, offline: true };
+  var url = cfg.base + "/api/sessions/" + encodeURIComponent(cfg.session) + "/messages/send-text";
+  var res = UrlFetchApp.fetch(url, {
+    method: "post",
+    contentType: "application/json",
+    headers: { "X-API-Key": cfg.key },
+    payload: JSON.stringify({ chatId: chatId, text: text }),
+    muteHttpExceptions: true,
+  });
+  var code = res.getResponseCode();
+  return { ok: code >= 200 && code < 300, code: code, body: str_(res.getContentText()).slice(0, 400) };
+}
+
+/**
+ * google.script.run endpoint: answer a question and send it to WhatsApp.
+ * If the gateway is not configured, returns a wa.me deep link the page opens.
+ */
+function sendWhatsAppAnswer(p) {
+  var obj = {};
+  try { obj = (typeof p === "string") ? JSON.parse(p) : (p || {}); } catch (e) { obj = {}; }
+  var query = str_(obj.q);
+  var chatId = waCleanChatId_(obj.chat);
+  var cfg = waConfig_();
+  if (!query) return JSON.stringify({ ok: false, error: "empty query" });
+  var text = waComposeReply_(query);
+  if (!chatId) chatId = cfg.chat;
+  if (!chatId) return JSON.stringify({ ok: false, error: "no chatId", text: text });
+  var sent = waSendText_(chatId, text, cfg);
+  if (sent.offline) {
+    return JSON.stringify({ ok: false, offline: true,
+      link: "https://wa.me/" + chatId.replace(/@.*$/, "") + "?text=" + encodeURIComponent_(text).slice(0, 1800) });
+  }
+  return JSON.stringify({ ok: sent.ok, code: sent.code, error: sent.ok ? null : sent.body });
+}
+
+/** Inbound webhook: OpenWA → Apps Script. Answer over WhatsApp. */
+function doPost(e) {
+  var out = ContentService.createTextOutput(JSON.stringify({ ok: true }));
+  var cfg = waConfig_();
+  if (!cfg.live) return out.setMimeType(ContentService.MimeType.JSON);
+  var msg = {};
+  try { msg = JSON.parse((e && e.postData && e.postData.contents) || "{}"); } catch (ex) { msg = {}; }
+  var type = str_(msg.type || msg.event || "");
+  if (type !== "message.received" && type !== "message.any") {
+    return out.setMimeType(ContentService.MimeType.JSON);
+  }
+  var m = msg.data || msg.message || msg;
+  var from = waCleanChatId_(m.chatId || m.from || m.to || "");
+  var body = str_(m.body || m.text || "");
+  if (!from || !body || m.fromMe || /@g\.us$/.test(from)) {
+    return out.setMimeType(ContentService.MimeType.JSON);
+  }
+  waSendText_(from, waComposeReply_(body), cfg);
+  return out.setMimeType(ContentService.MimeType.JSON);
+}
+/** @internal encode helper — keeps V8 happy in Apps Script eval too. */
+function encodeURIComponent_(s) {
+  return encodeURIComponent(str_(s)).replace(/[!'()*]/g, function (c) {
+    return "%" + c.charCodeAt(0).toString(16).toUpperCase();
+  });
 }
 
 /* ============================================================================

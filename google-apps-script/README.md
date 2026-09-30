@@ -393,3 +393,65 @@ Translating rules applied (no conditions or data touched):
   the previous-3-month monthly average strip. Service Non-Repair excluded.
 - Every section carries a one-line **Definition** of what it shows and where
   the numbers come from.
+
+---
+
+## WhatsApp Business integration (OpenWA) — Task 28
+
+The dashboard now speaks WhatsApp both ways via the open-source
+[rmyndharis/OpenWA](https://github.com/rmyndharis/OpenWA) API gateway
+(plugins: [rmyndharis/OpenWA-plugins](https://github.com/rmyndharis/OpenWA-plugins)).
+
+### What you get
+
+| Surface | Behavior |
+| --- | --- |
+| Chat widget **✆ button** | Sends the last bot answer to any WhatsApp number via the gateway — or, when the gateway is not configured yet, falls back to opening a `wa.me` deep link with the answer prefilled. The number is remembered in `localStorage` (`wa_chatid`). |
+| `sendWhatsAppAnswer({q, chat})` | Server function: runs the sheet-search chat bot on `q`, composes a WhatsApp-friendly multiline reply, and POSTs it via OpenWA. |
+| `doPost` webhook | Point OpenWA's message webhook at the deployed web app and every inbound DM (groups & `fromMe` filtered out) is automatically answered with the same sheet-bot search. Full WhatsApp chatbot, zero extra code. |
+| Phone handling | Any free-form number is normalised to a WhatsApp JID: 10 digits ⇒ `91…` prefix, digits ⇒ `@c.us`; JIDs pass through untouched. |
+
+### Configuration (Script Properties — no secrets in code)
+
+Project Settings → Script Properties:
+
+| Property | Example | Purpose |
+| --- | --- | --- |
+| `WA_GATEWAY_URL` | `https://wa.example.com` | Your OpenWA host (`docker compose up -d`, see its README; API on port 2785). |
+| `WA_API_KEY` | `…` | Admin/operator API key from the OpenWA dashboard. |
+| `WA_SESSION` | `sales` | Session id to send with (default `default`). |
+| `WA_CHATID` | `919791994639@c.us` or `919791994639` | Default chat for page sends with no number given. |
+
+Webhook: in the OpenWA dashboard (or via
+`POST /api/sessions/{id}/webhooks`), register the web-app `/exec` URL with
+events `["message.received"]`. Apps Script accepts anonymous `doPost` when
+deployed with "Execute as: Me / access: Anyone".
+
+### Plugins worth enabling on the OpenWA side
+
+- `http-action` — expose the spreadsheet bot to WhatsApp users **without**
+  this Apps Script (runs inside OpenWA's plugin worker).
+- `after-hours` — polite auto-reply when the store is closed.
+- `gsheets-logger` — mirror the WhatsApp conversation into a dedicated tab
+  (keeps the owner's source sheet untouched).
+
+All three need only `messages:send` and live config.
+
+### Test run
+
+- **Unit/perm harness**: `node google-apps-script/tests/node/perftest.cjs`
+  → `== TASK 28 batch ==` 10 checks (offline `wa.me` fallback, JID
+  normalisation, gateway POST shape, default chat, webhook answer incl.
+  cross-tab matches, `fromMe`/group/other-event filtering, silent when
+  unconfigured, chat-widget wiring).
+- **Live smoke** (spins up a mock OpenWA on :29785 and pushes real HTTP):
+  `node google-apps-script/tests/node/wa-live-test.cjs`
+  → verifies send-text exchanges, default chat, webhook auto-reply, and that
+  a wrong API key surfaces `401` cleanly.
+
+```text
+[1] session=sales chatId=919988776655@c.us  "…" (5 lines)
+[2] session=sales chatId=919791994639@c.us  "🧾 Sales on 23-09-2026" (5 lines)
+[3] session=sales chatId=919988776655@c.us  "🔧 Part: display" (7 lines)
+LIVE SMOKE RUN: PASS
+```

@@ -19,6 +19,17 @@ var ALL_SHEETS=[];
 var SS_OBJ={getSheets:function(){return ALL_SHEETS;},
   getSheetByName:function(n){for(var i=0;i<ALL_SHEETS.length;i++)if(ALL_SHEETS[i].getName()===n)return ALL_SHEETS[i];return null;}};
 global.SpreadsheetApp={getActiveSpreadsheet:function(){return SS_OBJ;}};
+global.__WA_PROPS={};
+global.PropertiesService={getScriptProperties:function(){return{
+  getProperty:function(k){return (k in global.__WA_PROPS)?global.__WA_PROPS[k]:null;}};}};
+global.__WA_CALLS=[];
+global.ContentService={createTextOutput:function(t){var o={t:t,setMimeType:function(m){o.m=m;return o;}};
+  return o;},MimeType:{JSON:"application/json"}};
+global.UrlFetchApp={fetch:function(url,opts){
+  global.__WA_CALLS.push({url:url,opts:opts});
+  var payload={}; try{payload=JSON.parse(opts.payload||"{}");}catch(e){}
+  return{getResponseCode:function(){return 200;},
+    getContentText:function(){return JSON.stringify({messageId:"wamid.mock.1",echo:payload});}};}};
 var fs=require('fs');
 eval(fs.readFileSync(__dirname+"/../../SalesDashboard.gs","utf8"));
 getSpreadsheet_=function(){return SS_OBJ;};
@@ -491,6 +502,64 @@ check("chatbot note lists touched tabs", fullQ.note.indexOf("Cross-tab matches")
 check("scan strips stopwords", chatAllSheetsScan_("_").rows.length===0
   &&chatAllSheetsScan_("the the the").rows.length===0);
 check("scan respects per-sheet cap", chatAllSheetsScan_("919876543210").rows.length<=12);
+
+console.log("== TASK 28 batch ==");
+// (a) no gateway configured -> falls back to wa.me deep link
+global.__WA_PROPS={};
+var r1=JSON.parse(sendWhatsAppAnswer(JSON.stringify({q:"C1001",chat:"91791994639"})));
+check("wa offline fallback gives wa.me link", r1.ok===false&&r1.offline===true
+  &&/wa\.me\/91791994639\?text=/.test(r1.link), JSON.stringify(r1).slice(0,140));
+// (b) chatId normalisation
+check("wa chatId normalised", waCleanChatId_("+91 99876 54321")==="919987654321@c.us"
+  &&waCleanChatId_("919876543210@c.us")==="919876543210@c.us"
+  &&waCleanChatId_(" ")==="");
+// (c) gateway configured -> POSTs to OpenWA send-text endpoint
+global.__WA_PROPS={WA_GATEWAY_URL:"https://wa.example.com/",WA_API_KEY:"k-123",
+  WA_SESSION:"sales",WA_CHATID:"919876543210@c.us"};
+global.__WA_CALLS=[];
+var r2=JSON.parse(sendWhatsAppAnswer(JSON.stringify({q:"Ravi Kumar",chat:"9988776655"})));
+check("wa gateway send ok", r2.ok===true&&r2.code===200, JSON.stringify(r2));
+var call=global.__WA_CALLS[0];
+check("wa endpoint + key + payload", call.url==="https://wa.example.com/api/sessions/sales/messages/send-text"
+  &&call.opts.headers["X-API-Key"]==="k-123"
+  &&JSON.parse(call.opts.payload).chatId==="919988776655@c.us"
+  &&JSON.parse(call.opts.payload).text.indexOf("Ravi")>-1, JSON.stringify(call.url));
+// (d) default chat from properties when none passed
+r2=JSON.parse(sendWhatsAppAnswer(JSON.stringify({q:"C1001"})));
+check("wa default chat honoured", JSON.parse(global.__WA_CALLS[global.__WA_CALLS.length-1].opts.payload)
+  .chatId==="919876543210@c.us");
+// (e) webhook: message.received triggers an answer push
+global.__WA_CALLS=[];
+doPost({postData:{contents:JSON.stringify({type:"message.received",
+  data:{chatId:"919988776655@c.us",body:"Ravi Kumar",fromMe:false}})}});
+check("wa webhook answers inbound messages", global.__WA_CALLS.length===1
+  &&/Ravi/.test(JSON.parse(global.__WA_CALLS[0].opts.payload).text)
+  &&/matches across all tabs/.test(JSON.parse(global.__WA_CALLS[0].opts.payload).text)
+  &&JSON.parse(global.__WA_CALLS[0].opts.payload).chatId==="919988776655@c.us",
+  JSON.parse(global.__WA_CALLS[0]&&global.__WA_CALLS[0].opts.payload||"{}").text);
+// (f) webhook ignores fromMe / group / non-message events
+global.__WA_CALLS=[];
+doPost({postData:{contents:JSON.stringify({type:"message.received",
+  data:{chatId:"919988776655@c.us",body:"hi",fromMe:true}})}});
+doPost({postData:{contents:JSON.stringify({type:"message.received",
+  data:{chatId:"12036878@g.us",body:"hi",fromMe:false}})}});
+doPost({postData:{contents:JSON.stringify({type:"session.status",data:{}})}});
+check("wa webhook filters fromMe/groups/other events", global.__WA_CALLS.length===0);
+// (g) webhook no-op when gateway not configured
+global.__WA_PROPS={};
+global.__WA_CALLS=[];
+doPost({postData:{contents:JSON.stringify({type:"message.received",
+  data:{chatId:"919988776655@c.us",body:"hi"}})}});
+check("wa webhook silent w/o gateway", global.__WA_CALLS.length===0);
+// (h) UI wiring present in the page
+check("wa share button + styles in chat widget",
+  page.indexOf('onclick="waSendLast()"')>-1&&page.indexOf(".chat-send.chat-wa")>-1
+  &&page.indexOf("function waSendLast()")>-1&&page.indexOf("localStorage.getItem('wa_chatid')")>-1
+  &&page.indexOf("sendWhatsAppAnswer")>-1&&page.indexOf("#25d366")>-1);
+check("wa memories saved on answers",
+  page.indexOf("window.__waLastQuery=q")>-1&&page.indexOf("window.__waLastText=waTextOf_(res)")>-1);
+// restore: gateway props off so later tests stay hermetic
+global.__WA_PROPS={};
 
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);
