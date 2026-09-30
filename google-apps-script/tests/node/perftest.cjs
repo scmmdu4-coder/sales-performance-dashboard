@@ -320,7 +320,7 @@ check("index page pane", page.indexOf('data-pane="index"')>-1&&page.indexOf("ind
 check("index tiles built (11 now, matrix tile removed)", (page.match(/class="glass-tile"/g)||[]).length>=11,
   (page.match(/class="glass-tile"/g)||[]).length);
 check("tile group heads", page.indexOf("tile-group-head")>-1);
-check("seven panes incl index", (page.match(/data-pane=/g)||[]).length===7,
+check("eight panes incl deck (Task 24)", (page.match(/data-pane=/g)||[]).length===8,
   (page.match(/data-pane=/g)||[]).length);
 
 console.log("== TASK 20 polish ==");
@@ -346,15 +346,15 @@ console.log("== TASK 21 batch ==");
 check("global gif background at 50%", page.indexOf('id="globalBgGif"')>-1&&page.indexOf("783dbbe3f2d2eb0e437be534bb3d3cb6.gif")>-1
   &&page.indexOf(".global-bg-gif")>-1&&page.indexOf("opacity:.5")>-1);
 check("gif keep-alive reload", page.indexOf("bgGifKeepAlive")>-1&&page.indexOf("setInterval")>-1);
-check("tile glitter video on hover", page.indexOf('class="tile-glitter-vid"')>-1&&page.indexOf("1063973464")>-1
-  &&page.indexOf(".glass-tile:hover .tile-glitter-vid")>-1);
+check("tile glitter video on hover", page.indexOf('class="tile-glitter-vid"')>-1&&page.indexOf("1064124616")>-1
+  &&page.indexOf(".glass-tile:hover .tile-glitter-vid")>-1&&page.indexOf("shining-gold-dust-particles")>-1);
 check("index subtitle removed", page.indexOf('class="index-sub"')===-1);
 check("footer removed", page.indexOf('<footer class="foot">')===-1&&page.indexOf("Six pages, one data run")===-1);
 check("KPI def removed", page.indexOf("Definition: store-level KPI scorecard")===-1);
 check("salesperson def removed", page.indexOf("Definition: per-person target vs achieved. Service and Accessory")===-1);
 check("jobs subtitle removed", page.indexOf("segregated &amp; highlighted by repair bucket")===-1);
-check("live clock card + gif + tick js", page.indexOf('class="topbar-clock"')>-1
-  &&page.indexOf("21-52-42-295_512.gif")>-1&&page.indexOf("tickClock")>-1);
+check("live clock card + blue-led gif + tick js (Task 24)", page.indexOf('class="topbar-clock"')>-1
+  &&page.indexOf("tgsclc821blu_thumbnail.gif")>-1&&page.indexOf("tickClock")>-1);
 check("amc & bundle side-by-side", page.indexOf('class="inc-pair"')>-1);
 check("repair matrix removed so no duo", page.indexOf('class="duo-pair"')===-1);
 check("job table fixed layout", page.indexOf(".jobtable { table-layout:fixed")>-1&&page.indexOf("<colgroup>")>-1);
@@ -425,6 +425,22 @@ var mobParsed=JSON.parse(mobJSON);
 check("serverQuery shape", mobParsed.title!==undefined&&Array.isArray(mobParsed.rows));
 var blankQ=JSON.parse(serverQuery(""));
 check("serverQuery empty guard", blankQ.title==="Say something first");
+
+console.log("== TASK 24 batch ==");
+check("tile video golden-frame asset swap", page.indexOf("1064124616/thumb/8.jpg")>-1
+  &&page.indexOf("1063973464")===-1
+  &&page.indexOf("1064124616/preview/stock-footage-shining-gold-dust-particles")>-1);
+check("chat bot renamed ask me anything", page.indexOf("ask me anything")>-1&&page.indexOf("Ask the sheets")===-1);
+check("clock uses blue-led gif", page.indexOf("tgsclc821blu_thumbnail.gif")>-1&&page.indexOf("21-52-42-295_512.gif")===-1);
+check("clock bigger", page.indexOf("min-width:295px")>-1&&page.indexOf("font-size:1.08rem")>-1);
+check("deck tab present", page.indexOf('data-page="deck"')>-1&&page.indexOf('id="pageDeck"')>-1);
+check("deck NOT on index tiles", (page.match(/glass-tile[^>]*data-page="deck"/g)||[]).length===0);
+check("deck sections", page.indexOf('id="deck-store"')>-1&&page.indexOf('id="deck-kpi"')>-1
+  &&page.indexOf('id="deck-walkin"')>-1&&page.indexOf('id="deck-csat"')>-1&&page.indexOf('id="deck-jobs"')>-1);
+check("deck store table rows", (page.match(/decktable[\s\S]{0,4000}Gross Profit/g)||[]).length===1);
+check("deck csat totals", page.indexOf("85.71%")>-1||page.indexOf("Satisfied")>-1);
+var gsSrc=fs.readFileSync(__dirname+"/../../SalesDashboard.gs","utf8");
+check("refresh includes deck", page.indexOf("deck:'pageDeck'")>-1&&gsSrc.indexOf("deck: renderDeckHtml_(")>-1);
 
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);

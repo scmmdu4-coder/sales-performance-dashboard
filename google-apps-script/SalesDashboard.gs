@@ -2473,6 +2473,110 @@ function renderOperationHtml_(pd) {
   return out.join("");
 }
 
+/** DECK page (Task 24): last tab, not on the index. Summary cards only —
+ *  store target vs achievement, KPI achievement, walk-ins, C-SAT, open jobs. */
+function renderDeckHtml_(data, pd) {
+  var s = data.store;
+  var out = [];
+
+  // ---- 1) Store target vs achievement ----
+  var storeGroups = [
+    ["Service", s.service], ["Accessories", s.accessory], ["Repair", s.repair],
+    ["Total", s.total], ["Gross Profit", s.grossProfit],
+  ];
+  var storeRows = storeGroups.map(function (g) {
+    var b = g[1] || { target: 0, achieved: 0 };
+    var pct = b.target > 0 ? (100 * b.achieved / b.target) : 0;
+    var cls = pct >= 100 ? "pos" : pct >= 60 ? "" : "neg";
+    return "<tr><td><b>" + esc_(g[0]) + "</b></td>" +
+      '<td class="num">' + money_(b.target) + "</td>" +
+      '<td class="num">' + money_(b.achieved) + "</td>" +
+      '<td class="num ' + cls + '"><b>' + pct.toFixed(1) + "%</b></td>" +
+      '<td class="num">' + money_(Math.max(0, b.target - b.achieved)) + "</td></tr>";
+  }).join("");
+  out.push(
+    '<section class="section" id="deck-store"><h2>🎯 Store Target vs Achievement</h2><div class="body">' +
+    '<div class="scroll-x"><table class="ptable decktable">' +
+    "<thead><tr><th>Type</th><th class=\"num\">Target</th><th class=\"num\">Achievement</th><th class=\"num\">Achieved %</th><th class=\"num\">Balance</th></tr></thead><tbody>" +
+    storeRows + "</tbody></table></div></div></section>");
+
+  // ---- 2) KPI achievement ----
+  var kpis = data.kpi.ar.concat(data.kpi.rr, data.kpi.sr);
+  var kT = 0, kA = 0, kHit = 0;
+  kpis.forEach(function (k) {
+    kT += k.target; kA += k.achieved;
+    if (k.target > 0 && k.achieved >= k.target) kHit++;
+  });
+  var kPct = kT > 0 ? (100 * kA / kT) : 0;
+  function dc(klabel, kvalue, ksub) {
+    return '<div class="card"><div class="label">' + esc_(klabel) + '</div><div class="value">' +
+      esc_(String(kvalue)) + '</div><div class="sub">' + esc_(ksub || "") + "</div></div>";
+  }
+  out.push(
+    '<section class="section" id="deck-kpi"><h2>📊 KPI Achievement</h2><div class="body">' +
+    '<div class="cards">' +
+    dc("KPIs Hit", kHit + " / " + kpis.length, "count at or above target") +
+    dc("Overall Target", kT, "sum of all KPI targets") +
+    dc("Overall Achieved", kA, "sum of all KPI achievements") +
+    dc("Achievement %", kPct.toFixed(1) + "%", "achieved ÷ target") +
+    "</div></div></section>");
+
+  // ---- 3) Walk-in details ----
+  if (pd.walkin && pd.walkin.available) {
+    var t = pd.walkin.totals;
+    out.push(
+      '<section class="section" id="deck-walkin"><h2>🚶 Walk-in Details</h2><div class="body">' +
+      '<div class="cards">' +
+      dc("Total Walk-ins", t.walkins, t.activeDays + " active days") +
+      dc("Unique Walk-ins", t.unique, "distinct mobile numbers") +
+      dc("Cases Created", t.cases, "walk-ins → service case") +
+      dc("Invoices Created", t.invoices, "walk-ins → sale") +
+      dc("Dead Leads", t.deadLeads, "no case · no invoice · no remark") +
+      "</div></div></section>");
+  } else {
+    out.push('<section class="section" id="deck-walkin"><h2>🚶 Walk-in Details</h2><div class="body">' +
+      '<div class="subnote">No walkin sheet found.</div></div></section>');
+  }
+
+  // ---- 4) Customer satisfaction ----
+  if (pd.targetBlock && pd.targetBlock.available) {
+    var tb = pd.targetBlock;
+    var satPct = tb.totalRow.total > 0 ? Math.round((100 * tb.satTotal) / tb.totalRow.total) : 0;
+    out.push(
+      '<section class="section" id="deck-csat"><h2>🎯 Customer Satisfaction — ' + esc_(tb.periodName || "current period") + '</h2><div class="body">' +
+      '<div class="cards">' +
+      dc("Total Responses", tb.totalRow.total, "people surveyed") +
+      dc("Satisfied", tb.satTotal, satPct + "% of responses") +
+      dc("Dissatisfied", tb.disTotal, (100 - satPct) + "% of responses") +
+      (tb.csat !== "" ? dc("C-SAT", esc_(tb.csat), "from the sheet TOTAL row") : "") +
+      (tb.cfi !== "" ? dc("CFI", esc_(tb.cfi), "from the sheet TOTAL row") : "") +
+      "</div></div></section>");
+  } else {
+    out.push('<section class="section" id="deck-csat"><h2>⭐ Customer Satisfaction</h2><div class="body">' +
+      '<div class="subnote">C-SAT table not found on the target sheet.</div></div></section>');
+  }
+
+  // ---- 5) Open jobs count ----
+  if (pd.jobs && pd.jobs.available) {
+    var j = pd.jobs.totals;
+    out.push(
+      '<section class="section" id="deck-jobs"><h2>🔧 Open Jobs</h2><div class="body">' +
+      '<div class="cards">' +
+      dc("Open Jobs", j.openJobs, j.closedExcluded + " excluded (delivered/closed)") +
+      (j.unclaimed > 0 ? dc("⚠ Unclaimed", j.unclaimed, "chase these customers") : "") +
+      dc("Communicated", j.communicated, j.commRate + "% of open") +
+      dc("Not Communicated", j.notCommunicated, "no comm record yet") +
+      "</div></div></section>");
+  } else {
+    out.push('<section class="section" id="deck-jobs"><h2>🔧 Open Jobs</h2><div class="body">' +
+      '<div class="subnote">No service sheet found.</div></div></section>');
+  }
+
+  return '<section class="sec"><div class="sec-head"><h2>🗂 Deck — Month at a Glance</h2>' +
+    '<p class="sec-sub">Store target vs achievement · KPI achievement · walk-ins · C-SAT · open jobs at a glance.</p></div></section>' +
+    out.join("");
+}
+
 /** OPEN JOBS page: job management. */
 function renderJobsHtml_(pd) {
   return renderJobsSection_(pd);
@@ -2520,6 +2624,7 @@ function refreshDashboardSections() {
     operation: renderOperationHtml_(perfData),
     jobs: renderJobsHtml_(perfData),
     date: renderDateHtml_(data),
+    deck: renderDeckHtml_(data, perfData),
   });
 }
 
@@ -3078,7 +3183,10 @@ function renderIndexHtml_(data, perfData) {
       '" onclick="gotoPage(\'' + esc_(page) + "', this)\" aria-label=\"" + esc_(title) + "\">" +
       '<span class="tile-sparkle" aria-hidden="true"></span>' +
       '<video class="tile-glitter-vid" autoplay muted loop playsinline preload="metadata" ' +
-        'src="https://www.shutterstock.com/shutterstock/videos/1063973464/preview/stock-footage-golden-particles-and-sparkles-gift-card-with-copy-space-for-text-golden-glitter-with-flickering.webm" aria-hidden="true"></video>' +
+        'poster="https://www.shutterstock.com/shutterstock/videos/1064124616/thumb/8.jpg?ip=x480" aria-hidden="true">' +
+        '<source src="https://www.shutterstock.com/shutterstock/videos/1064124616/preview/stock-footage-shining-gold-dust-particles-golden-frame-golden-glitter-sparkling-magic-light-with-bokeh-effect.webm" type="video/webm">' +
+        '<source src="https://www.shutterstock.com/shutterstock/videos/1064124616/preview/stock-footage-shining-gold-dust-particles-golden-frame-golden-glitter-sparkling-magic-light-with-bokeh-effect.mp4" type="video/mp4">' +
+        '</video>' +
       '<span class="tile-icon">' + icon + "</span>" +
       '<span class="tile-title">' + esc_(title) + "</span>" +
       '<span class="tile-blurb">' + esc_(blurb) + "</span>" +
@@ -3295,6 +3403,8 @@ function buildDashboardPage_(data) {
     ["⚙️ Operation", "operation", "pageOperation", renderOperationHtml_(perfData), repairMeta_(perfData.repair, perfData.generatedAt)],
     ["🧰 Open Jobs", "jobs",      "pageJobs",      renderJobsHtml_(perfData), perfMeta_(perfData)],
     ["📅 DATE",      "date",      "pageDate",      renderDateHtml_(data),     renderMetaText_(data)],
+    // DECK lives as the last tab but is intentionally NOT on the index page.
+    ["🗂 Deck",      "deck",      "pageDeck",      renderDeckHtml_(data, perfData), "Month at a glance — store, KPI, walk-ins, C-SAT, jobs"],
   ];
 
   var tabs = PAGES.map(function (pg, idx) {
@@ -3379,7 +3489,7 @@ function buildDashboardPage_(data) {
     "        var prev=document.getElementById('dwTable');" +
     "        var wasOpen=prev?!prev.classList.contains('collapsed'):false;" +
     "        var d=JSON.parse(res);" +
-    "        var map={index:'pageIndex',gp:'pageGp',kpi:'pageKpi',walkin:'pageWalkin',operation:'pageOperation',jobs:'pageJobs',date:'pageDate'};" +
+    "        var map={index:'pageIndex',gp:'pageGp',kpi:'pageKpi',walkin:'pageWalkin',operation:'pageOperation',jobs:'pageJobs',date:'pageDate',deck:'pageDeck'};" +
     "        Object.keys(map).forEach(function(page){" +
     "          var el=document.getElementById(map[page]);" +
     "          if(el && d[page]!==undefined){ el.innerHTML=d[page]; }" +
@@ -3472,7 +3582,7 @@ function buildDashboardPage_(data) {
     // ---- live clock, top-middle: owner-supplied gif as the card background ----
     '<div class="topbar-clock" role="timer">' +
     '<img class="clock-gif" aria-hidden="true" alt="" ' +
-    'src="https://cdn.pixabay.com/animation/2023/05/20/21/52/21-52-42-295_512.gif">' +
+    'src="https://brgprecision-com.3dcartstores.com/assets/images/thumbnails/tgsclc821blu_thumbnail.gif">' +
     '<span class="clock-dim" aria-hidden="true"></span>' +
     '<span class="clock-text" id="liveClock">—</span>' +
     "</div>" +
@@ -3486,10 +3596,10 @@ function buildDashboardPage_(data) {
     '<div class="chat-widget" id="chatWidget">' +
       '<div class="chat-fab" id="chatFab" onclick="chatToggle()" role="button" tabindex="0" ' +
         'aria-label="Open sheet search chat">' +
-        '<span class="chat-fab-icon">💬</span><span>Ask the sheets</span>' +
+        '<span class="chat-fab-icon">💬</span><span>ask me anything</span>' +
       '</div>' +
       '<div class="chat-panel" id="chatPanel" role="dialog" aria-label="Sheet search chat">' +
-        '<div class="chat-head"><b>🤖 Sheet search</b>' +
+        '<div class="chat-head"><b>🤖 ask me anything</b>' +
           '<span class="chat-sub">ask about sales, parts, customers</span>' +
           '<button class="chat-close" onclick="chatToggle()" aria-label="Close chat">&times;</button>' +
         "</div>" +
@@ -4395,12 +4505,12 @@ function getDashboardCss_() {
     // ---- next-slab chase line on the salesperson cards ----
     ".next-slab { color:#8fc7ff; font-weight:700; }" +
     // ---- live clock card, top-middle of the page ----
-    ".topbar-clock { position:relative; overflow:hidden; border-radius:14px; min-width:235px; padding:10px 20px;" +
+    ".topbar-clock { position:relative; overflow:hidden; border-radius:14px; min-width:295px; padding:14px 26px;" +
     " display:flex; align-items:center; justify-content:center; border:1px solid rgba(140,160,230,.5);" +
     " box-shadow:0 8px 22px rgba(6,10,34,.4), inset 0 1px 0 rgba(255,255,255,.25); isolation:isolate; }" +
     ".clock-gif { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; z-index:-2; }" +
     ".clock-dim { position:absolute; inset:0; z-index:-1; background:rgba(6,10,30,.52); }" +
-    ".clock-text { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:.96rem; font-weight:800;" +
+    ".clock-text { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:1.08rem; font-weight:800;" +
     " letter-spacing:.02em; color:#ffffff; text-shadow:0 2px 6px rgba(0,0,0,.75); white-space:nowrap;" +
     " font-variant-numeric:tabular-nums; }" +
     // ============ TASK 22 — one black-glitter backdrop for ALL pages ============
