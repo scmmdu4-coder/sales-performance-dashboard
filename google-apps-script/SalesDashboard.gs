@@ -2655,9 +2655,22 @@ function serverQuery(q) {
     }
 
     var c = chatQuery(query);
+
+    // Task 27: EVERY query also scans every tab in the workbook for relevant
+    // matches — the answer is never limited to the one handler's sheet.
+    var scan = chatAllSheetsScan_(query);
     result.title = c.title;
     result.rows = c.rows || [];
-    result.note = c.note || "";
+    if (scan.rows.length) {
+      if (result.rows.length) {
+        result.rows.push([chatTxt('<div style="margin:4px 0 2px;font-size:.68rem;color:#9fb4e8">— matches across all tabs —</div>')]);
+      }
+      result.rows = result.rows.concat(scan.rows);
+      result.note = (c.note ? c.note + " " : "") +
+        "Cross-tab matches found in: " + esc_(scan.touched.join(", ")) + ".";
+    } else {
+      result.note = c.note || "Scanned all sheet tabs; nothing matched — try a date, part word, or mobile number.";
+    }
     return JSON.stringify(result);
   } catch (err) {
     try {
@@ -3098,6 +3111,60 @@ function chatFuzzyQuery(q) {
     note: 'Try a date: “sales 23.09.26”, a part: “part number for iPhone display”, or a mobile: “919876543210”.',
   };
 }
+
+/**
+ * Task 27 blanket search: scan EVERY tab in the workbook for rows whose text
+ * contains every query token, regardless of which handler answered above.
+ * Stop words are stripped so "sale date from 23.09.26" focuses on the date
+ * digits, "9791994639" focuses on the digits, etc.
+ */
+function chatAllSheetsScan_(query) {
+  var STOP = { sale:1, sales:1, date:1, day:1, from:1, to:1, since:1, what:1, whats:1, is:1, the:1,
+    part:1, number:1, item:1, code:1, for:1, tell:1, me:1, show:1, give:1, details:1, of:1, and:1, or:1,
+    on:1, in:1, find:1, get:1, list:1, whole:1, full:1, all:1 };
+  var raw = str_(query).toLowerCase();
+  var sq = raw.replace(/[^a-z0-9@.\-]/g, " ").trim();
+  var tokens = sq.split(/\s+/).filter(function (t) { return t.length >= 2 && !STOP[t]; });
+  // Keep at most the 4 most distinctive tokens (longest first) to avoid over-tight matching.
+  tokens.sort(function (a, b) { return b.length - a.length; });
+  var useTokens = tokens.slice(0, 4);
+
+  var ss = getSpreadsheet_();
+  var sheets = ss.getSheets();
+  var outRows = [];
+  var touched = [];
+  var PER_SHEET_CAP = 3;
+  var TOTAL_CAP = 12;
+
+  sheets.forEach(function (sheet) {
+    if (outRows.length >= TOTAL_CAP) return;
+    var name = sheet.getName();
+    var values = sheet.getDataRange().getDisplayValues();
+    var found = [];
+    for (var r = 1; r < values.length && found.length < PER_SHEET_CAP; r++) {
+      var cells = values[r].map(function (v) { return str_(v); }).filter(function (v) { return v !== ""; });
+      if (!cells.length) continue;
+      var hay = cells.join(" ").toLowerCase();
+      var hit = useTokens.length
+        ? useTokens.every(function (t) { return hay.indexOf(t) > -1; })
+        : (sq.length >= 2 && hay.indexOf(sq) > -1);
+      if (!hit) continue;
+      // Summarise: first 4 non-empty cells, each ≤24 chars.
+      var bits = cells.slice(0, 6).map(function (c) {
+        return c.length > 24 ? (esc_(c.slice(0, 23)) + "…") : esc_(c);
+      });
+      found.push([chatTxt("<b>" + esc_(name) + "</b>"), chatTxt(bits.join(" · "))]);
+    }
+    if (found.length) {
+      outRows = outRows.concat(found);
+      touched.push(name);
+    }
+  });
+
+  return { rows: outRows, touched: touched };
+}
+
+/** Escape for the chat's HTML table cells (plain text variants live above). */
 
 /* ============================================================================
  * INDEX LANDING PAGE — neon liquid-glass tiles
@@ -3553,11 +3620,10 @@ function buildDashboardPage_(data) {
   return (
     "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
     "<title>" + esc_(pageTitle) + "</title><style>" + css + "</style></head><body>" +
-    // Owner-approved backdrop for EVERY page (Task 26): the dreamstime
-    // "ideas / action / innovation" business-success image at 50% opacity
-    // behind the navy tables. Static asset — no keep-alive loop needed.
+    // Task 27 backdrop for EVERY page: starry deep-blue pinimg GIF at 60%
+    // visibility — dark enough that all foreground detail stays readable.
     '<img id="globalBgGif" class="global-bg-gif" ' +
-      'src="https://thumbs.dreamstime.com/b/ideas-action-innovation-strategy-business-success-concept-471659693.jpg" ' +
+      'src="https://i.pinimg.com/originals/2c/7c/cf/2c7ccfba6490b77f6688ae0d429d3a3a.gif" ' +
       'alt="" aria-hidden="true">' +
     '<header class="topbar"><div class="topbar-inner">' +
     "<div class=\"topbar-left\">" +
@@ -3992,7 +4058,7 @@ function getDashboardCss_() {
     ".section .body { padding:0; }" +
     // ---- cards: the old .kpi-card dark navy tile ----
     ".cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,225px),1fr)); gap:10px; margin-bottom:16px; }" +
-    ".card { background:linear-gradient(145deg,rgba(28,53,99,.98),rgba(17,33,66,.98));" +
+    ".card { background:linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98));" +
     " border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 20px rgba(0,0,0,.18);" +
     " min-width:0; overflow:hidden; padding:13px; }" +
     ".card .label { color:var(--muted); display:block; font-size:.6rem; font-weight:800;" +
@@ -4158,7 +4224,7 @@ function getDashboardCss_() {
     ".scroll-x { overflow-x:auto; border-radius:11px; }" +
     // Performance-page tile row: one navy card per bucket, fits any width.
     ".tile-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr)); gap:10px; margin-bottom:14px; }" +
-    ".tile { background:linear-gradient(145deg,rgba(28,53,99,.98),rgba(17,33,66,.98));" +
+    ".tile { background:linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98));" +
     " border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 20px rgba(0,0,0,.18);" +
     " min-width:0; overflow:hidden; padding:13px; }" +
     ".tile .label { color:var(--muted); display:block; font-size:.6rem; font-weight:800;" +
@@ -4446,11 +4512,11 @@ function getDashboardCss_() {
     ".glass-tile:hover .tile-glitter-vid, .glass-tile:focus-visible .tile-glitter-vid { opacity:.62; }" +
     ".glass-tile .tile-data, .glass-tile .tile-go { z-index:1; }" +
     // index-side group charts & freshness strip on the dark backdrop
-    "#pageIndex .gpie-wrap { background:linear-gradient(145deg,rgba(28,53,99,.98),rgba(17,33,66,.98)); }" +
+    "#pageIndex .gpie-wrap { background:linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98)); }" +
     "#pageIndex .fresh-line { background:rgba(12,17,44,.62); border-color:rgba(255,255,255,.18);" +
     " backdrop-filter:blur(10px); }" +
     "#pageIndex .fresh-line-head { color:#aebcff; }" +
-    "#pageIndex .fresh-chip { background:linear-gradient(145deg,rgba(28,53,99,.98),rgba(17,33,66,.98)); border-color:rgba(170,190,255,.28); }" +
+    "#pageIndex .fresh-chip { background:linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98)); border-color:rgba(170,190,255,.28); }" +
     "#pageIndex .fresh-chip i { color:#aebcff; } #pageIndex .fresh-chip b { color:#ffffff; }" +
     // ---- horizontal bar chart under each group title ----
     ".gbar-group { display:flex; flex-direction:column; gap:5px; }" +
@@ -4463,7 +4529,7 @@ function getDashboardCss_() {
     " box-shadow:0 0 8px rgba(80,120,255,.45), inset 0 -1px 2px rgba(0,0,0,.25), inset 0 1px 1px rgba(255,255,255,.5); }" +
     ".gbar-val { width:30px; flex-shrink:0; text-align:right; font-size:.64rem; font-weight:850; color:#1d2f63; }" +
     // ---- liquid-glass material for every table & tile (owner's dribbble ref) ----
-    "table { background:linear-gradient(145deg,rgba(28,53,99,.98),rgba(17,33,66,.98)); border:1px solid rgba(170,190,255,.32);" +
+    "table { background:linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98)); border:1px solid rgba(170,190,255,.32);" +
     " backdrop-filter:blur(12px) saturate(1.2); -webkit-backdrop-filter:blur(12px) saturate(1.2);" +
     " box-shadow:0 12px 30px rgba(8,12,48,.45), inset 0 1px 0 rgba(255,255,255,.10), 0 2px 10px rgba(76,111,255,.14); }" +
     "td { background:rgba(29,35,84,.78); }" +
@@ -4505,7 +4571,7 @@ function getDashboardCss_() {
     "body { background:#070a1c; color:#dbe4f6; }" +
     "#globalBgVideo { position:fixed; inset:0; z-index:-1; width:100%; height:100%; object-fit:cover; }" +
     ".global-bg-gif { position:fixed; inset:0; z-index:-1; width:100%; height:100%; object-fit:cover;" +
-    " opacity:.5; pointer-events:none; }" +
+    " opacity:.6; pointer-events:none; }" +
     // index pane no longer needs its own dark shell — the video is global now
     "#pageIndex { background:none; border-radius:0; overflow:visible; }" +
     // sticky topbar + tabs as dark liquid glass on the glitter
@@ -4529,7 +4595,7 @@ function getDashboardCss_() {
     ".src-hint { background:rgba(120,130,150,.22); color:#cfe0ff; }" +
     ".repair-strip { background:rgba(10,15,40,.66); border-color:rgba(170,190,255,.20); }" +
     ".rs-label { color:#a9b6d8; } .rs-value { color:#ffffff; }" +
-    ".ph-tile { border-color:rgba(140,160,230,.45); background:linear-gradient(145deg,rgba(28,53,99,.98),rgba(17,33,66,.98)); }" +
+    ".ph-tile { border-color:rgba(140,160,230,.45); background:linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98)); }" +
     ".ph-text { color:#c7d2ee; }" +
     ".inc-cat-title { color:#cfe0ff; }" +
     ".wp-head { color:#f2f6ff; }" +
@@ -4540,7 +4606,7 @@ function getDashboardCss_() {
     // walk-in analysis + token creation locked side by side, sharing the width
     ".walkin-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:stretch; }" +
     ".walkin-pair .wp-left, .walkin-pair .wp-right { min-width:0; }" +
-    ".walkin-pair .wp-right { background:rgba(30,58,107,.55); border:1px solid rgba(170,190,255,.18);" +
+    ".walkin-pair .wp-right { background:rgba(28,43,82,.55); border:1px solid rgba(170,190,255,.18);" +
     " border-radius:12px; padding:12px; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }" +
     // job table: entirely left-aligned
     ".jobtable th, .jobtable td { text-align:left; }" +
@@ -4550,7 +4616,7 @@ function getDashboardCss_() {
     " flex-direction:row; flex-wrap:wrap; gap:10px; margin-top:12px; }" +
     ".csat-right .csat-chip { flex:1 1 190px; width:auto; max-width:280px; }" +
     // ---- index tiles: lighter glass, brighter luminous fonts ----
-    ".glass-tile { background:linear-gradient(145deg,rgba(28,53,99,.98),rgba(17,33,66,.98));" +
+    ".glass-tile { background:linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98));" +
     " border:1px solid rgba(255,255,255,.55); color:#f4f8ff; opacity:1; isolation:isolate;" +
     " box-shadow:0 10px 28px rgba(3,7,26,.5), inset 0 1px 0 rgba(255,255,255,.6), inset 0 -10px 18px rgba(255,255,255,.06); }" +
     ".tile-title { color:#ffffff; text-shadow:0 2px 8px rgba(4,8,26,.85); }" +
@@ -4588,7 +4654,7 @@ function getDashboardCss_() {
     ".wp-daytable .scroll-x { width:100%; }" +
     ".wp-daytable .walkintable { width:100%; }" +
     // C-SAT chips: soften the glare — slightly grey-shaded instead of pure white.
-    ".csat-chip { background:linear-gradient(145deg,rgba(28,53,99,.98),rgba(17,33,66,.98)); border-color:rgba(170,190,255,.32); box-shadow:0 2px 8px rgba(10,20,50,.18); }" +
+    ".csat-chip { background:linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98)); border-color:rgba(170,190,255,.32); box-shadow:0 2px 8px rgba(10,20,50,.18); }" +
     // Job management: force every cell left (beats .ptable td.num), and bucket
     // bands sweep from sky blue down to deep navy.
     ".jobtable th, .jobtable td { text-align:left !important; }" +

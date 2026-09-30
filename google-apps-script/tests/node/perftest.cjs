@@ -343,9 +343,9 @@ check("tile count 14 (Repair Validation tile removed)", (page.match(/class="glas
   (page.match(/class="glass-tile"/g)||[]).length);
 
 console.log("== TASK 21 batch ==");
-check("global business image background at 50% (Task 26)", page.indexOf('id="globalBgGif"')>-1
-  &&page.indexOf("ideas-action-innovation-strategy-business-success-concept-471659693.jpg")>-1
-  &&page.indexOf(".global-bg-gif")>-1&&page.indexOf("opacity:.5")>-1);
+check("global starry background at 60% (Task 27)", page.indexOf('id="globalBgGif"')>-1
+  &&page.indexOf("2c7ccfba6490b77f6688ae0d429d3a3a.gif")>-1
+  &&page.indexOf(".global-bg-gif")>-1&&page.indexOf("opacity:.6")>-1);
 check("static background (no keep-alive needed)", page.indexOf("bgGifKeepAlive")===-1);
 check("tile glitter video on hover", page.indexOf('class="tile-glitter-vid"')>-1&&page.indexOf("1064124616")>-1
   &&page.indexOf(".glass-tile:hover .tile-glitter-vid")>-1&&page.indexOf("shining-gold-dust-particles")>-1);
@@ -367,7 +367,7 @@ check("next-slab balance lines", (page.match(/class="next-slab"/g)||[]).length>=
 check("subha next svc slab ₹1,21,000", subha.nextSvcSlab && subha.nextSvcSlab.need===121000, subha.nextSvcSlab && subha.nextSvcSlab.need);
 
 console.log("== TASK 22 batch ==");
-check("tile glass screenshot-blue + fonts brighter", page.indexOf(",rgba(28,53,99,.98),rgba(17,33,66,.98))")>-1
+check("tile glass screenshot-blue + fonts brighter", page.indexOf(",rgba(28,43,82,.98),rgba(22,34,66,.98))")>-1
   &&page.indexOf(".tile-title { color:#ffffff")>-1);
 check("glitter video fits tile outline", page.indexOf(".tile-glitter-vid { inset:0; border-radius:18px")>-1);
 check("token creation locked side-by-side", page.indexOf(".walkin-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr)")>-1);
@@ -390,7 +390,7 @@ check("day-wise token table full width", page.indexOf('class="wp-daytable"')>-1
   &&page.indexOf('wp-head">📅 Day-wise Walk-in')>-1
   &&page.indexOf(".wp-daytable .walkintable { width:100%")>-1);
 check("walkin analysis split remains", page.indexOf("ptable walksum")>-1&&page.indexOf("ptable walkintable")>-1);
-check("csat chips screenshot-blue + light text (Task 26)", page.indexOf(".csat-chip { background:linear-gradient(145deg,rgba(28,53,99,.98)")
+check("csat chips screenshot-blue + light text", page.indexOf(".csat-chip { background:linear-gradient(145deg,rgba(28,43,82,.98)")
   >-1&&page.indexOf(".csat-chip .cc-value { font-size:1.5rem; font-weight:800; color:#f4f8ff")>-1);
 check("jobtable forced left", page.indexOf(".jobtable th, .jobtable td { text-align:left !important")>-1);
 check("grphead sky-blue to dark gradient", page.indexOf("linear-gradient(90deg,#4fb3f5")>-1
@@ -446,7 +446,7 @@ var gsSrc=fs.readFileSync(__dirname+"/../../SalesDashboard.gs","utf8");
 check("refresh includes deck", page.indexOf("deck:'pageDeck'")>-1&&gsSrc.indexOf("deck: renderDeckHtml_(")>-1);
 
 console.log("== TASK 25 batch ==");
-var NAVY="linear-gradient(145deg,rgba(28,53,99,.98),rgba(17,33,66,.98))";
+var NAVY="linear-gradient(145deg,rgba(28,43,82,.98),rgba(22,34,66,.98))";
 check("clock red-led BRG gif", page.indexOf("www.brgprecision.com/phpinclude/saclocks/alpha/double/images/AC40")>-1
   &&page.indexOf("AC40-01-10-02-R%20animation.gif")>-1);
 check("tables all navy", page.indexOf("table { background:"+NAVY)>-1
@@ -461,13 +461,36 @@ check("chip text readable on navy", page.indexOf(".csat-chip .cc-label { font-si
   &&page.indexOf("#dde3ee")===-1);
 
 console.log("== TASK 26 batch ==");
-check("dreamstime bg (pinimg gone)", page.indexOf("thumbs.dreamstime.com/b/ideas-action-innovation")>-1
+check("pinimg starry bg (dreamstime gone)", page.indexOf("i.pinimg.com/originals/2c/7c/cf/2c7ccfba")>-1
+  &&page.indexOf("ideas-action-innovation")===-1
   &&page.indexOf("783dbbe3f2d2eb0e437be534bb3d3cb6")===-1);
 check("old navy fully replaced by screenshot blue", (page.match(/rgba\(23,49,84/g)||[]).length===0
-  &&(page.match(/rgba\(28,53,99/g)||[]).length>=7);
+  &&(page.match(/rgba\(28,53,99/g)||[]).length===0
+  &&(page.match(/rgba\(28,43,82/g)||[]).length>=7);
 check("red LED clock digits", page.indexOf("color:#ff5c66")>-1
   &&page.indexOf("rgba(255,70,80,.9)")>-1);
-check("wp-right panel tinted screenshot blue", page.indexOf(".wp-right { background:rgba(30,58,107,.55)")>-1);
+check("wp-right panel tinted screenshot blue", page.indexOf(".wp-right { background:rgba(28,43,82,.55)")>-1);
+
+console.log("== TASK 27 batch ==");
+check("global bg is the starry gif at opacity .6", page.indexOf("2c7ccfba6490b77f6688ae0d429d3a3a")>-1
+  &&page.indexOf("opacity:.6; pointer-events:none")>-1);
+// chat all-tab scanner: query 'Ravi Kumar' must find him in service; a
+// case id must light up multiple tabs; results labelled by tab name.
+var scan1=chatAllSheetsScan_("Ravi Kumar");
+check("cross-tab scan finds Ravi", JSON.stringify(scan1.rows).indexOf("Ravi")>-1
+  &&scan1.touched.indexOf("service")>-1, JSON.stringify(scan1.touched));
+var scan2=chatAllSheetsScan_("C1001");
+check("cross-tab scan spans walkin+service+comm", scan2.touched.indexOf("walkin")>-1
+  &&scan2.touched.indexOf("service")>-1&&scan2.touched.indexOf("comm")>-1,
+  JSON.stringify(scan2.touched));
+var fullQ=JSON.parse(serverQuery("part number for care+"));
+var fullFlat=JSON.stringify(fullQ.rows);
+check("chatbot result merges cross-tab matches", fullFlat.indexOf("matches across all tabs")>-1
+  &&fullFlat.indexOf("CPLUS")>-1, JSON.stringify(fullQ).slice(0,150));
+check("chatbot note lists touched tabs", fullQ.note.indexOf("Cross-tab matches")>-1);
+check("scan strips stopwords", chatAllSheetsScan_("_").rows.length===0
+  &&chatAllSheetsScan_("the the the").rows.length===0);
+check("scan respects per-sheet cap", chatAllSheetsScan_("919876543210").rows.length<=12);
 
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);
