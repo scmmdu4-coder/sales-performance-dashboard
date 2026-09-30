@@ -455,3 +455,75 @@ All three need only `messages:send` and live config.
 [3] session=sales chatId=919988776655@c.us  "🔧 Part: display" (7 lines)
 LIVE SMOKE RUN: PASS
 ```
+
+### macOS walkthrough (Apple MacBook — M1/M2/M3 or Intel)
+
+Same integration as above, spelled out for a Mac:
+
+**1. Install what you need (Terminal, ~5 min)**
+```bash
+# package manager (if you don't have brew yet)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Docker Desktop — the easiest way to run OpenWA
+brew install --cask docker
+open /Applications/Docker.app      # wait for the whale icon to say "Docker Desktop is running"
+
+# cloudflared — gives the gateway a public HTTPS URL for Apps Script
+brew install cloudflared
+```
+
+**2. Start the OpenWA gateway**
+```bash
+git clone https://github.com/rmyndharis/OpenWA.git
+cd OpenWA
+docker compose -f docker-compose.dev.yml up -d
+# dashboard + API now at http://localhost:2785 (Swagger at /api/docs)
+
+# grab the admin key
+docker exec openwa-api cat /app/data/.api-key
+```
+OpenWA's published image is multi-arch (`linux/arm64` included), so Apple Silicon pulls the native build — no Rosetta needed.
+
+**3. Link your WhatsApp Business number**
+1. Open `http://localhost:2785` → sign in with the admin key.
+2. Sessions → New → name `sales` → Start.
+3. Open the session's **QR** screen → in the WhatsApp Business app →
+   *Settings → Linked Devices → Link a Device* → scan.
+4. Status turns **CONNECTED**.
+
+**4. Give the gateway a public HTTPS URL (so Google Apps Script can call it)**
+```bash
+# quick test URL (changes each run — fine for a trial):
+cloudflared tunnel --url http://localhost:2785
+# keep this Terminal window open; it prints https://random-words.trycloudflare.com
+```
+For a permanent address, create a named tunnel:
+```bash
+cloudflared tunnel login            # browser opens; pick your domain
+cloudflared tunnel create openwa
+# then bind a hostname (e.g. wa.yourdomain.com) per the dashboard prompts
+cloudflared tunnel --url http://localhost:2785    # replaced by the named-tunnel 'run' command once configured
+```
+
+**5. Configure Apps Script (no code change)**
+Project Settings → Script Properties:
+
+| Property | Example |
+| --- | --- |
+| `WA_GATEWAY_URL` | `https://random-words.trycloudflare.com` |
+| `WA_API_KEY` | admin key from step 2 |
+| `WA_SESSION` | `sales` |
+| `WA_CHATID` | `919876543210` |
+
+Then **Deploy → New deployment → Web app** (Execute as: Me · Access: Anyone) and copy the `/exec` URL.
+
+**6. Test**
+- Outbound: ask the sheet bot a question, tap the green **✆**, enter a number → message arrives.
+- Inbound: in the OpenWA dashboard add a webhook on your `/exec` URL with event `message.received` → WhatsApp a question to the linked number → it auto-replies from the sheets.
+
+**7. Keep it running overnight**
+```bash
+caffeinate -t 43200     # keep the Mac awake 12 h while you leave it unattended
+```
+Docker Desktop will restart the container on reboot if you enable "Start Docker Desktop when you log in" (Docker Desktop → Settings → General).
