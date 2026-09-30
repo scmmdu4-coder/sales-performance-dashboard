@@ -270,8 +270,8 @@ check("vmatrix iPhone=1 Other=4",vmObj.prodTotals.iPhone===1&&vmObj.prodTotals.O
 check("vmatrix coverages incl OOW-NC",vmObj.coverages.indexOf("Out Of Warranty (No Coverage)")>-1);
 check("vmatrix definition gone",page.indexOf("Definition: one table combining every repair")===-1);
 check("snr excluded note",page.indexOf('"Service Non-Repair" cases are excluded')>-1);
-check("walkin two-tint rows only",page.indexOf("--tint:#")>-1&&page.indexOf("--tint:hsl(")===-1
-  &&page.indexOf("background:hsl(")===-1);
+check("walkin rows: single flat navy (Task 31)",page.indexOf(".walkintable tbody td { background-color: rgba(34,43,90,.92) !important; }")>-1
+  &&page.indexOf("--tint")===-1&&page.indexOf("background:hsl(")===-1);
 check("token table",page.indexOf("% of creation")>-1&&page.indexOf("Total tokens generated")>-1);
 check("ready col gone",page.indexOf("Ready for pickup")===-1);
 check("comm pos/neg present",page.indexOf("comm-pos")>-1&&page.indexOf("comm-neg")>-1);
@@ -324,10 +324,11 @@ check("token table right of walk-in", page.indexOf('class="walkin-pair"')>-1
 check("job buckets grouped", page.indexOf('class="grphead"')>-1);
 check("decline/requote placeholders", page.indexOf('ph-tile')>-1
   &&page.indexOf("Decline Repair")>-1&&page.indexOf("Requote &amp; Win-back")>-1);
-check("vmatrix shaded cells", page.indexOf("table.vmatrix td { background:#1d2354; color:#e9edff")>-1);
+check("vmatrix cells one navy (Task 31)", page.indexOf("table.vmatrix td { background:rgba(34,43,90,.92); color:#e9edff")>-1);
 check("blue-glow header skin", page.indexOf("#5b7bff 0%,#4360e0")>-1);
-check("3d bar styling", page.indexOf("--barc")>-1&&page.indexOf("barShine")>-1
-  &&page.indexOf(".bar-fill::before")>-1);
+check("3d bar styling (single colour, Task 31)", page.indexOf("linear-gradient(90deg,#2f8dff,#3ce3b4)")>-1
+  &&page.indexOf("--barc")===-1&&page.indexOf("barShine")>-1&&page.indexOf(".bar-fill::before")>-1
+  &&page.indexOf(".bar-fill.good")===-1&&page.indexOf(".bar-fill.bad")===-1);
 check("index page pane", page.indexOf('data-pane="index"')>-1&&page.indexOf("index-hero")>-1);
 check("index tiles built (11 now, matrix tile removed)", (page.match(/class="glass-tile"/g)||[]).length>=11,
   (page.match(/class="glass-tile"/g)||[]).length);
@@ -355,7 +356,7 @@ check("tile count 14 (Repair Validation tile removed)", (page.match(/class="glas
   (page.match(/class="glass-tile"/g)||[]).length);
 
 console.log("== TASK 21 batch ==");
-check("plain dark-ash background for all pages (Task 30)", page.indexOf("body { background:#24272c")>-1
+check("lighter plain background for all pages (Task 31)", page.indexOf("body { background:#3f444d")>-1
   &&page.indexOf('id="globalBgGif"')===-1&&page.indexOf(".global-bg-gif {")===-1);
 check("static background (no keep-alive needed)", page.indexOf("bgGifKeepAlive")===-1);
 check("tile glitter video on hover", page.indexOf('class="tile-glitter-vid"')>-1&&page.indexOf("1064124616")>-1
@@ -370,7 +371,10 @@ check("live clock card, no gif + tick js (Task 30)", page.indexOf('class="topbar
 check("amc & bundle side-by-side", page.indexOf('class="inc-pair"')>-1);
 check("repair matrix removed so no duo", page.indexOf('class="duo-pair"')===-1);
 check("job table fixed layout", page.indexOf(".jobtable { table-layout:fixed")>-1&&page.indexOf("<colgroup>")>-1);
-check("distinct person band colours", page.indexOf("#8a9bd4")>-1&&page.indexOf("#b8860b")>-1&&page.indexOf("#0f9d8f")>-1);
+check("person band colours removed: one table color set (Task 31)",
+  page.indexOf("#8a9bd4")===-1&&page.indexOf("#b8860b")===-1&&page.indexOf("#0f9d8f")===-1
+  &&page.indexOf("#7a3fd4")===-1&&page.indexOf("#c04a68")===-1
+  &&page.indexOf("td.cell-0")===-1&&page.indexOf("th.grp-3")===-1);
 check("liquid glass material on tables", page.indexOf("backdrop-filter:blur(12px) saturate(1.2)")>-1);
 check("csat chips below table", page.indexOf(".csat-flex { flex-direction:column")>-1
   &&page.indexOf(".csat-flex .csat-right { flex:0 0 auto; width:100%")>-1);
@@ -385,7 +389,7 @@ check("token creation locked side-by-side", page.indexOf(".walkin-pair { display
 check("job table left aligned", page.indexOf(".jobtable th, .jobtable td { text-align:left")>-1);
 check("advance paid tile removed", page.indexOf('class="label">Advance Paid</div>')===-1);
 check("advance totals still computed", j.totals.advanceTotal===2049);
-check("dark section shells on all pages", page.indexOf(".sec { background:rgba(10,15,40,.66)")>-1);
+check("section shells use the one navy surface (Task 31)", page.indexOf(".sec { background:rgba(28,43,82,.98)")>-1);
 check("dark topbar", page.indexOf(".topbar { background:rgba(8,12,32,.78)")>-1);
 
 console.log("== TASK 23 batch ==");
@@ -404,10 +408,14 @@ check("walkin analysis split remains", page.indexOf("ptable walksum")>-1&&page.i
 check("csat chips flat navy + light text", page.indexOf(".csat-chip { background:rgba(28,43,82,.98)")
   >-1&&page.indexOf(".csat-chip .cc-value { font-size:1.5rem; font-weight:800; color:#f4f8ff")>-1);
 check("jobtable forced left", page.indexOf(".jobtable th, .jobtable td { text-align:left !important")>-1);
-check("grphead sky-blue to dark gradient", page.indexOf("linear-gradient(90deg,#4fb3f5")>-1
-  &&page.indexOf("#0b3672")>-1);
+check("grphead uses the canonical header gradient (Task 31)", page.indexOf(".grphead td { background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%)")>-1
+  &&page.indexOf("linear-gradient(90deg,#4fb3f5")===-1);
 check("datewise definition removed", page.indexOf("Definition: every invoice date")===-1);
-check("subha band softened", page.indexOf("#8a9bd4")>-1&&page.indexOf("#3353c0")===-1);
+check("one surface everywhere (Task 31)", page.indexOf("card-unclaimed { background:rgba(28,43,82,.98)")>-1
+  &&page.indexOf(".rtile.done { background:rgba(28,43,82,.98)")>-1
+  &&page.indexOf("#57f2bd")===-1
+  &&page.indexOf("linear-gradient(145deg,rgba(11,93,71")===-1
+  &&page.indexOf("linear-gradient(145deg,rgba(90,62,8")===-1);
 check("chat widget on page", page.indexOf('id="chatPanel"')>-1&&page.indexOf('id="chatFab"')>-1
   &&page.indexOf("chatToggle")>-1&&page.indexOf("chatSend")>-1
   &&page.indexOf(".serverQuery(q)")>-1);
@@ -450,7 +458,8 @@ check("tile video golden-frame asset swap", page.indexOf("1064124616/thumb/8.jpg
 check("chat bot renamed ask me anything", page.indexOf("ask me anything")>-1&&page.indexOf("Ask the sheets")===-1);
 check("clock has no gif asset", page.indexOf("AC40-01-10-02-R")===-1
   &&page.indexOf("tgsclc821blu_thumbnail.gif")===-1&&page.indexOf("animation.gif")===-1);
-check("clock bigger w/o gif (Task 30)", page.indexOf("width:320px; height:88px")>-1&&page.indexOf("font-size:1.296rem")>-1);
+check("clock fits a bigger frame (Task 31)", page.indexOf("width:400px; height:96px")>-1
+  &&page.indexOf("font-size:1.296rem")>-1);
 check("deck tab present", page.indexOf('data-page="deck"')>-1&&page.indexOf('id="pageDeck"')>-1);
 check("deck NOT on index tiles", (page.match(/glass-tile[^>]*data-page="deck"/g)||[]).length===0);
 check("deck sections", page.indexOf('id="deck-store"')>-1&&page.indexOf('id="deck-kpi"')>-1
@@ -487,7 +496,7 @@ check("pale sky-blue LED clock digits (Task 30)", page.indexOf("color:#b7dcff")>
 check("wp-right panel same flat navy", page.indexOf(".wp-right { background:rgba(28,43,82,.98)")>-1);
 
 console.log("== TASK 27 batch ==");
-check("background is flat dark-ash everywhere (Task 30)", page.indexOf("body { background:#24272c; color:#dbe4f6; }")>-1
+check("background is flat lighter-ash everywhere (Task 31)", page.indexOf("body { background:#3f444d; color:#dbe4f6; }")>-1
   &&page.indexOf("2c7ccfba6490b77f6688ae0d429d3a3a")===-1);
 console.log("== TASK 29 batch ==");
 // client JS must PARSE — a syntax error here silently kills every onclick.

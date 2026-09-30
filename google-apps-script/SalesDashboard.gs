@@ -3549,9 +3549,7 @@ function renderWalkinDayTable_(wl) {
   // apart (pivot-style shading). Hue steps keep consecutive dates distinct.
   // Day rows alternate between just TWO standard navy tints (owner asked to
   // ditch the rotating rainbow: "simple 2 or 3 standard optimum colours").
-  var TINTS = ["#1d2354", "#2a3164", "#232a5e"];
   var rows = wl.days.map(function (d, i) {
-    var tint = TINTS[i % TINTS.length];
     var cells = wl.purposeCols.map(function (name) { return c0(d.purposes[name] || 0); }).join("");
     var dead = d.deadLeads
       ? '<td class="num dead">' + d.deadLeads + "</td>"
@@ -3562,7 +3560,7 @@ function renderWalkinDayTable_(wl) {
     var remark = d.remarks
       ? '<td class="num">' + d.remarks + "</td>"
       : '<td class="num muted">—</td>';
-    return '<tr style="--tint:' + tint + '"' + (d.undated ? ' class="undated-row"' : "") + ">" +
+    return "<tr" + (d.undated ? ' class="undated-row"' : "") + ">" +
       '<td class="daycell"><b>' + esc_(d.undated ? "No date" : d.dateKey) + "</b>" +
         (d.weekday ? ' <span class="muted">' + d.weekday + "</span>" : "") + "</td>" +
       '<td class="num"><b>' + d.walkins + "</b></td>" +
@@ -3876,7 +3874,7 @@ function getDashboardCss_() {
     // ---- cards: the old .kpi-card dark navy tile ----
     ".cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,225px),1fr)); gap:10px; margin-bottom:16px; }" +
     ".card { background:rgba(28,43,82,.98);" +
-    " border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 20px rgba(0,0,0,.18);" +
+    " border:1px solid var(--line); border-radius:12px; box-shadow:0 16px 38px rgba(2,4,18,.55), inset 0 1px 0 rgba(255,255,255,.14);" +
     " min-width:0; overflow:hidden; padding:13px; }" +
     ".card .label { color:var(--muted); display:block; font-size:.6rem; font-weight:800;" +
     " letter-spacing:.06em; line-height:1.15; text-transform:uppercase; white-space:nowrap;" +
@@ -3886,19 +3884,19 @@ function getDashboardCss_() {
     " font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }" +
     ".card .sub { display:block; margin-top:4px; color:var(--muted); font-size:.72rem; font-weight:500; }" +
     ".card .value.pos { color:var(--achieved); } .card .value.neg { color:var(--danger); }" +
-    ".card-unclaimed { border-color:#eab308; background:linear-gradient(145deg,rgba(90,62,8,.95),rgba(46,32,6,.95)); }" +
-    ".card-unclaimed .value, .card-unclaimed .value.neg { color:var(--balance); }" +
+    ".card-unclaimed { background:rgba(28,43,82,.98); }" +
+    ".card-unclaimed .value { color:var(--white); }" +
     // ---- Section 1 store tiles: 1:1 port of the old page's kpi-card pieces ----
     ".rgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,225px),1fr)); gap:10px; }" +
     ".rtile { padding:11px; }" +
-    ".rtile.done { background:linear-gradient(145deg,rgba(11,93,71,.98),rgba(9,50,54,.98)); border-color:#57f2bd; }" +
+    ".rtile.done { background:rgba(28,43,82,.98); }" +
     ".rt-head { align-items:center; display:flex; gap:6px; justify-content:space-between; margin-bottom:8px; min-width:0; }" +
     ".rt-head h3 { color:#fff; font-size:.88rem; font-weight:850; letter-spacing:-.015em; margin:0;" +
     " min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }" +
     ".status { border-radius:999px; flex-shrink:0; font-size:.55rem; font-weight:850;" +
     " padding:3px 6px; text-transform:uppercase; }" +
-    ".status.on { background:rgba(97,239,187,.17); color:var(--achieved); }" +
-    ".status.pending { background:rgba(255,210,122,.15); color:var(--balance); }" +
+    ".status.on { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".status.pending { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
     ".mg { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; width:100%; }" +
     ".metric { background:rgba(255,255,255,.055); border-radius:7px; min-width:0; padding:7px 6px; }" +
     ".metric span { color:var(--muted); display:block; font-size:.56rem; font-weight:800;" +
@@ -3907,28 +3905,27 @@ function getDashboardCss_() {
     " letter-spacing:-.02em; line-height:1.15; font-variant-numeric:tabular-nums; white-space:nowrap; }" +
     ".metric.t strong { color:var(--target); } .metric.a strong { color:var(--achieved); }" +
     ".metric.p strong { color:var(--percent); } .metric.b strong { color:var(--balance); }" +
-    ".dreq { background:rgba(69,220,255,.09); border-left:3px solid var(--accent); border-radius:7px;" +
+    ".dreq { background:rgba(255,255,255,.055); border-left:3px solid rgba(120,160,255,.7); border-radius:7px;" +
     " margin-top:6px; padding:6px 8px; width:100%; }" +
     ".dreq span { color:var(--muted); display:block; font-size:.54rem; font-weight:800;" +
     " letter-spacing:.045em; line-height:1.1; text-transform:uppercase; }" +
     ".dreq strong { color:#e9fbff; display:block; font-size:.82rem; font-variant-numeric:tabular-nums;" +
     " line-height:1.15; margin-top:2px; white-space:nowrap; }" +
     ".rtile .bar { margin-top:7px; }" +
-    ".rtile.done .bar-fill { background:#6dffc7; }" +
-    ".sec-desc { color:#64748b; font-size:.72rem; margin:-3px 0 10px; }" +
+        ".sec-desc { color:#64748b; font-size:.72rem; margin:-3px 0 10px; }" +
     // ---- badges / status pills: old .status pills ----
     ".badge { display:inline-block; padding:3px 10px; border-radius:999px; font-weight:850;" +
     " font-size:.66rem; text-transform:uppercase; letter-spacing:.02em; }" +
-    ".badge.good { background:rgba(97,239,187,.17); color:var(--achieved); }" +
-    ".badge.info { background:rgba(143,199,255,.16); color:var(--target); }" +
-    ".badge.warn { background:rgba(255,210,122,.15); color:var(--balance); }" +
-    ".badge.bad { background:rgba(255,157,167,.15); color:var(--danger); }" +
+    ".badge.good { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".badge.info { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".badge.warn { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".badge.bad { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
     // ---- progress bars: 3D loading-slider look — dark inset track,
     // glossy gradient fill with a glow halo and a travelling light streak ----
     ".bar { height:11px; border-radius:999px; background:#12141f; overflow:hidden; min-width:70px;" +
     " box-shadow:inset 0 2px 5px rgba(0,0,0,.7), inset 0 -1px 2px rgba(255,255,255,.08), 0 1px 0 rgba(255,255,255,.08); }" +
     ".bar-fill { position:relative; height:100%; border-radius:inherit; display:block; overflow:hidden;" +
-    " background:var(--barc, linear-gradient(90deg,#2f8dff,#3ce3b4));" +
+    " background:linear-gradient(90deg,#2f8dff,#3ce3b4);" +
     " box-shadow:0 0 12px var(--barg, rgba(88,190,255,.55)), inset 0 -2px 3px rgba(0,0,0,.28); }" +
     // top gloss: the "3D" dome highlight
     ".bar-fill::before { content:''; position:absolute; left:1px; right:1px; top:1px; height:44%;" +
@@ -3938,11 +3935,7 @@ function getDashboardCss_() {
     " background:linear-gradient(90deg,transparent,rgba(255,255,255,.5),transparent);" +
     " transform:skewX(-18deg); animation:barShine 2.6s ease-in-out infinite; }" +
     "@keyframes barShine { to { left:135%; } }" +
-    ".bar-fill.good { --barc:linear-gradient(90deg,#0fbf7f,#6dffc7); --barg:rgba(109,255,199,.55); }" +
-    ".bar-fill.info { --barc:linear-gradient(90deg,#3b7dff,#8fc7ff); --barg:rgba(113,160,255,.55); }" +
-    ".bar-fill.warn { --barc:linear-gradient(90deg,#e0a02c,#ffd477); --barg:rgba(255,212,119,.55); }" +
-    ".bar-fill.bad { --barc:linear-gradient(90deg,#e05a68,#ff9da7); --barg:rgba(255,120,135,.6); }" +
-    // ---- generic text tones ----
+                    // ---- generic text tones ----
     ".pos { color:var(--achieved); font-weight:700; } .neg { color:var(--danger); font-weight:700; }" +
     ".muted { color:var(--muted); }" +
     "table .muted { color:#94a2d2; }" +
@@ -3952,11 +3945,10 @@ function getDashboardCss_() {
     // tables get a header a few shades darker — still clearly separate from
     // the navy body cells.
     "table.hdr-deep thead th, table.hdr-deep thead th.grp, table.hdr-deep thead .sticky-col {" +
-    " background:linear-gradient(180deg,#25306e 0%,#1c2450 60%,#141b3e 100%) !important;" +
-    " color:#dfe6ff; border-bottom:2px solid #5468c9; }" +
-    "table.hdr-deep tr.total-row td { background:linear-gradient(90deg,#232b5f,#1a2048) !important; }" +
+    " background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%) !important; }" +
+    "table.hdr-deep tr.total-row td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; }" +
     "table { width:100%; border-collapse:separate; border-spacing:0; font-size:.8rem;" +
-    " background:#161b42; border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
+    " background:rgba(28,43,82,.98); border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
     " box-shadow:0 10px 26px rgba(8,12,48,.38), 0 2px 10px rgba(76,111,255,.14); }" +
     "th { text-align:right; background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%); color:#ffffff;" +
     " font-size:.68rem; font-weight:800; text-shadow:0 1px 2px rgba(12,20,70,.65);" +
@@ -3964,20 +3956,19 @@ function getDashboardCss_() {
     " border-bottom:2px solid #8eaaff; box-shadow:inset 0 1px 0 rgba(255,255,255,.25), 0 2px 8px rgba(76,111,255,.30); }" +
     "th:first-child, td:first-child { text-align:left; }" +
     "td { padding:8px 10px; text-align:right; color:#e9edff; font-size:.8rem; font-weight:400;" +
-    " font-variant-numeric:tabular-nums; background:#1d2354;" +
+    " font-variant-numeric:tabular-nums; background:rgba(34,43,90,.92);" +
     " border-bottom:1px solid rgba(105,132,255,.16); }" +
     "tbody tr:last-child td { border-bottom:none; }" +
-    "tbody tr:hover td { background:#262e68; }" +
-    "tr.holiday td { background:rgba(255,212,119,.10) !important; }" +
-    ".status-chip { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:700; }" +
-    ".status-chip.ok { background:rgba(99,230,183,.28); color:#0f7a52; }" +
-    ".status-chip.warn { background:rgba(255,212,119,.30); color:#8a5b00; }" +
-    ".status-chip.muted-chip { background:rgba(120,130,150,.16); color:#5b6675; }" +
+    "tbody tr:hover td { background:rgba(46,56,112,.95); }" +
+        ".status-chip { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:700; }" +
+    ".status-chip.ok { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".status-chip.warn { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".status-chip.muted-chip { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
     ".src-hint { font-family:ui-monospace,Consolas,monospace; font-size:12px; background:rgba(120,130,150,.14);" +
     " padding:1px 6px; border-radius:6px; }" +
     ".walksum { max-width:640px; }" +
     ".walksum td:not(.num) { text-align:left; }" +
-    ".walksum tr.deadsum td { background:rgba(255,157,167,.10); }" +
+    ".walksum tr.deadsum td { background:rgba(34,43,90,.92); }" +
     ".targetblock th, .targetblock td { text-align:left; }" +
     ".repair-strip { display:flex; flex-wrap:wrap; gap:18px; align-items:center; margin-top:12px;" +
     " padding:12px 16px; border:1px solid #d5dde6; border-radius:10px; background:#f6f9fd; }" +
@@ -4011,19 +4002,19 @@ function getDashboardCss_() {
     "table.csat-table td.num { font-variant-numeric:tabular-nums; text-align:center; }" +
     ".csat-table .totrow td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; color:#ffffff; font-weight:800; border-top:1px solid rgba(142,170,255,.6); }" +
     ".csat-pos { color:#52e9ac; font-weight:700; } .csat-neg { color:#ff8f9d; font-weight:700; } .csat-mid { color:#ffd477; font-weight:600; }" +
-    "table.vmatrix { width:100%; border-collapse:collapse; background:#161b42;" +
+    "table.vmatrix { width:100%; border-collapse:collapse; background:rgba(28,43,82,.98);" +
     " border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
     " box-shadow:0 10px 26px rgba(8,12,48,.38), 0 2px 10px rgba(76,111,255,.14); }" +
     "table.vmatrix th, table.vmatrix td { padding:8px 12px; border-bottom:1px solid rgba(105,132,255,.16); font-size:.85rem; }" +
     "table.vmatrix thead th { background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%); color:#ffffff; text-align:center; font-size:.76rem;" +
     " font-weight:800; text-shadow:0 1px 2px rgba(12,20,70,.65);" +
     " text-transform:uppercase; letter-spacing:.04em; position:sticky; top:0; z-index:2; border-bottom:2px solid #8eaaff; }" +
-    "table.vmatrix td { background:#1d2354; color:#e9edff; }" +
+    "table.vmatrix td { background:rgba(34,43,90,.92); color:#e9edff; }" +
     "table.vmatrix td.num, table.vmatrix th.num { text-align:right; font-variant-numeric:tabular-nums; }" +
     "table.vmatrix td.muted { color:#8f9ecf; }" +
     "table.vmatrix .sticky-col { position:sticky; left:0; z-index:1; background:#232a63; color:#e9edff; text-align:left; font-weight:700; }" +
     "table.vmatrix thead .sticky-col { z-index:3; background:#3350c2; color:#ffffff; }" +
-    "table.vmatrix tbody tr:hover td { background:#262e68; }" +
+    "table.vmatrix tbody tr:hover td { background:rgba(46,56,112,.95); }" +
     "table.vmatrix tbody tr:hover .sticky-col { background:#2b336f; }" +
     ".vmtotal { background:rgba(84,116,255,.16) !important; color:#ffffff; font-weight:800; }" +
     "tr.vmtotrow td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; color:#fff; font-weight:800; border-top:1px solid rgba(142,170,255,.6); }" +
@@ -4057,8 +4048,8 @@ function getDashboardCss_() {
     ".foot { text-align:center; color:#64748b; font-size:.74rem; padding:14px 0 26px; font-weight:500; }" +
     // ---- incentive gate notes inside person cards ----
     ".gate { margin-top:10px; padding:9px 11px; border-radius:8px; font-size:.78rem; line-height:1.45; }" +
-    ".gate.met { background:rgba(97,239,187,.10); border:1px solid rgba(97,239,187,.35); color:#a5f3d0; }" +
-    ".gate.blocked { background:rgba(255,157,167,.10); border:1px solid rgba(255,157,167,.35); color:#ffc7cd; }" +
+    ".gate.met { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.35); color:#cfe0ff; }" +
+    ".gate.blocked { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.35); color:#cfe0ff; }" +
     ".incentive-line { display:flex; justify-content:space-between; font-size:.78rem; margin-top:6px;" +
     " color:var(--white); font-variant-numeric:tabular-nums; padding-bottom:5px;" +
     " border-bottom:1px solid rgba(58,85,117,.45); }" +
@@ -4073,11 +4064,11 @@ function getDashboardCss_() {
     ".sp-2 { border-left-color:#63e6b7 !important; }" +
     ".sp-3 { border-left-color:#dfb2ff !important; }" +
     ".sp-4 { border-left-color:#ff9da7 !important; }" +
-    "tr.person-band-0 td { background:rgba(143,199,255,.055); }" +
-    "tr.person-band-1 td { background:rgba(251,191,36,.055); }" +
-    "tr.person-band-2 td { background:rgba(99,230,183,.055); }" +
-    "tr.person-band-3 td { background:rgba(223,178,255,.055); }" +
-    "tr.person-band-4 td { background:rgba(255,157,167,.055); }" +
+    "tr.person-band-0 td { background:rgba(34,43,90,.92); }" +
+    "tr.person-band-1 td { background:rgba(34,43,90,.92); }" +
+    "tr.person-band-2 td { background:rgba(34,43,90,.92); }" +
+    "tr.person-band-3 td { background:rgba(34,43,90,.92); }" +
+    "tr.person-band-4 td { background:rgba(34,43,90,.92); }" +
     // Oval achievement pills — exact old-page look: an oval around the
     // achieved number, mint/salmon fill with dark readable text inside.
     // The condition is unchanged (met the daily target → green, else red).
@@ -4092,21 +4083,12 @@ function getDashboardCss_() {
     "table.matrix tbody td { border-bottom:1px solid rgba(58,85,117,.45); }" +
     "table.matrix thead th { position:sticky; top:0; z-index:3; }" +
     "table.matrix th.grp { text-align:center; border-left:1px solid var(--line); }" +
-    "table.matrix .sticky-col { position:sticky; left:0; z-index:2; background:#1d2354;" +
+    "table.matrix .sticky-col { position:sticky; left:0; z-index:2; background:rgba(34,43,90,.92);" +
     " text-align:left; border-right:1px solid rgba(105,132,255,.35); }" +
-    "table.matrix thead .sticky-col { z-index:4; background:#3350c2; }" +
+    "table.matrix thead .sticky-col { z-index:4; background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%); }" +
     "table.matrix td .tgt { display:block; font-size:.66rem; font-weight:600; color:#94a2d2; margin-top:2px; }" +
-    // subtle tinted column groups, one per salesperson
-    // Person bands are STRONGLY distinct solids (owner asked for an instant
-    // "whose column is this" read on the date-wise matrix).
-    // Subha's band: soft periwinkle instead of the loud royal blue (Task 23).
-    "td.cell-0 { background:rgba(146,161,214,.12); } th.grp-0 { background:linear-gradient(180deg,#8a9bd4,#6f7fb8); }" +
-    "td.cell-1 { background:rgba(196,138,22,.11); } th.grp-1 { background:linear-gradient(180deg,#b8860b,#9c7309); }" +
-    "td.cell-2 { background:rgba(15,157,143,.09); } th.grp-2 { background:linear-gradient(180deg,#0f9d8f,#0c8377); }" +
-    "td.cell-3 { background:rgba(122,63,212,.10); } th.grp-3 { background:linear-gradient(180deg,#7a3fd4,#6134ad); }" +
-    "td.cell-4 { background:rgba(192,74,104,.10); } th.grp-4 { background:linear-gradient(180deg,#c04a68,#a03c55); }" +
-    "table.matrix tr.holiday .sticky-col { background:rgba(255,212,119,.16) !important; }" +
-    "table.matrix tr.total-row td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; border-top:1px solid rgba(142,170,255,.6); }" +
+    // Task 31: one flat colour set for every table — per-person column bands removed
+                            "table.matrix tr.total-row td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; border-top:1px solid rgba(142,170,255,.6); }" +
     // ---- AR attachment sub-panel inside section 6 (light panel like old summary items) ----
     ".subpanel { margin-top:14px; padding:13px 15px; border-radius:10px;" +
     " border:1px solid #d5dde6; background:rgba(255,255,255,.92); box-shadow:0 3px 10px rgba(15,23,42,.05); }" +
@@ -4139,22 +4121,22 @@ function getDashboardCss_() {
 
     // dark tables inside the process page (jobs / tokens), matching the old date-report
     ".ptable { border-collapse:separate; border-spacing:0; width:100%; font-size:.8rem;" +
-    " background:#161b42; border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
+    " background:rgba(28,43,82,.98); border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
     " box-shadow:0 10px 26px rgba(8,12,48,.38), 0 2px 10px rgba(76,111,255,.14); }" +
     ".ptable th, .ptable td { text-align:left; padding:8px 11px; border-bottom:1px solid rgba(105,132,255,.16);" +
     " vertical-align:top; white-space:nowrap; font-weight:400; color:#e9edff; }" +
-    ".ptable td { background:#1d2354; }" +
+    ".ptable td { background:rgba(34,43,90,.92); }" +
     ".ptable thead th { background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%); color:#ffffff; font-size:.68rem;" +
     " font-weight:800; text-shadow:0 1px 2px rgba(12,20,70,.65);" +
     " text-transform:uppercase; letter-spacing:.05em; position:sticky; top:0; border-bottom:2px solid #8eaaff;" +
     " box-shadow:inset 0 1px 0 rgba(255,255,255,.25); }" +
-    ".ptable tbody tr:hover td { background:#262e68; }" +
+    ".ptable tbody tr:hover td { background:rgba(46,56,112,.95); }" +
     ".ptable td.num { text-align:right; font-variant-numeric:tabular-nums; }" +
     ".ptable .daycell { min-width:110px; }" +
     ".jobtable th, .jobtable td { font-size:.78rem; }" +
-    ".jobtable .sticky-col { position:sticky; left:0; background:#1d2354; }" +
-    ".jobtable thead .sticky-col { background:#3350c2; }" +
-    ".chip { display:inline-block; background:rgba(69,217,245,.12); color:#aee8f7; border-radius:999px;" +
+    ".jobtable .sticky-col { position:sticky; left:0; background:rgba(34,43,90,.92); }" +
+    ".jobtable thead .sticky-col { background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%); }" +
+    ".chip { display:inline-block; background:rgba(255,255,255,.08); color:#cfe0ff; border-radius:999px;" +
     " padding:3px 9px; font-size:.68rem; margin:1px 2px 1px 0; font-weight:600; }" +
     ".chip b { color:#ffffff; }" +
     // walk-in / comm status colours on the dark tables
@@ -4166,13 +4148,13 @@ function getDashboardCss_() {
     ".unclaimed-row td { background:rgba(255,212,119,.10) !important; }" +
     ".unclaimed-row:hover td { background:rgba(255,212,119,.16) !important; }" +
     ".unclaimed-row .sticky-col { box-shadow:inset 4px 0 0 #eab308; }" +
-    ".badge-unclaimed { display:inline-block; background:rgba(255,210,122,.18); color:var(--balance); font-weight:850;" +
+    ".badge-unclaimed { display:inline-block; background:rgba(255,255,255,.08); color:#cfe0ff; font-weight:850;" +
     " font-size:.68rem; padding:3px 10px; border-radius:999px; white-space:nowrap; text-transform:uppercase; }" +
-    ".badge-unclaimed.sm { font-size:.62rem; padding:2px 7px; background:var(--balance); color:#451a03; }" +
+    ".badge-unclaimed.sm { font-size:.62rem; padding:2px 7px; background:rgba(255,255,255,.08); color:#cfe0ff; }" +
     ".undated-row td { background:rgba(223,178,255,.10); }" +
-    // walk-in day rows each carry their own --tint; cells fall back to the navy phase
-    ".walkintable tbody td { background-color: var(--tint, #1d2354); }" +
-    ".walkintable tbody tr:hover td { background-color: var(--tint, #1d2354); box-shadow: inset 0 0 0 999px rgba(84,116,255,.14); }" +
+    // walk-in day rows: one flat navy, no per-day tint (Task 31)
+    ".walkintable tbody td { background-color: rgba(34,43,90,.92) !important; }" +
+    ".walkintable tbody tr:hover td { background-color: rgba(46,56,112,.95) !important; box-shadow: inset 0 0 0 999px rgba(84,116,255,.14); }" +
     ".walkintable .totrow td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; border-top:1px solid rgba(142,170,255,.6); color:#ffffff; font-weight:800; }" +
     ".walkintable td.dead { color:#ff9daa; font-weight:700; }" +
     ".walkintable td.uniq { color:#7edbff; font-weight:700; }" +
@@ -4182,23 +4164,23 @@ function getDashboardCss_() {
     ".tokentable .totrow td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; color:#ffffff; font-weight:900; border-top:1px solid rgba(142,170,255,.6); }" +
     ".age-warn { color:var(--balance); font-weight:600; }" +
     ".age-crit { color:var(--danger); font-weight:700; }" +
-    ".subnote { background:rgba(255,210,122,.14); border:1px solid rgba(255,210,122,.45); border-radius:8px; padding:9px 12px;" +
+    ".subnote { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.32); border-radius:8px; padding:9px 12px;" +
     " font-size:.78rem; color:#6b5410; margin-bottom:12px; font-weight:500; }" +
-    ".empty-perf { background:rgba(255,255,255,.92); border:1px dashed #cbd5e1; border-radius:9px; padding:22px;" +
+    ".empty-perf { background:rgba(28,43,82,.98); border:1px dashed rgba(170,190,255,.4); border-radius:9px; padding:22px; color:#a9b6d8;" +
     " text-align:center; font-size:.82rem; color:#64748b; font-weight:500; }" +
-    ".grphead td { background:linear-gradient(90deg,#546fff,#7c5cff) !important; color:#ffffff; font-weight:850; font-size:.7rem;" +
+    ".grphead td { background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%) !important; color:#ffffff; font-weight:850; font-size:.7rem;" +
     " letter-spacing:.07em; text-transform:uppercase; padding:8px 12px; border-bottom:2px solid #9db4ff;" +
     " box-shadow:0 3px 10px rgba(84,111,255,.35); }" +
     ".grphead-count { float:right; color:var(--target); font-weight:800; text-transform:none; letter-spacing:0; }" +
     ".norepair-row td { background:rgba(255,157,167,.12) !important; }" +
     ".norepair-row .sticky-col { box-shadow:inset 4px 0 0 var(--danger); }" +
-    ".badge-norepair { display:inline-block; background:rgba(255,157,167,.20); color:var(--danger); font-weight:850;" +
+    ".badge-norepair { display:inline-block; background:rgba(255,255,255,.08); color:#cfe0ff; font-weight:850;" +
     " font-size:.62rem; padding:2px 7px; border-radius:999px; white-space:nowrap; }" +
     ".oow-nopay-row td { background:rgba(223,178,255,.13) !important; }" +
     ".oow-nopay-row .sticky-col { box-shadow:inset 4px 0 0 var(--percent); }" +
     ".badge-oow { display:inline-block; background:rgba(223,178,255,.20); color:var(--percent); font-weight:850;" +
     " font-size:.62rem; padding:2px 7px; border-radius:999px; white-space:nowrap; }" +
-    ".badge.completed { background:rgba(97,239,187,.17); color:var(--achieved); }" +
+    ".badge.completed { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
     ".map-line { font-size:.68rem; color:#64748b; margin:0 0 10px; font-weight:500; line-height:1.6; }" +
     ".map-line b { color:#17263a; font-weight:750; }" +
     ".map-missing { color:#c2393f; font-weight:800; }" +
@@ -4289,7 +4271,7 @@ function getDashboardCss_() {
     ".tile-go { position:absolute; left:14px; bottom:11px; font-size:.7rem; font-weight:800; color:#3f5ce0; }" +
     ".glass-tile:hover .tile-go { color:#1d2f63; }" +
     // --- pie under each group title ---
-    ".gpie-wrap { background:rgba(255,255,255,.55); border:1px solid rgba(255,255,255,.7); border-radius:14px;" +
+    ".gpie-wrap { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.32); border-radius:14px;" +
     " padding:10px; box-shadow:0 6px 16px rgba(40,60,120,.12), inset 0 1px 0 rgba(255,255,255,.8); }" +
     ".gpie-title { font-size:.7rem; font-weight:800; color:#c9d4f5; text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px; }" +
     ".gpie-body { display:flex; align-items:center; gap:10px; }" +
@@ -4306,7 +4288,7 @@ function getDashboardCss_() {
     " border:1px solid rgba(255,255,255,.7); box-shadow:0 6px 16px rgba(40,60,120,.10); }" +
     ".fresh-line-head { font-size:.66rem; font-weight:850; color:#5a6a99; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }" +
     ".fresh-row { display:flex; flex-wrap:wrap; gap:8px; }" +
-    ".fresh-chip { display:inline-flex; align-items:center; gap:6px; background:rgba(255,255,255,.75);" +
+    ".fresh-chip { display:inline-flex; align-items:center; gap:6px; background:rgba(28,43,82,.98);" +
     " border:1px solid rgba(150,170,255,.4); border-radius:999px; padding:4px 12px; font-size:.68rem; }" +
     ".fresh-chip i { font-style:normal; color:#5a6a99; font-weight:700; }" +
     ".fresh-chip b { color:#1d2f63; font-weight:800; }" +
@@ -4318,7 +4300,7 @@ function getDashboardCss_() {
     ".bgnd-video { position:absolute; z-index:0; inset:0; width:100%; height:100%; object-fit:cover;" +
     " opacity:.8; pointer-events:none; }" +
     "#pageIndex .index-hero h2 { color:#f5f8ff; text-shadow:0 2px 10px rgba(3,6,24,.7); }" +
-    "#pageIndex .tile-board { background:rgba(9,13,34,.55); border:1px solid rgba(255,255,255,.14);" +
+    "#pageIndex .tile-board { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.28);" +
     " backdrop-filter:blur(10px) saturate(1.2); -webkit-backdrop-filter:blur(10px) saturate(1.2);" +
     " box-shadow:0 16px 40px rgba(2,5,24,.55), inset 0 1px 0 rgba(255,255,255,.14); }" +
     "#pageIndex .tile-group-head, #pageIndex .tile-group-link { color:#e6ecff; }" +
@@ -4330,7 +4312,7 @@ function getDashboardCss_() {
     ".glass-tile .tile-data, .glass-tile .tile-go { z-index:1; }" +
     // index-side group charts & freshness strip on the dark backdrop
     "#pageIndex .gpie-wrap { background:rgba(28,43,82,.98); }" +
-    "#pageIndex .fresh-line { background:rgba(12,17,44,.62); border-color:rgba(255,255,255,.18);" +
+    "#pageIndex .fresh-line { background:rgba(28,43,82,.98); border-color:rgba(170,190,255,.28);" +
     " backdrop-filter:blur(10px); }" +
     "#pageIndex .fresh-line-head { color:#aebcff; }" +
     "#pageIndex .fresh-chip { background:rgba(28,43,82,.98); border-color:rgba(170,190,255,.28); }" +
@@ -4338,22 +4320,22 @@ function getDashboardCss_() {
     // ---- horizontal bar chart under each group title ----
     ".gbar-group { display:flex; flex-direction:column; gap:5px; }" +
     ".gbar-row { display:flex; align-items:center; gap:7px; }" +
-    ".gbar-lbl { width:74px; flex-shrink:0; font-size:.6rem; font-weight:800; color:#44548c; letter-spacing:.02em;" +
+    ".gbar-lbl { width:86px; flex-shrink:0; font-size:.66rem; font-weight:800; color:#dbe7ff; letter-spacing:.02em;" +
     " white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }" +
-    ".gbar-track { flex:1; height:8px; border-radius:999px; background:rgba(90,110,190,.18); overflow:hidden;" +
+    ".gbar-track { flex:1; height:9px; border-radius:999px; background:rgba(255,255,255,.12); overflow:hidden;" +
     " box-shadow:inset 0 1px 2px rgba(20,30,80,.3); }" +
     ".gbar-fill { display:block; height:100%; border-radius:inherit;" +
     " box-shadow:0 0 8px rgba(80,120,255,.45), inset 0 -1px 2px rgba(0,0,0,.25), inset 0 1px 1px rgba(255,255,255,.5); }" +
-    ".gbar-val { width:30px; flex-shrink:0; text-align:right; font-size:.64rem; font-weight:850; color:#1d2f63; }" +
+    ".gbar-val { width:56px; flex-shrink:0; text-align:right; font-size:.72rem; font-weight:850; color:#ffffff; }" +
     // ---- liquid-glass material for every table & tile (owner's dribbble ref) ----
     "table { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.32);" +
     " backdrop-filter:blur(12px) saturate(1.2); -webkit-backdrop-filter:blur(12px) saturate(1.2);" +
-    " box-shadow:0 12px 30px rgba(8,12,48,.45), inset 0 1px 0 rgba(255,255,255,.10), 0 2px 10px rgba(76,111,255,.14); }" +
-    "td { background:rgba(29,35,84,.78); }" +
-    "tbody tr:hover td { background:rgba(38,46,104,.85); }" +
+    " box-shadow:0 18px 44px rgba(2,4,18,.6), 0 3px 12px rgba(2,4,18,.5), inset 0 1px 0 rgba(255,255,255,.14); }" +
+    "td { background:rgba(34,43,90,.92); }" +
+    "tbody tr:hover td { background:rgba(46,56,112,.95); }" +
     ".card, .person-card, .tile {" +
     " backdrop-filter:blur(12px) saturate(1.2); -webkit-backdrop-filter:blur(12px) saturate(1.2);" +
-    " box-shadow:0 12px 28px rgba(8,14,44,.32), inset 0 1px 0 rgba(255,255,255,.14); }" +
+    " box-shadow:0 18px 44px rgba(2,4,18,.6), 0 3px 12px rgba(2,4,18,.5), inset 0 1px 0 rgba(255,255,255,.20), inset 0 -1px 0 rgba(0,0,0,.35); }" +
     ".card { border:1px solid rgba(170,190,255,.28); }" +
     ".person-card { border:1px solid rgba(170,190,255,.30); }" +
     ".csat-chip { backdrop-filter:blur(10px); }" +
@@ -4377,7 +4359,7 @@ function getDashboardCss_() {
     // ---- live clock card, top-middle of the page ----
     // Task 30: gif animation removed; digits keep the LED texture, now in
     // pale light sky blue, 20% bigger (1.08rem -> 1.296rem).
-    ".topbar-clock { position:relative; overflow:hidden; border-radius:14px; width:320px; height:88px; flex:0 0 auto;" +
+    ".topbar-clock { position:relative; overflow:hidden; border-radius:14px; width:400px; height:96px; flex:0 0 auto;" +
     " padding:10px 18px; box-sizing:border-box;" +
     " display:flex; align-items:center; justify-content:center; border:1px solid rgba(140,160,230,.5);" +
     " background:rgba(8,14,36,.92);" +
@@ -4387,7 +4369,7 @@ function getDashboardCss_() {
     " text-shadow:0 0 6px rgba(120,180,255,.9), 0 0 14px rgba(100,160,255,.6), 0 0 30px rgba(90,140,250,.35);" +
     " white-space:nowrap; font-variant-numeric:tabular-nums; }" +
     // ============ TASK 22 — one black-glitter backdrop for ALL pages ============
-    "body { background:#24272c; color:#dbe4f6; }" +
+    "body { background:#3f444d; color:#dbe4f6; }" +
     "#globalBgVideo { position:fixed; inset:0; z-index:-1; width:100%; height:100%; object-fit:cover; }" +
     // index pane no longer needs its own dark shell — the video is global now
     "#pageIndex { background:none; border-radius:0; overflow:visible; }" +
@@ -4402,15 +4384,15 @@ function getDashboardCss_() {
     ".tab-btn { color:#c3cfee; }" +
     ".tab-btn.active { background:linear-gradient(180deg,#ffffff,#dfe8ff); color:#1b2a52; box-shadow:0 4px 12px rgba(4,8,26,.5); }" +
     // dark liquid-glass shells for every section on every page
-    ".sec { background:rgba(10,15,40,.66); border-color:rgba(170,190,255,.20);" +
+    ".sec { background:rgba(28,43,82,.98); border-color:rgba(170,190,255,.28);" +
     " backdrop-filter:blur(12px) saturate(1.15); -webkit-backdrop-filter:blur(12px) saturate(1.15);" +
     " box-shadow:0 14px 34px rgba(4,8,26,.5), inset 0 1px 0 rgba(255,255,255,.10); }" +
-    ".duo-pair > .section { background:rgba(10,15,40,.66); border:1px solid rgba(170,190,255,.20);" +
+    ".duo-pair > .section { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.28);" +
     " backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); }" +
     ".section h2, .sec h2, .section-title { color:#f2f6ff; }" +
     ".sec-sub, .section-sub, .sec-desc { color:#a9b6d8; }" +
-    ".src-hint { background:rgba(120,130,150,.22); color:#cfe0ff; }" +
-    ".repair-strip { background:rgba(10,15,40,.66); border-color:rgba(170,190,255,.20); }" +
+    ".src-hint { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".repair-strip { background:rgba(28,43,82,.98); border-color:rgba(170,190,255,.28); }" +
     ".rs-label { color:#a9b6d8; } .rs-value { color:#ffffff; }" +
     ".ph-tile { border-color:rgba(140,160,230,.45); background:rgba(28,43,82,.98); }" +
     ".ph-text { color:#c7d2ee; }" +
@@ -4419,7 +4401,7 @@ function getDashboardCss_() {
     ".map-line { color:#94a3bd; } .map-line b { color:#e6edff; }" +
     ".legend-card { border-color:rgba(170,190,255,.28); }" +
     ".legend-card b { color:#f2f6ff; } .legend-card .muted { color:#a9b6d8; }" +
-    ".subnote { color:#ffe9b3; }" +
+    ".subnote { color:#cfe0ff; }" +
     // walk-in analysis + token creation locked side by side, sharing the width
     ".walkin-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:stretch; }" +
     ".walkin-pair .wp-left, .walkin-pair .wp-right { min-width:0; }" +
@@ -4475,7 +4457,7 @@ function getDashboardCss_() {
     // Job management: force every cell left (beats .ptable td.num), and bucket
     // bands sweep from sky blue down to deep navy.
     ".jobtable th, .jobtable td { text-align:left !important; }" +
-    ".grphead td { background:linear-gradient(90deg,#4fb3f5 0%,#2b8ae0 34%,#175fb0 68%,#0b3672 100%) !important;" +
+    ".grphead td { background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%) !important;" +
     " border-bottom-color:#8cc9ff !important; box-shadow:0 3px 10px rgba(11,54,114,.5); }" +
     // ---- floating sheet-search chat bot (every page, bottom-right) ----
     ".chat-widget { position:fixed; right:18px; bottom:18px; z-index:90; display:flex;" +
