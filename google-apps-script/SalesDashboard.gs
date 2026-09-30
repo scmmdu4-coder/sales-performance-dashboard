@@ -3617,7 +3617,7 @@ function buildDashboardPage_(data) {
     // ---- WhatsApp share of the last bot answer (Task 28) ----
     "function waTextOf_(res){" +
     "  var rows=(res.rows||[]).map(function(r){return r.map(function(c){return c.replace(/<[^>]+>/g,'');}).filter(Boolean).join('  ·  ');});" +
-    "  return [res.title].concat(rows).concat(res.note?[res.note]:[]).slice(0,22).join('\n');" +
+    "  return [res.title].concat(rows).concat(res.note?[res.note]:[]).slice(0,22).join('\\n');" +
     "}" +
     "function waSendLast(){" +
     "  var q=window.__waLastQuery, msg=window.__waLastText;" +
@@ -4596,10 +4596,14 @@ function getDashboardCss_() {
     // ---- next-slab chase line on the salesperson cards ----
     ".next-slab { color:#8fc7ff; font-weight:700; }" +
     // ---- live clock card, top-middle of the page ----
-    ".topbar-clock { position:relative; overflow:hidden; border-radius:14px; min-width:295px; padding:14px 26px;" +
+    // Task 29: the AC40 clock gif must be FULLY visible — cover-cropping cut
+    // off its edges; use contain inside a fixed-height, non-shrinking card.
+    ".topbar-clock { position:relative; overflow:hidden; border-radius:14px; width:300px; height:86px; flex:0 0 auto;" +
+    " padding:10px 18px; box-sizing:border-box;" +
     " display:flex; align-items:center; justify-content:center; border:1px solid rgba(140,160,230,.5);" +
+    " background:rgba(4,6,18,.85);" +
     " box-shadow:0 8px 22px rgba(6,10,34,.4), inset 0 1px 0 rgba(255,255,255,.25); isolation:isolate; }" +
-    ".clock-gif { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; z-index:-2; }" +
+    ".clock-gif { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; z-index:-2; }" +
     ".clock-dim { position:absolute; inset:0; z-index:-1; background:rgba(6,10,30,.52); }" +
     // Task 25/26: digits glow red-LED to match the AC40 BRG clock texture.
     ".clock-text { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:1.08rem; font-weight:800;" +

@@ -446,7 +446,7 @@ check("tile video golden-frame asset swap", page.indexOf("1064124616/thumb/8.jpg
 check("chat bot renamed ask me anything", page.indexOf("ask me anything")>-1&&page.indexOf("Ask the sheets")===-1);
 check("clock uses red-led gif", page.indexOf("AC40-01-10-02-R%20animation.gif")>-1
   &&page.indexOf("tgsclc821blu_thumbnail.gif")===-1);
-check("clock bigger", page.indexOf("min-width:295px")>-1&&page.indexOf("font-size:1.08rem")>-1);
+check("clock sized + fully visible (Task 29 raises to 300x86 contain)", page.indexOf("width:300px; height:86px")>-1&&page.indexOf("font-size:1.08rem")>-1);
 check("deck tab present", page.indexOf('data-page="deck"')>-1&&page.indexOf('id="pageDeck"')>-1);
 check("deck NOT on index tiles", (page.match(/glass-tile[^>]*data-page="deck"/g)||[]).length===0);
 check("deck sections", page.indexOf('id="deck-store"')>-1&&page.indexOf('id="deck-kpi"')>-1
@@ -560,6 +560,20 @@ check("wa memories saved on answers",
   page.indexOf("window.__waLastQuery=q")>-1&&page.indexOf("window.__waLastText=waTextOf_(res)")>-1);
 // restore: gateway props off so later tests stay hermetic
 global.__WA_PROPS={};
+
+console.log("== TASK 29 batch ==");
+check("clock gif fully visible (contain, fixed card)", page.indexOf("object-fit:contain; z-index:-2")>-1
+  &&page.indexOf(".topbar-clock { position:relative; overflow:hidden; border-radius:14px; width:300px; height:86px; flex:0 0 auto;")>-1
+  &&page.indexOf("object-fit:cover; z-index:-2; }\n.clock-dim")===-1);
+// client JS must PARSE — a syntax error here silently kills every onclick.
+var m=page.match(/<script>([\s\S]*?)<\/script>/);
+var clientJS=m?m[1]:"";
+var jsErr=null; try{ new Function(clientJS); }catch(e){ jsErr=e.message; }
+check("client script block parses (clicks work)", jsErr===null, jsErr||"");
+check("waTextOf_ emits escaped newline only", page.indexOf(".join('\\n')")>-1);
+check("all click handlers defined", clientJS.indexOf("function switchPage(")>-1
+  &&clientJS.indexOf("function chatSend(")>-1&&clientJS.indexOf("function waSendLast()")>-1
+  &&clientJS.indexOf("function chatToggle(")>-1);
 
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);
