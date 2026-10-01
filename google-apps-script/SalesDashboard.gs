@@ -2832,9 +2832,10 @@ function chatMobileQuery(mobile, origQ) {
       title: title,
       rows: [[chatTxt('<span class="muted">No records found for this number in any sheet.</span>')]],
       note: "Check the number, or try a Case ID instead.",
+      wide: true,
     };
   }
-  return { title: title, rows: rows, note: "criss-crossed through walk-in, service, advance and CRM sheets." };
+  return { title: title, rows: rows, note: "criss-crossed through walk-in, service, advance and CRM sheets.", wide: true };
 }
 
 /** crm rows that reference this mobile (via the invoice-code link from walk-in). */
@@ -3004,7 +3005,7 @@ function chatCaseQuery(caseId) {
   var commD = chatCommDateForCase_(ss, caseId);
   outRows.push([chatTxt("<b>Comm updated</b>"), chatPlain(commD || "no updates logged")]);
   if (rows.length > 1) outRows.push([chatTxt('<span class="muted">' + rows.length + " rows carry this Case ID on the service sheet.</span>")]);
-  return { title: "🧰 Case " + str_(caseId).toUpperCase(), rows: outRows, note: "From service!CaseId." };
+  return { title: "🧰 Case " + str_(caseId).toUpperCase(), rows: outRows, note: "From service!CaseId.", wide: true };
 }
 
 /** Advance-balance rows for this mobile. */
@@ -3489,7 +3490,7 @@ function buildDashboardPage_(data) {
     "        h+='</tbody></table>';" +
     "      }" +
     "      if(res.note){h+='<div class=\\\"muted\\\">'+res.note+'</div>';}" +
-    "      var pl=document.getElementById('chatPanel'); if(pl){pl.classList.toggle('half', !!(res.rows && res.rows.length));}" +
+    "      var pl=document.getElementById('chatPanel'); if(pl){pl.classList.toggle('half', !!res.wide);}" +
     "      finish(h);" +
     "    })" +
     "    .withFailureHandler(function(err){" +
@@ -3833,7 +3834,7 @@ function renderJobManagement_(jm) {
     '<colgroup>' +
     '<col style="width:10%"><col style="width:4.5%"><col style="width:10.5%">' +
     '<col style="width:10.5%"><col style="width:10.5%"><col style="width:9%">' +
-    '<col style="width:9.5%"><col style="width:9.5%"><col style="width:12.5%">' +
+    '<col style="width:9.5%"><col style="width:9.5%"><col style="width:13%">' +
     '<col style="width:7.5%"><col style="width:5.5%">' +
     '</colgroup>' +
     '<thead><tr>' +

@@ -497,7 +497,11 @@ check("incentive helpers hardcoded, not sheet-driven", gsSrc33.indexOf("svcInc =
 check("person card incentive footer no longer cites A18:D25", page.indexOf("target!A18:D25")===-1);
 // --- chatbot: half-page results + per-case diagnostic block ---
 check("chat panel half-width css", page.indexOf(".chat-panel.half { width:50vw")>-1, "chat-panel.half css");
-check("chat panel widens on result rows", page.indexOf("classList.toggle('half'")>-1);
+check("chat panel widens only on mobile/case answers", page.indexOf("classList.toggle('half', !!res.wide)")>-1);
+check("mobile + case answers flagged wide", mobQ2.wide===true
+  &&chatQuery("C1001").wide===true&&chatQuery("919876543299").wide===true);
+check("guidance answers stay compact", off1.wide!==true
+  &&chatQuery("subha").wide!==true&&chatQuery("part number for care+").wide!==true);
 check("mobile case block fields", mobFlat.indexOf("CRM case status")>-1
   &&mobFlat.indexOf("GSX case status")>-1&&mobFlat.indexOf("CRM bucket")>-1
   &&mobFlat.indexOf("Case date")>-1&&mobFlat.indexOf("Comm updated")>-1,
