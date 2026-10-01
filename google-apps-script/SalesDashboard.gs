@@ -1701,6 +1701,9 @@ var SERVICE_SPEC = {
   // Ready-for-pickup date — service!Ready_For_Pickup_Date_CRM (average
   // days from CaseDate to pickup-ready on the Performance page).
   readyPickup: [/^ready_for_pickup_date_crm$/i, /ready.*for.*pickup/i, /ready.*pickup/i, /pickup.*date/i],
+  // Task 34 — GSX ID and device serial shown on the Open Jobs table.
+  gsxCode: [/^gsxcode$/i, /^gsx.*(code|id|no\.?|number)$/i, /gsx.*(job|case).*id/i],
+  serialNo1: [/^serialno1$/i, /serial.*no\.?1/i, /serial.*number/i, /^serial/i, /device.*serial/i, /imei/i],
 };
 
 var ADVANCE_SPEC = {
@@ -1857,6 +1860,8 @@ function computeJobManagement_(ss) {
       crmRepairStatus: crmRepairStatus || "—",
       warranty: warrantyTxt || "—",
       repairType: repairTypeTxt || "—",
+      gsxId: str_(r.gsxCode) || "—",
+      serialNo: str_(r.serialNo1) || "—",
       isSNR: isSNR,
       gsxCompleted: gsxCompleted,
       noRepairLate: noRepairLate,
@@ -1915,7 +1920,8 @@ function computeJobManagement_(ss) {
   var sources = {};
   ["caseId", "mobile", "product", "warranty", "repairDocType", "gsxStatus",
    "crmRepairStatus", "caseDate", "repairCreatedDate", "jobAge",
-   "advanceDirect", "status", "deliveredDate", "readyPickup"]
+   "advanceDirect", "status", "deliveredDate", "readyPickup",
+   "gsxCode", "serialNo1"]
     .forEach(function (f) {
       sources[f] = (read.col && read.col[f] !== undefined && read.col[f] !== -1)
         ? str_(read.header[read.col[f]]) : "";
@@ -3746,6 +3752,17 @@ function renderJobManagement_(jm) {
     return "<td>" + esc_(s) + "</td>";
   }
 
+  // Task 34 — one distinguishable accent per owner-named repair bucket.
+  function bucketAccent_(grp) {
+    var g = str_(grp).toLowerCase();
+    if (g.indexOf("unclaimed") > -1) return "bk-unclaimed";
+    if ((g.indexOf("ready") > -1 && (g.indexOf("pick") > -1 || g.indexOf("collect") > -1))) return "bk-ready";
+    if (/repair\s*in\s*(process|progress)/.test(g) || /work\s*in\s*progress/.test(g) ||
+        /\bin[- ](process|progress)\b/.test(g)) return "bk-process";
+    if (g.indexOf("estimat") > -1) return "bk-estimate";
+    return "";
+  }
+
   // ---- club the jobs by CRM repair status (bucket-wise) -------------
   // Buckets are alphabetical; within a bucket the oldest job stays first so
   // the longest-waiting cases in each status sit at the top of their block.
@@ -3757,12 +3774,13 @@ function renderJobManagement_(jm) {
     return b.jobAge - a.jobAge;
   });
 
-  // Column order fixed by the owner (10 columns):
-  // Repair bucket · Aging · GSX repair status · Case ID · Name · Number ·
-  // Model · Repair type · Communicated · Comm updated date.
-  // Rows stay grouped under a highlighted band per repair bucket.
-  var NCOLS = 11;
+  // Column order fixed by the owner (12 columns):
+  // Repair bucket · Aging · GSX repair status · Repair type · CRM status ·
+  // Case ID · Name · Number · GSX ID · Device S.No · Model · Comm updated.
+  // Rows stay grouped under a colour-coded band per repair bucket.
+  var NCOLS = 12;
   var prevGroup = null;
+  var grpAccent = "";
   var rowParts = [];
   for (var gi = 0; gi < grouped.length; gi++) {
     var j = grouped[gi];
@@ -3772,18 +3790,16 @@ function renderJobManagement_(jm) {
       var bucketCount = grouped.filter(function (x) {
         return (x.crmRepairStatus || "—") === grp;
       }).length;
-      rowParts.push('<tr class="grphead"><td colspan="' + NCOLS + '">' + esc_(grp) +
+      grpAccent = bucketAccent_(grp);
+      rowParts.push('<tr class="grphead' + (grpAccent ? " " + grpAccent : "") + '"><td colspan="' + NCOLS + '">' + esc_(grp) +
         '<span class="grphead-count">' + bucketCount + " open case" + (bucketCount === 1 ? "" : "s") +
         "</span></td></tr>");
     }
-    rowParts.push(buildRow_(j));
+    rowParts.push(buildRow_(j, grpAccent));
   }
   var rows = rowParts.join("");
 
-  function buildRow_(j) {
-    var comm = j.communicated
-      ? '<span class="comm-yes">Yes</span>'
-      : '<span class="comm-no">No</span>';
+  function buildRow_(j, bk) {
     // Comm. updated cell: green when the latest update is within
     // COMM_STALE_DAYS days of today, red when older or not on record at all.
     var commDate;
@@ -3802,9 +3818,10 @@ function renderJobManagement_(jm) {
     // repairStatusCell — the grphead band above each block carries the
     // highlight, so the cell itself stays a plain status.
     var bucketCell = j.isUnclaimed
-      ? '<td class="bucket-cell"><span class="badge-unclaimed">' + esc_(j.crmRepairStatus || "—") + "</span></td>"
-      : '<td class="bucket-cell">' + esc_(j.crmRepairStatus || "—") + "</td>";
+      ? '<td class="bucket-cell' + (bk ? " " + bk : "") + '"><span class="badge-unclaimed">' + esc_(j.crmRepairStatus || "—") + "</span></td>"
+      : '<td class="bucket-cell' + (bk ? " " + bk : "") + '">' + esc_(j.crmRepairStatus || "—") + "</td>";
     var rowClses = [];
+    if (bk) rowClses.push(bk);
     if (j.isUnclaimed) rowClses.push("unclaimed-row");
     // Rule (b): physical repair never started and the case is 2+ days old.
     if (j.noRepairLate) rowClses.push("norepair-row");
@@ -3823,8 +3840,10 @@ function renderJobManagement_(jm) {
         (j.oowNoAdvance ? ' <span class="badge-oow sm">⚠ OOW · no advance</span>' : "") + "</td>" +
       "<td>" + esc_(j.name) + "</td>" +
       '<td class="num">' + esc_(j.mobile) + "</td>" +
+      // Task 34: GSX ID + device serial right after Number, before Model.
+      "<td>" + esc_(j.gsxId || "—") + "</td>" +
+      "<td>" + esc_(j.serialNo || "—") + "</td>" +
       "<td>" + esc_(j.product) + "</td>" +
-      "<td>" + comm + "</td>" +
       commDate +
       "</tr>";
   }
@@ -3832,16 +3851,17 @@ function renderJobManagement_(jm) {
   var table =
     '<div class="scroll-x jobwrap"><table class="ptable jobtable">' +
     '<colgroup>' +
-    '<col style="width:10%"><col style="width:4.5%"><col style="width:10.5%">' +
-    '<col style="width:10.5%"><col style="width:10.5%"><col style="width:9%">' +
-    '<col style="width:9.5%"><col style="width:9.5%"><col style="width:13%">' +
-    '<col style="width:7.5%"><col style="width:5.5%">' +
+    '<col style="width:9.5%"><col style="width:4%"><col style="width:9.5%">' +
+    '<col style="width:9.5%"><col style="width:9.5%"><col style="width:8%">' +
+    '<col style="width:8.5%"><col style="width:8.5%"><col style="width:8%">' +
+    '<col style="width:8%"><col style="width:10.5%"><col style="width:6.5%">' +
     '</colgroup>' +
     '<thead><tr>' +
     "<th>Repair Bucket</th><th>Aging</th><th>GSX Repair Status</th>" +
     "<th>Repair Type</th><th>CRM Status</th>" +
-    "<th>Case ID</th><th>Name</th><th>Number</th><th>Model</th>" +
-    "<th>Communicated</th><th>Comm. Updated</th>" +
+    "<th>Case ID</th><th>Name</th><th>Number</th>" +
+    "<th>GSX ID</th><th>S.No</th><th>Model</th>" +
+    "<th>Comm. Updated</th>" +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>";
 
   // Resolved column mapping — printed under the section so the user can
@@ -3853,6 +3873,7 @@ function renderJobManagement_(jm) {
   var mapLine = '<div class="map-line">' + [
     ["Repair Bucket","crmRepairStatus"],["Aging","jobAge"],
     ["GSX Repair Status","gsxStatus"],["Repair Type","repairDocType"],["CRM Status","crmRepairStatus"],["Case ID","caseId"],["Number","mobile"],
+    ["GSX ID","gsxCode"],["Device S.No","serialNo1"],
     ["Model","product"],["Open filter","status"]]
     .map(srcLine).join(" · ") + "</div>";
 
@@ -4233,6 +4254,16 @@ function getDashboardCss_() {
     " font-size:.78rem; color:#6b5410; margin-bottom:12px; font-weight:500; }" +
     ".empty-perf { background:rgba(28,43,82,.98); border:1px dashed rgba(170,190,255,.4); border-radius:9px; padding:22px; color:#a9b6d8;" +
     " text-align:center; font-size:.82rem; color:#64748b; font-weight:500; }" +
+    // Task 34 — one distinguishable colour per owner-named repair bucket.
+    ".grphead.bk-estimate td { background:linear-gradient(180deg,#f6a21c 0%,#c97a08 55%,#a25f06 100%) !important; }" +
+    ".grphead.bk-ready td { background:linear-gradient(180deg,#2fd475 0%,#17a558 55%,#0f8145 100%) !important; }" +
+    ".grphead.bk-process td { background:linear-gradient(180deg,#22c2e3 0%,#0f91c0 55%,#0b7197 100%) !important; }" +
+    ".grphead.bk-unclaimed td { background:linear-gradient(180deg,#f05858 0%,#d02e2e 55%,#a81f1f 100%) !important; }" +
+    ".grphead[class*=bk-] .grphead-count { color:#ffffff; }" +
+    ".jobtable td.bucket-cell.bk-estimate { color:#ffd27a !important; box-shadow:inset 3px 0 0 0 #f6a21c; }" +
+    ".jobtable td.bucket-cell.bk-ready { color:#86f2b0 !important; box-shadow:inset 3px 0 0 0 #2fd475; }" +
+    ".jobtable td.bucket-cell.bk-process { color:#96ddff !important; box-shadow:inset 3px 0 0 0 #22c2e3; }" +
+    ".jobtable td.bucket-cell.bk-unclaimed { color:#ffb3b3 !important; box-shadow:inset 3px 0 0 0 #f05858; }" +
     ".grphead td { background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%) !important; color:#ffffff; font-weight:850; font-size:.7rem;" +
     " letter-spacing:.07em; text-transform:uppercase; padding:8px 12px; border-bottom:2px solid #9db4ff;" +
     " box-shadow:0 3px 10px rgba(84,111,255,.35); }" +

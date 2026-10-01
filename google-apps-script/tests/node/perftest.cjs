@@ -109,17 +109,17 @@ var cm=[["CaseId","CreatedDate","Remark"],
 // ---- service ----
 var sv=[["CaseId","FirstName","LastName","MobileNo","ProductDescription","CaseDate",
  "RepairCreatedDate","JobAge","Status","DeliveredDate","GSXRepairStatusDescription","CRM_JobStatusDesc",
- "CoverageCodeDescription","RepairDocType","Ready_For_Pickup_Date_CRM"],
+ "CoverageCodeDescription","RepairDocType","Ready_For_Pickup_Date_CRM","GSXCode","SerialNo1"],
  // duplicate of C1003 with an OLDER case date placed BEFORE the real row —
  // the merger must keep the later (real) row instead.
- ["C1003","Mani","Kandan","919876543212","Different Phone",daysAgoStr(5,"10"),"",5,"Open","","Diagnosis In Progress","","In Warranty","Walk-In Repair",""],
- ["C1001","Ravi","Kumar","919876543210","iPhone 13",daysAgoStr(14,"10"),daysAgoStr(13,"11"),14,"Open","","Repair Complete","Original Display Used","In Warranty","Walk-In Repair",daysAgoStr(12,"10")],
- ["C1002","Anita","Devi","919876543211","Samsung S23",daysAgoStr(4,"09"),daysAgoStr(3,"14"),4,"Open","","Unclaimed Device","Part Used","Out of Warranty","Carry-In Repair",daysAgoStr(1,"12")],
- ["C1003","Mani","Kandan","919876543212","OnePlus 11",daysAgoStr(2,"10"),"",2,"Open","","Diagnosis In Progress","Device Unclaimed Device due","Out Of Warranty (No Coverage)","Walk-In Repair",""],
- ["C1004","Peela","Dass","919876543217","Realme 12",daysAgoStr(1,"08"),"",1,"Open","","Repair In Progress","Ready For Pickup","In Warranty","Service Non-Repair",""],
- ["C1005","Old","Closed","919876543218","Pixel 7",daysAgoStr(55,"09"),daysAgoStr(54,"10"),55,"Delivered",daysAgoStr(50,"10"),"Repair Complete","Part Used","In Warranty","Carry-In Repair",daysAgoStr(50,"10")],
- ["C1006","Age","Fallback","919876543219","Moto G",daysAgoStr(20,"09"),"","","Open","","Waiting for Part","","Out Of Warranty (No Coverage)","Walk-In Repair",""],
- ["C1007","Can","Cell","919876543220","Nokia",daysAgoStr(2,"09"),"",2,"Cancelled","","Aborted","","In Warranty","Carry-In Repair",""]];
+ ["C1003","Mani","Kandan","919876543212","Different Phone",daysAgoStr(5,"10"),"",5,"Open","","Diagnosis In Progress","","In Warranty","Walk-In Repair","","GSX6003-OLD","SN-OLD"],
+ ["C1001","Ravi","Kumar","919876543210","iPhone 13",daysAgoStr(14,"10"),daysAgoStr(13,"11"),14,"Open","","Repair Complete","Original Display Used","In Warranty","Walk-In Repair",daysAgoStr(12,"10"),"GSX6001","SN-C1001"],
+ ["C1002","Anita","Devi","919876543211","Samsung S23",daysAgoStr(4,"09"),daysAgoStr(3,"14"),4,"Open","","Unclaimed Device","Part Used","Out of Warranty","Carry-In Repair",daysAgoStr(1,"12"),"GSX6002","SN-C1002"],
+ ["C1003","Mani","Kandan","919876543212","OnePlus 11",daysAgoStr(2,"10"),"",2,"Open","","Diagnosis In Progress","Device Unclaimed Device due","Out Of Warranty (No Coverage)","Walk-In Repair","","GSX6003","SN-C1003"],
+ ["C1004","Peela","Dass","919876543217","Realme 12",daysAgoStr(1,"08"),"",1,"Open","","Repair In Progress","Ready For Pickup","In Warranty","Service Non-Repair","","GSX6004","SN-C1004"],
+ ["C1005","Old","Closed","919876543218","Pixel 7",daysAgoStr(55,"09"),daysAgoStr(54,"10"),55,"Delivered",daysAgoStr(50,"10"),"Repair Complete","Part Used","In Warranty","Carry-In Repair",daysAgoStr(50,"10"),"GSX6005","SN-C1005"],
+ ["C1006","Age","Fallback","919876543219","Moto G",daysAgoStr(20,"09"),"","","Open","","Waiting for Part","","Out Of Warranty (No Coverage)","Walk-In Repair","","GSX6006","SN-C1006"],
+ ["C1007","Can","Cell","919876543220","Nokia",daysAgoStr(2,"09"),"",2,"Cancelled","","Aborted","","In Warranty","Carry-In Repair","","GSX6007","SN-C1007"]];
 
 // ---- advance ----
 var av=[["MobileNo","AvailableBalance"],["919876543210",500],["919876543210",200],["919876543217",350],["919876543219",999]];
@@ -234,13 +234,15 @@ check("DISC/AMC notes hidden",page.indexOf("starts with DISC")===-1&&page.indexO
 check("date-wise GP column",page.indexOf('class="grp grp-0">Gross Profit</th>')>-1);
 check("legend shows GP daily target",page.indexOf("Gross Profit "+"₹"+subha.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
 check("GP daily target in legend for Dinesh",page.indexOf("Gross Profit "+"₹"+dinesh.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
-check("job table 11-col owner order (Task 33: Repair Type next to GSX)",page.indexOf(
+check("job table 12-col owner order (Task 34: GSX ID + S.No in, Communicated out)",page.indexOf(
   "<th>Repair Bucket</th><th>Aging</th><th>GSX Repair Status</th>"+
   "<th>Repair Type</th><th>CRM Status</th>"+
-  "<th>Case ID</th><th>Name</th><th>Number</th><th>Model</th>"+
-  "<th>Communicated</th><th>Comm. Updated</th>")>-1);
+  "<th>Case ID</th><th>Name</th><th>Number</th>"+
+  "<th>GSX ID</th><th>S.No</th><th>Model</th>"+
+  "<th>Comm. Updated</th>")>-1);
 check("old job columns dropped",page.indexOf("<th>Warranty Type</th>")===-1
-  &&page.indexOf("<th>Job created</th>")===-1&&page.indexOf("<th>Advance paid</th>")===-1);
+  &&page.indexOf("<th>Job created</th>")===-1&&page.indexOf("<th>Advance paid</th>")===-1
+  &&page.indexOf("<th>Communicated</th>")===-1);
 check("repair bucket cell tone",page.indexOf('class="bucket-cell"')>-1);
 // ---- job rules ----
 var c1004=j.jobs.find(function(o){return o.caseId==="C1004";});
@@ -502,6 +504,30 @@ check("mobile + case answers flagged wide", mobQ2.wide===true
   &&chatQuery("C1001").wide===true&&chatQuery("919876543299").wide===true);
 check("guidance answers stay compact", off1.wide!==true
   &&chatQuery("subha").wide!==true&&chatQuery("part number for care+").wide!==true);
+
+console.log("== TASK 34 batch ==");
+var c1001j=j.jobs.find(function(o){return o.caseId==="C1001";});
+check("C1001 carries gsx id + serial from service sheet", c1001j.gsxId==="GSX6001"
+  &&c1001j.serialNo==="SN-C1001", [c1001j.gsxId,c1001j.serialNo]);
+check("case collapse keeps latest row's gsx id", j.jobs.find(function(o){return o.caseId==="C1003";}).gsxId==="GSX6003",
+  j.jobs.find(function(o){return o.caseId==="C1003";}).gsxId);
+check("gsx id + serial cells sit between number and model",
+  page.indexOf('<td class="num">919876543210</td><td>GSX6001</td><td>SN-C1001</td><td>iPhone 13</td>')>-1);
+check("Communicated cells gone from rows", page.indexOf('class="comm-yes"')===-1
+  &&page.indexOf('class="comm-no"')===-1);
+check("map line shows gsx id + serial sources", page.indexOf("GSX ID ← <b>GSXCode</b>")>-1
+  &&page.indexOf("Device S.No ← <b>SerialNo1</b>")>-1);
+check("bucket accent css defined for all 4 owner buckets",
+  page.indexOf(".grphead.bk-estimate td { background:linear-gradient(180deg,#f6a21c")>-1
+  &&page.indexOf(".grphead.bk-ready td { background:linear-gradient(180deg,#2fd475")>-1
+  &&page.indexOf(".grphead.bk-process td { background:linear-gradient(180deg,#22c2e3")>-1
+  &&page.indexOf(".grphead.bk-unclaimed td { background:linear-gradient(180deg,#f05858")>-1);
+check("unclaimed group band coloured", page.indexOf('class="grphead bk-unclaimed"')>-1);
+check("ready-for-pickup group band coloured", page.indexOf('class="grphead bk-ready"')>-1);
+check("row bucket cells carry the group accent",
+  page.indexOf('bucket-cell bk-unclaimed')>-1&&page.indexOf('bucket-cell bk-ready')>-1);
+check("bucket-cell accent edge styling", page.indexOf(".jobtable td.bucket-cell.bk-unclaimed { color:#ffb3b3")>-1
+  &&page.indexOf("box-shadow:inset 3px 0 0 0 #f05858")>-1);
 check("mobile case block fields", mobFlat.indexOf("CRM case status")>-1
   &&mobFlat.indexOf("GSX case status")>-1&&mobFlat.indexOf("CRM bucket")>-1
   &&mobFlat.indexOf("Case date")>-1&&mobFlat.indexOf("Comm updated")>-1,
