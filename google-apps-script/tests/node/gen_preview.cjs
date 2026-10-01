@@ -4,9 +4,21 @@ global.Utilities={formatDate:function(d,tz,f){function p(n){return(n<10?"0":"")+
 global.Session={getScriptTimeZone:function(){return "Asia/Calcutta";}};
 global.CacheService={getScriptCache:function(){return{get:function(){return null},put:function(){}}}};
 global.HtmlService={createHtmlOutput:function(){return{addMetaTag:function(){return this},setTitle:function(){return this}}}};
-function mockSheet(name,values){return{getName:function(){return name},getDataRange:function(){return{
+function mockSheet(name,values){var sh={getName:function(){return name},
+  getLastColumn:function(){return values[0]?values[0].length:1;},
+  getLastRow:function(){return values.length;},
+  getRange:function(r,c,nr,nc){return{
+    getValue:function(){return values[r-1]&&values[r-1][c-1]||""},
+    getValues:function(){var out=[];for(var i=0;i<(nr||1);i++){var row=[];
+      for(var j=0;j<(nc||1);j++){row.push((values[r-1+i]&&values[r-1+i][c-1+j])||"");}
+      out.push(row);}return out;},
+    setValue:function(v){if(!values[r-1])values[r-1]=[];values[r-1][c-1]=v;}
+  };
+  },
+  getDataRange:function(){return{
   getValues:function(){return values},
-  getDisplayValues:function(){return values.map(function(r){return r.map(function(v){return(v==null||v instanceof Date)?"":String(v);})});}};}};}
+  getDisplayValues:function(){return values.map(function(r){return r.map(function(v){return(v==null||v instanceof Date)?"":String(v);})});}};}};
+  return sh;}
 var ALL=[];
 var SS={getSheets:function(){return ALL;},getSheetByName:function(n){for(var i=0;i<ALL.length;i++)if(ALL[i].getName()===n)return ALL[i];return null;}};
 global.SpreadsheetApp={getActiveSpreadsheet:function(){return SS;}};
@@ -64,7 +76,23 @@ T[2][11]="Dinesh Kumar";T[2][12]=14;T[2][13]=2;T[2][14]=1;T[2][15]=0;T[2][17]=1;
 T[3][11]="Murugan Mp";T[3][12]=4;T[3][13]=1;T[3][14]=0;T[3][15]=1;T[3][18]=6;T[3][19]="83.33%";T[3][20]="0.00%";
 T[4][11]="TOTAL";T[4][12]=27;T[4][13]=5;T[4][14]=1;T[4][15]=2;T[4][17]=1;T[4][18]=36;T[4][19]="88.89%";T[4][20]="5.56%";
 T[15][5]="incentive per amc";T[16][5]="1-10";T[16][6]="₹150";T[16][8]=5;T[16][9]="₹80";T[17][5]="11-25";T[17][6]="₹250";T[17][8]=12;T[17][9]="₹120";T[15][12]="slab level";T[15][13]=5;T[16][13]=300;
-ALL=[mockSheet("target",T),mockSheet("crm",crm),mockSheet("walkin",wl),mockSheet("service",sv),mockSheet("advance",av),mockSheet("comm",cm)];
+// decline / quote mocks (Task 35)
+var dl=[["CaseId","GSXRepairStatusDescription","Product"],
+ ["D1001","Declined - Rejected by Local Approver","iPhone 13"],
+ ["D1002","Declined - Rejected by Local Approver","Galaxy S22"],
+ ["D1002","Declined - Rejected by Local Approver","Galaxy S22"],
+ ["D1003","Cancelled","Pixel 7"],
+ ["D1004","Declined - Rejected by Local Approver","OnePlus 11"],
+ ["D1001","Declined - Rejected by Local Approver","iPhone 13"]];
+var qt=[["CaseID","RevenueType","lastAction"],
+ ["Q2001","Repair Revenue","approved"],
+ ["Q2002","Repair Revenue","approved"],
+ ["Q2002","Repair Revenue","approved"],
+ ["Q2003","Repair Revenue","cancelled"],
+ ["Q2004","Repair Revenue","approved"],
+ ["Q2001","Accessory Revenue","approved"]];
+ALL=[mockSheet("target",T),mockSheet("crm",crm),mockSheet("walkin",wl),mockSheet("service",sv),mockSheet("advance",av),mockSheet("comm",cm),
+  mockSheet("decline",dl),mockSheet("quote",qt)];
 var loaded=loadDashboardData_();
 var page=buildDashboardPage_(loaded.data);
 // /tmp/preview occasionally vanishes between Node invocations, so re-make it.

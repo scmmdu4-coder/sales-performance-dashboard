@@ -29,10 +29,24 @@ global.Utilities={formatDate:function(d,tz,f){
 global.Session={getScriptTimeZone:function(){return "Asia/Calcutta";}};
 global.CacheService={getScriptCache:function(){return{get:function(){return null},put:function(){}}}};
 global.HtmlService={createHtmlOutput:function(){return{addMetaTag:function(){return this},setTitle:function(){return this}}}};
-function mockSheet(name, values){return{getName:function(){return name},getDataRange:function(){return{
+function mockSheet(name, values){var sh={getName:function(){return name},
+  getLastColumn:function(){return values[0]?values[0].length:1;},
+  getLastRow:function(){return values.length;},
+  __writes:[],
+  getRange:function(r,c,nr,nc){return{getValue:function(){return values[r-1]&&values[r-1][c-1]||""},
+    getValues:function(){var out=[];for(var i=0;i<(nr||1);i++){var row=[];
+      for(var j=0;j<(nc||1);j++){row.push((values[r-1+i]&&values[r-1+i][c-1+j])||"");}
+      out.push(row);}return out;},
+    setValue:function(v){sh.__writes.push({row:r,col:c,ncols:nc||1,value:v});
+      if(!values[r-1])values[r-1]=[];values[r-1][c-1]=v;},
+    setValues:function(vs){vs.forEach(function(row,i){row.forEach(function(v,j){
+      if(!values[r-1+i])values[r-1+i]=[];values[r-1+i][c-1+j]=v;});});
+      sh.__writes.push({row:r,col:c,value:vs});}}},
+  getDataRange:function(){return{
   getValues:function(){return values},
   getDisplayValues:function(){return values.map(function(r){return r.map(function(v){
-    return(v===null||v===undefined||v instanceof Date)?"":String(v);})});}};}};}
+    return(v===null||v===undefined||v instanceof Date)?"":String(v);})});}};}};
+  return sh;}
 var ALL_SHEETS=[];
 var SS_OBJ={getSheets:function(){return ALL_SHEETS;},
   getSheetByName:function(n){for(var i=0;i<ALL_SHEETS.length;i++)if(ALL_SHEETS[i].getName()===n)return ALL_SHEETS[i];return null;}};
@@ -124,8 +138,23 @@ var sv=[["CaseId","FirstName","LastName","MobileNo","ProductDescription","CaseDa
 // ---- advance ----
 var av=[["MobileNo","AvailableBalance"],["919876543210",500],["919876543210",200],["919876543217",350],["919876543219",999]];
 
+// ---- decline / quote (Task 35) ----
+var dl=[["CaseId","GSXRepairStatusDescription","Product"],
+ ["D1001","Declined - Rejected by Local Approver","iPhone 13"],
+ ["D1002","Declined - Rejected by Local Approver","Galaxy S22"],
+ ["D1002","Declined - Rejected by Local Approver","Galaxy S22"],
+ ["D1003","Cancelled","Pixel 7"],
+ ["D1001","Declined - Rejected by Local Approver","iPhone 13"]];
+var qt=[["CaseID","RevenueType","lastAction"],
+ ["Q2001","Repair Revenue","approved"],
+ ["Q2002","Repair Revenue","approved"],
+ ["Q2002","Repair Revenue","approved"],
+ ["Q2003","Repair Revenue","cancelled"],
+ ["Q2001","Repair Revenue","approved"],
+ ["Q2004","Accessory Revenue","approved"]];
 ALL_SHEETS=[mockSheet("target",T),mockSheet("crm",crm),mockSheet("walkin",wl),
-  mockSheet("service",sv),mockSheet("advance",av),mockSheet("comm",cm)];
+  mockSheet("service",sv),mockSheet("advance",av),mockSheet("comm",cm),
+  mockSheet("decline",dl),mockSheet("quote",qt)];
 
 var fails=0;
 function check(n,c,x){ if(c) console.log("  PASS",n); else {fails++;console.log("  FAIL",n,JSON.stringify(x));} }
@@ -218,7 +247,10 @@ check("status pill text",page.indexOf("In Progress")>-1||page.indexOf("Completed
 check("per-day requirement strip",page.indexOf("Per Day Requirement")>-1);
 check("metric grid",page.indexOf('class="metric a"')>-1&&page.indexOf('class="metric b"')>-1);
 // Title from crm!C2 (mock C2 = "Subha")
-check("title uses crm C2",page.indexOf("Store Performance Dashboard - Subha")>-1);
+check("title uses crm C2",page.indexOf("iPlanetcare Subha — Store Performance Dashboard")>-1);
+check("two-line brand: iPlanetcare + Store Performance Dashboard (Task 35)",
+  page.indexOf('<div class="brand">')>-1&&page.indexOf("iPlanetcare Subha</div>")>-1
+  &&page.indexOf('class="brand-sub"')>-1&&page.indexOf("Store Performance Dashboard</div>")>-1);
 check("seven tabs: Index/GP/KPI/WALK-IN/Operation/Jobs/DATE",
   page.indexOf("🏠 Index")>-1&&page.indexOf("🎯 GP")>-1&&page.indexOf("📊 KPI")>-1
   &&page.indexOf("🚶 WALK-IN")>-1&&page.indexOf("⚙️ Operation")>-1
@@ -295,8 +327,9 @@ check("walkin rows: single flat navy (Task 31)",page.indexOf(".walkintable tbody
 check("token table",page.indexOf("% of creation")>-1&&page.indexOf("Total tokens generated")>-1);
 check("ready col gone",page.indexOf("Ready for pickup")===-1);
 check("comm pos/neg present",page.indexOf("comm-pos")>-1&&page.indexOf("comm-neg")>-1);
-check("comm cells contrast colors (Task 33)", page.indexOf(".comm-pos { color:#e6fff2 !important; background:#0f9d59")>-1
-  &&page.indexOf(".comm-neg { color:#ffe9e6 !important; background:#c62a33")>-1);
+check("comm cells soft palette (Task 35)", page.indexOf(".comm-pos { color:#0f5a37 !important; background:#b9f2cf")>-1
+  &&page.indexOf(".comm-neg { color:#8a1d28 !important; background:#ffd6da")>-1
+  &&page.indexOf("background:#0f9d59")===-1&&page.indexOf("background:#c62a33")===-1);
 check("mapping line owner columns",page.indexOf('class="map-line"')>-1
   &&page.indexOf("Number ← <b>MobileNo</b>")>-1&&page.indexOf("Repair Bucket ←")>-1
   &&page.indexOf("Open filter")>-1);
@@ -344,10 +377,17 @@ check("token table right of walk-in", page.indexOf('class="walkin-pair"')>-1
   &&page.indexOf('<div class="wp-right"')>-1
   &&page.lastIndexOf("tokentable")>page.lastIndexOf('<div class="wp-right"'));
 check("job buckets grouped", page.indexOf('class="grphead"')>-1);
-check("decline/requote placeholders", page.indexOf('ph-tile')>-1
-  &&page.indexOf("Decline Repair")>-1&&page.indexOf("Requote &amp; Win-back")>-1);
+check("decline/requote live cards (Task 35)",
+  page.indexOf("🚫 Decline Repair")>-1&&page.indexOf("🔁 Requote &amp; Win-back")>-1
+  &&page.indexOf('<div class="label">Declined repairs</div><div class="value">2</div>')>-1
+  &&page.indexOf('<div class="label">Win-backs</div><div class="value">2</div>')>-1
+  &&page.indexOf('ph-tile')===-1);
 check("vmatrix cells one navy (Task 31)", page.indexOf("table.vmatrix td { background:rgba(34,43,90,.92); color:#e9edff")>-1);
-check("blue-glow header skin", page.indexOf("#5b7bff 0%,#4360e0")>-1);
+check("dark-blue header skin throughout (Task 35)", page.indexOf("#5b7bff 0%,#4360e0")===-1
+  &&page.indexOf("linear-gradient(180deg,#5b7bff")===-1
+  &&page.indexOf(".ptable thead th { background:#1c2b52")>-1
+  &&(page.match(/#1c2b52/g)||[]).length>=8
+  &&(page.match(/#101a38/g)||[]).length>=5);
 check("3d bar styling (single colour, Task 31)", page.indexOf("linear-gradient(90deg,#2f8dff,#3ce3b4)")>-1
   &&page.indexOf("--barc")===-1&&page.indexOf("barShine")>-1&&page.indexOf(".bar-fill::before")>-1
   &&page.indexOf(".bar-fill.good")===-1&&page.indexOf(".bar-fill.bad")===-1);
@@ -398,8 +438,10 @@ check("person band colours removed: one table color set (Task 31)",
   &&page.indexOf("#7a3fd4")===-1&&page.indexOf("#c04a68")===-1
   &&page.indexOf("td.cell-0")===-1&&page.indexOf("th.grp-3")===-1);
 check("liquid glass material on tables", page.indexOf("backdrop-filter:blur(12px) saturate(1.2)")>-1);
-check("csat chips below table", page.indexOf(".csat-flex { flex-direction:column")>-1
-  &&page.indexOf(".csat-flex .csat-right { flex:0 0 auto; width:100%")>-1);
+check("csat table-left / chips-right (Task 35)", page.indexOf(".csat-flex { flex-direction:column")===-1
+  &&page.indexOf(".csat-flex { flex-direction:row")>-1
+  &&page.indexOf(".csat-flex table.csat-table { width:auto; min-width:0")>-1
+  &&page.indexOf(".csat-flex .csat-right { flex:0 0 240px")>-1);
 check("next-slab balance lines", (page.match(/class="next-slab"/g)||[]).length>=1||page.indexOf("top slab reached")>-1);
 check("subha next svc slab ₹1,22,800 (71% tier, Task 33)", subha.nextSvcSlab && subha.nextSvcSlab.need===122800, subha.nextSvcSlab && subha.nextSvcSlab.need);
 check("subha next acc slab 51% tier (Task 33)", subha.nextAccSlab && subha.nextAccSlab.pct===51
@@ -432,7 +474,8 @@ check("walkin analysis split remains", page.indexOf("ptable walksum")>-1&&page.i
 check("csat chips flat navy + light text", page.indexOf(".csat-chip { background:rgba(28,43,82,.98)")
   >-1&&page.indexOf(".csat-chip .cc-value { font-size:1.5rem; font-weight:800; color:#f4f8ff")>-1);
 check("jobtable forced left", page.indexOf(".jobtable th, .jobtable td { text-align:left !important")>-1);
-check("grphead uses the canonical header gradient (Task 31)", page.indexOf(".grphead td { background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%)")>-1
+check("grphead dark-blue default header (Task 35)", page.indexOf(".grphead td { background:#1c2b52")>-1
+  &&page.indexOf("linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%)")===-1
   &&page.indexOf("linear-gradient(90deg,#4fb3f5")===-1);
 check("datewise definition removed", page.indexOf("Definition: every invoice date")===-1);
 check("one surface everywhere (Task 31)", page.indexOf("card-unclaimed { background:rgba(28,43,82,.98)")>-1
@@ -464,11 +507,15 @@ check("case-id query hits service row", caseQ.title.indexOf("C1001")>-1
   &&caseFlat.indexOf("Ravi")>-1&&caseFlat.indexOf("Original Display Used")>-1
   &&caseFlat.indexOf("Repair Complete")>-1, JSON.stringify(caseQ).slice(0,200));
 check("case-id query inside sentence", chatQuery("what is status of C1002 please").title.indexOf("C1002")>-1);
-// everything else → guidance (no sales/part/fuzzy/cross-tab)
+// Task 35: everything else → universal cross-sheet exact search
 var off1=chatQuery("sale date from 23.09.26");
-check("date sales queries redirected", off1.title.indexOf("Give me a mobile number")>-1, off1.title);
-check("name queries redirected", chatQuery("subha").title.indexOf("Give me a mobile number")>-1);
-check("part queries redirected", chatQuery("part number for care+").title.indexOf("Give me a mobile number")>-1);
+check("universal search returns what exists, no similar-fallback", off1.title.indexOf("No matches for")===0
+  ||off1.title.indexOf("🔍")>-1, off1.title);
+check("universal search no-guidance", off1.title.indexOf("Give me a mobile number")===-1);
+var subhQ=chatQuery("subha");
+check("universal name search finds rows", subhQ.title.indexOf("🔍")>-1, subhQ.title);
+check("universal name search groups by sheet", JSON.stringify(subhQ.rows).indexOf("📄")>-1);
+check("universal part search exact-only", chatQuery("part number for care+").title.indexOf("Give me a mobile number")===-1);
 var mobJSON=serverQuery("919876543210");
 check("serverQuery returns JSON", mobJSON.charAt(0)==="{");
 var mobParsed=JSON.parse(mobJSON);
@@ -502,8 +549,10 @@ check("chat panel half-width css", page.indexOf(".chat-panel.half { width:50vw")
 check("chat panel widens only on mobile/case answers", page.indexOf("classList.toggle('half', !!res.wide)")>-1);
 check("mobile + case answers flagged wide", mobQ2.wide===true
   &&chatQuery("C1001").wide===true&&chatQuery("919876543299").wide===true);
-check("guidance answers stay compact", off1.wide!==true
-  &&chatQuery("subha").wide!==true&&chatQuery("part number for care+").wide!==true);
+check("universal hits render wide, misses compact (Task 35)", subhQ.wide===true
+  &&(off1.wide===undefined||off1.wide===false));
+check("universal search note pinned to exact matches",
+  subhQ.note&&subhQ.note.indexOf("Exact matches only")>-1);
 
 console.log("== TASK 34 batch ==");
 var c1001j=j.jobs.find(function(o){return o.caseId==="C1001";});
@@ -526,8 +575,13 @@ check("unclaimed group band coloured", page.indexOf('class="grphead bk-unclaimed
 check("ready-for-pickup group band coloured", page.indexOf('class="grphead bk-ready"')>-1);
 check("row bucket cells carry the group accent",
   page.indexOf('bucket-cell bk-unclaimed')>-1&&page.indexOf('bucket-cell bk-ready')>-1);
-check("bucket-cell accent edge styling", page.indexOf(".jobtable td.bucket-cell.bk-unclaimed { color:#ffb3b3")>-1
-  &&page.indexOf("box-shadow:inset 3px 0 0 0 #f05858")>-1);
+check("bucket-cell accent edge styling (Task 35)", page.indexOf(".jobtable td.bucket-cell.bk-unclaimed")>-1
+  &&page.indexOf("box-shadow:inset 3px 0 0 0 #f05858")>-1
+  // whole data rows carry a light tint of the bucket colour
+  &&page.indexOf(".jobtable tr.bk-unclaimed td { background:rgba(240,88,88,.16) !important")>-1
+  &&page.indexOf(".jobtable tr.bk-estimate td { background:rgba(246,162,28,.16) !important")>-1
+  &&page.indexOf(".jobtable tr.bk-process td { background:rgba(34,194,227,.15) !important")>-1
+  &&page.indexOf(".jobtable tr.bk-ready td { background:rgba(47,212,117,.15) !important")>-1);
 check("mobile case block fields", mobFlat.indexOf("CRM case status")>-1
   &&mobFlat.indexOf("GSX case status")>-1&&mobFlat.indexOf("CRM bucket")>-1
   &&mobFlat.indexOf("Case date")>-1&&mobFlat.indexOf("Comm updated")>-1,
@@ -565,12 +619,15 @@ check("refresh includes deck", page.indexOf("deck:'pageDeck'")>-1&&gsSrc.indexOf
 
 console.log("== TASK 25 batch ==");
 var NAVY="rgba(28,43,82,.98)";
-check("clock: plain navy card, blue digits", page.indexOf(".topbar-clock")>-1
-  &&page.indexOf("background:rgba(8,14,36,.92)")>-1&&page.indexOf("brgprecision")===-1);
+check("clock: frameless, no card bg (Task 35)", page.indexOf(".topbar-clock")>-1
+  &&page.indexOf("background:rgba(8,14,36,.92)")===-1
+  &&page.indexOf(".topbar-clock { position:relative")>-1
+  &&page.indexOf("background:transparent")>-1
+  &&page.indexOf("brgprecision")===-1);
 check("tables all navy", page.indexOf("table { background:"+NAVY)>-1
   &&page.indexOf("rgba(21,27,68,.84)")===-1);
 check("index tiles navy", page.indexOf(".glass-tile { background:"+NAVY)>-1);
-check("ph-tiles navy", page.indexOf(".ph-tile { border-color:rgba(140,160,230,.45); background:"+NAVY)>-1);
+check("ph-tile css gone (Task 35 live cards replaced placeholders)", page.indexOf("ph-tile")===-1);
 check("gpie-wrap + fresh chips navy", page.indexOf("#pageIndex .gpie-wrap { background:"+NAVY)>-1
   &&page.indexOf("#pageIndex .fresh-chip { background:"+NAVY)>-1);
 check("chip text readable on navy", page.indexOf(".csat-chip .cc-label { font-size:11.5px; font-weight:700; color:#9fb4e8")>-1
@@ -585,8 +642,9 @@ check("all tiles share one flat navy (Task 30)", (page.match(/rgba\(23,49,84/g)|
   &&(page.match(/rgba\(28,53,99/g)||[]).length===0
   &&(page.match(/linear-gradient\(145deg,rgba\(28/g)||[]).length===0
   &&(page.match(/rgba\(28,43,82,.98\)/g)||[]).length>=8);
-check("pale sky-blue LED clock digits (Task 30)", page.indexOf("color:#b7dcff")>-1
-  &&page.indexOf("rgba(120,180,255,.9)")>-1&&page.indexOf("#ff5c66")===-1);
+check("glowing golden-yellow clock digits (Task 35)", page.indexOf("color:#ffd34d")>-1
+  &&page.indexOf("rgba(255,196,46,.95)")>-1
+  &&page.indexOf("color:#b7dcff")===-1&&page.indexOf("#ff5c66")===-1);
 check("wp-right panel same flat navy", page.indexOf(".wp-right { background:rgba(28,43,82,.98)")>-1);
 
 console.log("== TASK 27 batch ==");
@@ -617,5 +675,47 @@ check("server-side scan/date/part/fuzzy dead code removed",
 check("brighter index subtitles", page.indexOf("color:#c9d4f5")>-1
   &&page.indexOf("color:#e3eafd")>-1&&page.indexOf(".gpie-leg-val { color:#ffffff")>-1);
 
+console.log("== TASK 35 batch ==");
+// --- item 3: every sheet is stamped with the refresh time ---
+(function(){
+  var ns=biz.nsUsb?biz.nsUsb():null;
+})();
+var sheetNames=ALL_SHEETS.map(function(x){return x.getName();});
+var stampedCount=0, allStamped=true;
+ALL_SHEETS.forEach(function(sh){
+  var w=sh.__writes||[];
+  var hit=w.some(function(x){return typeof x.value==="string"&&x.value.indexOf("Dashboard refresh")>-1;});
+  if(hit)stampedCount++;
+  else allStamped=false;
+});
+check("refresh stamp written into EVERY sheet (Task 35)", allStamped&&stampedCount===8,
+  stampedCount+"/8:"+sheetNames.join(","));
+check("refresh stamp text surfaced in freshness line", page.indexOf("fresh-stamp")>-1
+  &&page.indexOf("updated · all sheets")===-1, "");
+var pdChk=loadPerformanceData_();
+// --- items 8/9: decline + quote counts from the mock sheets ---
+check("opsExtras decline count = unique 2 (dedupe)", pdChk.opsExtras.decline.count===2,
+  pdChk.opsExtras.decline.count);
+check("opsExtras winback count = unique 2 (dedupe)", pdChk.opsExtras.winback.count===2,
+  pdChk.opsExtras.winback.count);
+check("opsExtras decline sheetName surfaced", pdChk.opsExtras.decline.sheetName==="decline");
+// --- item 12: universal chat search ---
+var uni1=chatQuery("iPhone 13");
+check("universal chat exact match across sheets", uni1&&uni1.title.indexOf("row")>-1,
+  uni1&&uni1.title);
+check("universal chat groups by sheet tab", JSON.stringify(uni1.rows).indexOf("📄")>-1);
+check("universal chat flags wide results", uni1.wide===true);
+var uniMiss=chatQuery("zzzqqq nothere");
+check("universal chat miss → No matches, no fallback", uniMiss.title.indexOf("No matches")===0,
+  uniMiss.title);
+check("universal chat miss stays compact", uniMiss.wide!==true);
+var uniMob=chatQuery("919876543210");
+check("mobile fast-path still first", uniMob.title.indexOf("Mobile")>-1||uniMob.title.indexOf("mobile")>-1
+  ||uniMob.title.indexOf("C1001")>-1, uniMob.title);
+var uniCase=chatQuery("C1001");
+check("case fast-path still first", uniCase.title.indexOf("C1001")>-1, uniCase.title);
+var uni2=chatQuery("Subha");
+check("universal chat multi-token/name search works", uni2.title.indexOf("🔍")>-1, uni2.title);
+check("universal chat note pinned 'Exact matches only'", JSON.stringify(uni2).indexOf("Exact matches")>-1);
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);

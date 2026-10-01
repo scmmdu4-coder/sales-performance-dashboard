@@ -63,6 +63,8 @@ var CONFIG = {
   SERVICE_SHEET_NAMES: ["service", "services"],
   ADVANCE_SHEET_NAMES: ["advance", "advace", "advanced"],
   COMM_SHEET_NAMES: ["comm", "communication", "communications"],
+  DECLINE_SHEET_NAMES: ["decline", "declined", "declined-repair"],
+  QUOTE_SHEET_NAMES: ["quote", "quotes", "requote"],
   // Leave blank to always use the spreadsheet this script is bound to.
   // Only set this if you deploy the Web App from a *different* Apps Script
   // project than the one bound to your sheet (Extensions → Apps Script
@@ -2349,6 +2351,10 @@ function loadPerformanceData_() {
   var ss = getSpreadsheet_();
   var jm = computeJobManagement_(ss);
   var ra = computeRepairAnalytics_(jm.serviceRows || []);
+  // Task 35: stamp EVERY tab with the refresh timestamp — whenever the
+  // dashboard is (re)loaded the owning sheets carry the "updated at" time.
+  var refreshStamp = stampSheetsRefreshed_(ss);
+  var opsExtras = computeOperationExtras_(ss);
 
   // Freshness: the newest dated row of each sheet, surfaced on the index page.
   function latestDateKey_(names, spec, field) {
@@ -2373,8 +2379,106 @@ function loadPerformanceData_() {
     repair: ra,
     targetBlock: computeTargetBlock_(ss),
     freshness: freshness,
+    opsExtras: opsExtras,
+    refreshStamp: refreshStamp,
     generatedAt: new Date(),
   };
+}
+
+/**
+ * TASK 35 — write the dashboard-refresh timestamp into EVERY sheet tab so
+ * anyone opening the Google sheet can see when the dashboard last refreshed.
+ * The stamp sits one column to the right of the last used column in row 1,
+ * as a single-cell label: "⟳ Dashboard refresh · dd-MM-yyyy HH:mm".
+ * The same cell is located by its prefix on later refreshes and overwritten,
+ * so the sheet never grows extra columns. Returns the stamp string shown on
+ * the index page, or "" when the sheet service is unavailable (tests).
+ */
+function stampSheetsRefreshed_(ss) {
+  try {
+    var now = new Date();
+    function p(n) { return (n < 10 ? "0" : "") + n; }
+    var stamp = "⟳ Dashboard refresh · " +
+      p(now.getDate()) + "-" + p(now.getMonth() + 1) + "-" + now.getFullYear() +
+      " " + p(now.getHours()) + ":" + p(now.getMinutes());
+    var PREFIX = "⟳ Dashboard refresh";
+    ss.getSheets().forEach(function (sh) {
+      try {
+        var lastCol = Math.max(1, sh.getLastColumn ? sh.getLastColumn() : 1);
+        var target = 1;
+        // Look for our previous stamp anywhere in row 1 to overwrite it.
+        var hdr = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+        var found = 0;
+        for (var c = 0; c < hdr.length; c++) {
+          if (String(hdr[c]).indexOf(PREFIX) === 0) { found = c + 1; break; }
+        }
+        target = found || (lastCol + 1);
+        sh.getRange(1, target).setValue(stamp);
+      } catch (e1) { /* a locked/derived tab is skipped, not fatal */ }
+    });
+    return stamp;
+  } catch (e) {
+    return "";
+  }
+}
+
+/**
+ * TASK 35 — Operation-page extra modules.
+ * Decline Repair: unique decline!CaseId where decline!GSXRepairStatusDescription
+ *   == "Declined - Rejected by Local Approver".
+ * Requote & Win-back: quote rows whose RevenueType == "Repair Revenue" AND
+ *   lastAction == "approved" (counted once per unique CaseID).
+ */
+function computeOperationExtras_(ss) {
+  var out = {
+    decline: { count: 0, matched: 0, sheetName: null },
+    winback: { count: 0, matched: 0, sheetName: null },
+  };
+  // ---- decline ----
+  try {
+    var ds = getSheetByNames_(ss, CONFIG.DECLINE_SHEET_NAMES);
+    if (ds) {
+      out.decline.sheetName = ds.getName();
+      var rd = readSheetRows_(ds, {
+        caseId: [/^caseid$/i, /case.*id/i],
+        gsx: [/^gsxrepairstatusdescription$/i, /gsx.*repair.*status/i, /gsx.*status/i, /repair.*status.*desc/i],
+      }, []);
+      var seen = {};
+      rd.rows.forEach(function (r) {
+        var g = str_(r.gsx).toLowerCase();
+        // Lenient casing/whitespace; the phrase itself must be the reason.
+        if (/declined\s*-\s*rejected\s+by\s+local\s+approver/i.test(str_(r.gsx))) {
+          out.decline.matched++;
+          var cid = str_(r.caseId);
+          if (cid && !seen[cid]) { seen[cid] = true; out.decline.count++; }
+          else if (!cid) out.decline.count++;
+        }
+      });
+    }
+  } catch (e) { /* module is best-effort */ }
+  // ---- win-back ----
+  try {
+    var qs = getSheetByNames_(ss, CONFIG.QUOTE_SHEET_NAMES);
+    if (qs) {
+      out.winback.sheetName = qs.getName();
+      var rq = readSheetRows_(qs, {
+        caseId: [/^caseid$/i, /case.*id/i],
+        revenueType: [/^revenuetype$/i, /revenue.*type/i],
+        lastAction: [/^lastaction$/i, /last.*action/i],
+      }, []);
+      var seen2 = {};
+      rq.rows.forEach(function (r) {
+        out.winback.matched += (/^\s*repair\s*revenue\s*$/i.test(str_(r.revenueType))) ? 1 : 0;
+        if (/^\s*repair\s*revenue\s*$/i.test(str_(r.revenueType)) &&
+            /^\s*approved\s*$/i.test(str_(r.lastAction))) {
+          var cid = str_(r.caseId);
+          if (cid && !seen2[cid]) { seen2[cid] = true; out.winback.count++; }
+          else if (!cid) out.winback.count++;
+        }
+      });
+    }
+  } catch (e) { /* module is best-effort */ }
+  return out;
 }
 
 
@@ -2487,24 +2591,34 @@ function renderWalkinHtml_(pd) {
     renderWalkinDayTable_(wl) + "</div></div></section>";
 }
 
-/** OPERATION page: customer satisfaction + repair ops + future sub-modules. */
+/** OPERATION page: customer satisfaction + repair ops + sub-modules. */
 function renderOperationHtml_(pd) {
   var out = [];
   out.push(renderTargetBlock_(pd.targetBlock, pd.repair));
   out.push(renderRepairAnalyticsInner_(pd.repair));
-  // Placeholder sub-modules the owner will fill in later.
+  var ex = pd.opsExtras || { decline: {}, winback: {} };
+  // Task 35 — Decline Repair: unique decline!CaseId whose GSX status is
+  // "Declined - Rejected by Local Approver".
   out.push(
     '<section class="sec"><div class="sec-head"><h2>🚫 Decline Repair</h2>' +
-    '<p class="sec-sub">Coming soon — jobs the customer declined after diagnosis.</p></div>' +
-    '<div class="ph-tile"><div class="ph-icon">⏳</div>' +
-    '<div class="ph-text"><b>Placeholder for the Decline-repair module.</b><br>' +
-    "This tile is reserved in the new Operation page; the content will be built next.</div></div></section>");
+    '<p class="sec-sub">Unique CaseIDs in <b>decline</b> where GSXRepairStatusDescription is ' +
+    '"Declined - Rejected by Local Approver".</p></div>' +
+    '<div class="cards">' +
+    '<div class="card"><div class="label">Declined repairs</div><div class="value">' +
+      (ex.decline.count || 0) + '</div>' +
+      '<div class="sub">' + (ex.decline.sheetName ? "unique CaseIDs · from " + esc_(ex.decline.sheetName) : "no decline sheet found") + '</div></div>' +
+    "</div></section>");
+  // Task 35 — Requote & Win-back: quote rows with RevenueType "Repair Revenue"
+  // AND lastAction "approved" (counted once per unique CaseID).
   out.push(
     '<section class="sec"><div class="sec-head"><h2>🔁 Requote &amp; Win-back</h2>' +
-    '<p class="sec-sub">Coming soon — re-quoted jobs and customers won back.</p></div>' +
-    '<div class="ph-tile"><div class="ph-icon">⏳</div>' +
-    '<div class="ph-text"><b>Placeholder for the Requote / win-back module.</b><br>' +
-    "This tile is reserved in the new Operation page; the content will be built next.</div></div></section>");
+    '<p class="sec-sub">Unique CaseIDs in <b>quote</b> where RevenueType is "Repair Revenue" ' +
+    'and lastAction is "approved".</p></div>' +
+    '<div class="cards">' +
+    '<div class="card"><div class="label">Win-backs</div><div class="value">' +
+      (ex.winback.count || 0) + '</div>' +
+      '<div class="sub">' + (ex.winback.sheetName ? "unique CaseIDs · from " + esc_(ex.winback.sheetName) : "no quote sheet found") + '</div></div>' +
+    "</div></section>");
   return out.join("");
 }
 
@@ -2757,13 +2871,92 @@ function chatQuery(q) {
     if (hit) return hit;
   }
 
-  // 3) Everything else → guidance only (no fuzzy / date / part search).
+  // 3) Task 35 — universal search: every other query is scanned across ALL
+  //    sheets of this spreadsheet (never external sources). Exact token
+  //    matches only — no fuzzy/similar suggestions are ever offered.
+  var uni = chatUniversalQuery_(q);
+  if (uni) return uni;
   return {
-    title: "Give me a mobile number or a Case ID",
-    rows: [],
-    note: "I look up customers by mobile number (e.g. 919876543210) or by Case ID " +
-      "(e.g. C1001) from the service sheet — name, case ID, CRM repair status and product.",
+    title: "No matches for “" + str_(q).trim() + "”",
+    rows: [[chatTxt('<span class="muted">Nothing in any sheet contains all those words. ' +
+      "Numbers, names, case IDs, products, statuses and dates are searched exactly as typed.</span>")]],
+    note: "Searched every tab of this spreadsheet.",
+    wide: false,
   };
+}
+
+/**
+ * TASK 35 — universal cross-sheet search. A data row matches when EVERY
+ * query token (case-insensitive, 1-char tokens ignored) appears somewhere in
+ * that row. Results are grouped by sheet (tab order), identical rows are
+ * de-duplicated, and output is capped so the panel stays readable.
+ */
+function chatUniversalQuery_(q) {
+  var query = str_(q).trim();
+  if (query.length < 2) return null;
+  var tokens = query.toLowerCase().split(/\s+/).filter(function (t) { return t.length >= 2; });
+  if (!tokens.length) return null;
+  var ss = getSpreadsheet_();
+  var rows = [];
+  var totalHits = 0, hitSheets = 0;
+  var MAX_PER_SHEET = 4, MAX_ROWS = 18;
+  ss.getSheets().forEach(function (sh) {
+    if (rows.length >= MAX_ROWS) return;
+    var values;
+    try { values = chatSheetData(sh); } catch (e) { return; }
+    var header = values.header;
+    var seenRows = {};
+    var sheetRows = [];
+    for (var i = 0; i < values.rows.length && sheetRows.length < MAX_PER_SHEET; i++) {
+      var r = values.rows[i];
+      var cells = r.map(function (v) { return str_(v).toLowerCase(); });
+      var joined = " " + cells.join(" │ ") + " ";
+      var all = tokens.every(function (t) {
+        var tn = t.replace(/[.\/\-]/g, " ");
+        return joined.indexOf(t) > -1 ||
+          (tn !== t && (" " + joined.replace(/[.\/\-]/g, " ") + " ").indexOf(" " + tn + " ") > -1);
+      });
+      if (!all) continue;
+      var sig = r.join("|").toLowerCase();
+      if (seenRows[sig]) continue;
+      seenRows[sig] = true;
+      var pairs = [];
+      for (var c = 0; c < r.length && pairs.length < 8; c++) {
+        var v = str_(r[c]);
+        if (!v) continue;
+        var h = (header[c] !== undefined && str_(header[c])) ? str_(header[c]) : "col " + (c + 1);
+        pairs.push(h.length > 26 ? h.slice(0, 24) + "…" : h);
+        pairs.push(v.length > 60 ? v.slice(0, 58) + "…" : v);
+      }
+      if (pairs.length) sheetRows.push({ rowNo: i + 2, pairs: pairs });
+    }
+    if (sheetRows.length) {
+      hitSheets++;
+      rows.push([chatTxt("<b>📄 " + esc_(sh.getName()) + "</b>"),
+        chatTxt('<span class="muted">' + sheetRows.length + " match" + (sheetRows.length === 1 ? "" : "es") + "</span>")]);
+      sheetRows.forEach(function (m) {
+        if (rows.length >= MAX_ROWS + 2) return;
+        rows.push([chatTxt('<span class="muted">row ' + m.rowNo + "</span>"),
+          chatPlain(chatPairsInline_(m.pairs))]);
+        totalHits++;
+      });
+    }
+  });
+  if (!totalHits) return null;
+  return {
+    title: "🔍 “" + query + "” → " + totalHits + " row" + (totalHits === 1 ? "" : "s") +
+      " in " + hitSheets + " sheet" + (hitSheets === 1 ? "" : "s"),
+    rows: rows,
+    note: "Exact matches only — nothing similar/related is included.",
+    wide: true,
+  };
+}
+
+/** header/value pairs → "H: V · H: V" single-line text. */
+function chatPairsInline_(pairs) {
+  var out = [];
+  for (var i = 0; i + 1 < pairs.length; i += 2) out.push(pairs[i] + ": " + pairs[i + 1]);
+  return out.join(" · ");
 }
 
 
@@ -3339,15 +3532,22 @@ function freshnessLineHtml_(data, perfData) {
   var li = bits.map(function (b) {
     return '<span class="fresh-chip"><i>' + esc_(b[0]) + "</i><b>" + esc_(b[1]) + "</b></span>";
   }).join("");
+  // Task 35: every tab is stamped with the dashboard-refresh time — show it.
+  var stamp = (perfData && perfData.refreshStamp)
+    ? '<span class="fresh-chip fresh-stamp"><i>all sheets</i><b>' +
+      esc_(perfData.refreshStamp.replace("⟳ Dashboard refresh · ", "")) + "</b></span>"
+    : "";
   return '<div class="fresh-line"><div class="fresh-line-head">⏱ Latest records per sheet</div>' +
-    '<div class="fresh-row">' + li + "</div></div>";
+    '<div class="fresh-row">' + stamp + li + "</div></div>";
 }
 
 /** Assembles the complete HTML document. */
 function buildDashboardPage_(data) {
   var css = getDashboardCss_();
   var storeCode = (data.store && data.store.storeCode) ? data.store.storeCode : "";
-  var pageTitle = "Store Performance Dashboard" + (storeCode ? " - " + storeCode : "");
+  // Task 35: brand reads "iPlanetcare <CODE>" on line 1; the generic title
+  // moves to a second line but stays the page header.
+  var pageTitle = "iPlanetcare" + (storeCode ? " " + storeCode : "") + " — Store Performance Dashboard";
 
   var perfData = loadPerformanceData_();
 
@@ -3514,7 +3714,8 @@ function buildDashboardPage_(data) {
     // Task 30: plain dark-ash backdrop for EVERY page — no image at all.
     '<header class="topbar"><div class="topbar-inner">' +
     "<div class=\"topbar-left\">" +
-    '<div class="brand">' + esc_(pageTitle) + "</div>" +
+    '<div class="brand">iPlanetcare' + (storeCode ? " " + esc_(storeCode) : "") + "</div>" +
+    '<div class="brand-sub">Store Performance Dashboard</div>' +
     '<div class="meta" id="meta">' + esc_(bizMeta) + "</div>" +
     '<div class="note" id="note"></div>' +
     "</div>" +
@@ -3540,14 +3741,13 @@ function buildDashboardPage_(data) {
           '<button class="chat-close" onclick="chatToggle()" aria-label="Close chat">&times;</button>' +
         "</div>" +
         '<div class="chat-log" id="chatLog">' +
-          '<div class="chat-msg bot">Enter a <b>customer mobile number</b> (e.g. ' +
-            "<i>919876543210</i>) or a <b>Case ID</b> (e.g. <i>C1001</i>) — I'll fetch " +
-            "the case ID, CRM repair status, customer name and product from the " +
-            "service sheet.</div>" +
+          '<div class="chat-msg bot"><b>Ask me anything</b> — I search <b>every sheet</b> of this ' +
+            "spreadsheet: customer mobiles, Case IDs, names, products, statuses, dates, " +
+            "amounts… Exact matches only, straight from the sheets.</div>" +
         "</div>" +
         '<div class="chat-inputrow">' +
           '<input class="chat-input" id="chatInput" type="text" autocomplete="off" ' +
-            'placeholder="Customer mobile number, or a Case ID like C1001" ' +
+            'placeholder="Search every sheet — mobile, Case ID, name, product…" ' +
             "onkeydown=\"if(event.key==='Enter')chatSend()\">" +
           '<button class="chat-send" onclick="chatSend()" aria-label="Send">➤</button>' +
         "</div>" +
@@ -3927,8 +4127,9 @@ function getDashboardCss_() {
     " background:rgba(238,242,246,.92); backdrop-filter:blur(6px); border-bottom:1px solid #d5dde6; }" +
     ".topbar-inner { max-width:1720px; margin:0 auto; display:flex; align-items:center;" +
     " justify-content:space-between; gap:20px; flex-wrap:wrap; }" +
-    ".topbar-left { display:flex; flex-direction:column; gap:6px; min-width:0; }" +
+    ".topbar-left { display:flex; flex-direction:column; gap:4px; min-width:0; }" +
     ".brand { color:#16263a; font-size:clamp(1.45rem,2.5vw,2rem); font-weight:850;" +
+    ".brand-sub { color:#5a6c9e; font-size:.85rem; font-weight:700; letter-spacing:.04em; }" +
     " letter-spacing:-.035em; line-height:1.1; }" +
     ".topbar .meta { color:#64748b; font-size:.78rem; font-weight:600; }" +
     ".topbar .note { font-size:.74rem; min-height:15px; font-weight:600; }" +
@@ -4031,12 +4232,12 @@ function getDashboardCss_() {
     // tables get a header a few shades darker — still clearly separate from
     // the navy body cells.
     "table.hdr-deep thead th, table.hdr-deep thead th.grp, table.hdr-deep thead .sticky-col {" +
-    " background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%) !important; }" +
-    "table.hdr-deep tr.total-row td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; }" +
+    " background:#1c2b52 !important; }" +
+    "table.hdr-deep tr.total-row td { background:#101a38 !important; border-top:2px solid rgba(120,150,255,.45); }" +
     "table { width:100%; border-collapse:separate; border-spacing:0; font-size:.8rem;" +
     " background:rgba(28,43,82,.98); border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
     " box-shadow:0 10px 26px rgba(8,12,48,.38), 0 2px 10px rgba(76,111,255,.14); }" +
-    "th { text-align:right; background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%); color:#ffffff;" +
+    "th { text-align:right; background:#1c2b52; color:#ffffff;" +
     " font-size:.68rem; font-weight:800; text-shadow:0 1px 2px rgba(12,20,70,.65);" +
     " letter-spacing:.05em; text-transform:uppercase; padding:9px 10px;" +
     " border-bottom:2px solid #8eaaff; box-shadow:inset 0 1px 0 rgba(255,255,255,.25), 0 2px 8px rgba(76,111,255,.30); }" +
@@ -4086,13 +4287,13 @@ function getDashboardCss_() {
     "table.csat-table td { width:1%; white-space:nowrap; }" +
     "table.csat-table td:first-child { text-align:left; white-space:normal; width:auto; }" +
     "table.csat-table td.num { font-variant-numeric:tabular-nums; text-align:center; }" +
-    ".csat-table .totrow td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; color:#ffffff; font-weight:800; border-top:1px solid rgba(142,170,255,.6); }" +
+    ".csat-table .totrow td { background:#101a38 !important; color:#ffffff; font-weight:800; border-top:1px solid rgba(142,170,255,.6); }" +
     ".csat-pos { color:#52e9ac; font-weight:700; } .csat-neg { color:#ff8f9d; font-weight:700; } .csat-mid { color:#ffd477; font-weight:600; }" +
     "table.vmatrix { width:100%; border-collapse:collapse; background:rgba(28,43,82,.98);" +
     " border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
     " box-shadow:0 10px 26px rgba(8,12,48,.38), 0 2px 10px rgba(76,111,255,.14); }" +
     "table.vmatrix th, table.vmatrix td { padding:8px 12px; border-bottom:1px solid rgba(105,132,255,.16); font-size:.85rem; }" +
-    "table.vmatrix thead th { background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%); color:#ffffff; text-align:center; font-size:.76rem;" +
+    "table.vmatrix thead th { background:#1c2b52; color:#ffffff; text-align:center; font-size:.76rem;" +
     " font-weight:800; text-shadow:0 1px 2px rgba(12,20,70,.65);" +
     " text-transform:uppercase; letter-spacing:.04em; position:sticky; top:0; z-index:2; border-bottom:2px solid #8eaaff; }" +
     "table.vmatrix td { background:rgba(34,43,90,.92); color:#e9edff; }" +
@@ -4103,10 +4304,10 @@ function getDashboardCss_() {
     "table.vmatrix tbody tr:hover td { background:rgba(46,56,112,.95); }" +
     "table.vmatrix tbody tr:hover .sticky-col { background:#2b336f; }" +
     ".vmtotal { background:rgba(84,116,255,.16) !important; color:#ffffff; font-weight:800; }" +
-    "tr.vmtotrow td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; color:#fff; font-weight:800; border-top:1px solid rgba(142,170,255,.6); }" +
+    "tr.vmtotrow td { background:#101a38 !important; color:#fff; font-weight:800; border-top:1px solid rgba(142,170,255,.6); }" +
     "tr.vmavgrow td { background:rgba(84,116,255,.12); color:#a9b8ff; font-weight:700; font-style:italic; }" +
     ".vmavg { color:#a9b8ff; }" +
-    "tr.total-row td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; color:#ffffff; font-weight:900; }" +
+    "tr.total-row td { background:#101a38 !important; color:#ffffff; font-weight:900; border-top:2px solid rgba(120,150,255,.45); }" +
     // ---- salesperson cards ----
     ".person-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr)); gap:10px; }" +
     ".person-card { background:rgba(12,29,53,.94); border:1px solid var(--line); border-radius:11px;" +
@@ -4171,10 +4372,10 @@ function getDashboardCss_() {
     "table.matrix th.grp { text-align:center; border-left:1px solid var(--line); }" +
     "table.matrix .sticky-col { position:sticky; left:0; z-index:2; background:rgba(34,43,90,.92);" +
     " text-align:left; border-right:1px solid rgba(105,132,255,.35); }" +
-    "table.matrix thead .sticky-col { z-index:4; background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%); }" +
+    "table.matrix thead .sticky-col { z-index:4; background:#1c2b52; }" +
     "table.matrix td .tgt { display:block; font-size:.66rem; font-weight:600; color:#94a2d2; margin-top:2px; }" +
     // Task 31: one flat colour set for every table — per-person column bands removed
-                            "table.matrix tr.total-row td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; border-top:1px solid rgba(142,170,255,.6); }" +
+                            "table.matrix tr.total-row td { background:#101a38 !important; border-top:2px solid rgba(142,170,255,.6); }" +
     // ---- AR attachment sub-panel inside section 6 (light panel like old summary items) ----
     ".subpanel { margin-top:14px; padding:13px 15px; border-radius:10px;" +
     " border:1px solid #d5dde6; background:rgba(255,255,255,.92); box-shadow:0 3px 10px rgba(15,23,42,.05); }" +
@@ -4212,7 +4413,7 @@ function getDashboardCss_() {
     ".ptable th, .ptable td { text-align:left; padding:8px 11px; border-bottom:1px solid rgba(105,132,255,.16);" +
     " vertical-align:top; white-space:nowrap; font-weight:400; color:#e9edff; }" +
     ".ptable td { background:rgba(34,43,90,.92); }" +
-    ".ptable thead th { background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%); color:#ffffff; font-size:.68rem;" +
+    ".ptable thead th { background:#1c2b52; color:#ffffff; font-size:.68rem;" +
     " font-weight:800; text-shadow:0 1px 2px rgba(12,20,70,.65);" +
     " text-transform:uppercase; letter-spacing:.05em; position:sticky; top:0; border-bottom:2px solid #8eaaff;" +
     " box-shadow:inset 0 1px 0 rgba(255,255,255,.25); }" +
@@ -4221,15 +4422,15 @@ function getDashboardCss_() {
     ".ptable .daycell { min-width:110px; }" +
     ".jobtable th, .jobtable td { font-size:.78rem; }" +
     ".jobtable .sticky-col { position:sticky; left:0; background:rgba(34,43,90,.92); }" +
-    ".jobtable thead .sticky-col { background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%); }" +
+    ".jobtable thead .sticky-col { background:#1c2b52; }" +
     ".chip { display:inline-block; background:rgba(255,255,255,.08); color:#cfe0ff; border-radius:999px;" +
     " padding:3px 9px; font-size:.68rem; margin:1px 2px 1px 0; font-weight:600; }" +
     ".chip b { color:#ffffff; }" +
     // walk-in / comm status colours on the dark tables
     ".comm-yes { color:var(--achieved); font-weight:700; }" +
     ".comm-no { color:#fbbf24; font-weight:700; }" +
-    ".comm-pos { color:#e6fff2 !important; background:#0f9d59 !important; font-weight:800; }" +
-    ".comm-neg { color:#ffe9e6 !important; background:#c62a33 !important; font-weight:800; }" +
+    ".comm-pos { color:#0f5a37 !important; background:#b9f2cf !important; font-weight:800; }" +
+    ".comm-neg { color:#8a1d28 !important; background:#ffd6da !important; font-weight:800; }" +
     // unclaimed devices: keeps the amber identity, tuned for the dark table
     ".unclaimed-row td { background:rgba(255,212,119,.10) !important; }" +
     ".unclaimed-row:hover td { background:rgba(255,212,119,.16) !important; }" +
@@ -4241,13 +4442,13 @@ function getDashboardCss_() {
     // walk-in day rows: one flat navy, no per-day tint (Task 31)
     ".walkintable tbody td { background-color: rgba(34,43,90,.92) !important; }" +
     ".walkintable tbody tr:hover td { background-color: rgba(46,56,112,.95) !important; box-shadow: inset 0 0 0 999px rgba(84,116,255,.14); }" +
-    ".walkintable .totrow td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; border-top:1px solid rgba(142,170,255,.6); color:#ffffff; font-weight:800; }" +
+    ".walkintable .totrow td { background:#101a38 !important; border-top:1px solid rgba(142,170,255,.6); color:#ffffff; font-weight:800; }" +
     ".walkintable td.dead { color:#ff9daa; font-weight:700; }" +
     ".walkintable td.uniq { color:#7edbff; font-weight:700; }" +
     ".walkintable thead th { text-align:center; }" +
-    ".walkintable thead th.grp { background:linear-gradient(180deg,#5b7bff,#3350c2); text-align:center; }" +
+    ".walkintable thead th.grp { background:#1c2b52; text-align:center; }" +
     ".walkintable th:first-child, .walkintable td.daycell { text-align:left; }" +
-    ".tokentable .totrow td { background:linear-gradient(90deg,#3f5ce0,#2f49b5) !important; color:#ffffff; font-weight:900; border-top:1px solid rgba(142,170,255,.6); }" +
+    ".tokentable .totrow td { background:#101a38 !important; color:#ffffff; font-weight:900; border-top:1px solid rgba(142,170,255,.6); }" +
     ".age-warn { color:var(--balance); font-weight:600; }" +
     ".age-crit { color:var(--danger); font-weight:700; }" +
     ".subnote { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.32); border-radius:8px; padding:9px 12px;" +
@@ -4260,11 +4461,16 @@ function getDashboardCss_() {
     ".grphead.bk-process td { background:linear-gradient(180deg,#22c2e3 0%,#0f91c0 55%,#0b7197 100%) !important; }" +
     ".grphead.bk-unclaimed td { background:linear-gradient(180deg,#f05858 0%,#d02e2e 55%,#a81f1f 100%) !important; }" +
     ".grphead[class*=bk-] .grphead-count { color:#ffffff; }" +
-    ".jobtable td.bucket-cell.bk-estimate { color:#ffd27a !important; box-shadow:inset 3px 0 0 0 #f6a21c; }" +
-    ".jobtable td.bucket-cell.bk-ready { color:#86f2b0 !important; box-shadow:inset 3px 0 0 0 #2fd475; }" +
-    ".jobtable td.bucket-cell.bk-process { color:#96ddff !important; box-shadow:inset 3px 0 0 0 #22c2e3; }" +
-    ".jobtable td.bucket-cell.bk-unclaimed { color:#ffb3b3 !important; box-shadow:inset 3px 0 0 0 #f05858; }" +
-    ".grphead td { background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%) !important; color:#ffffff; font-weight:850; font-size:.7rem;" +
+    // Task 35: the whole row under a bucket wears a LIGHT tint of its colour.
+    ".jobtable tr.bk-estimate td { background:rgba(246,162,28,.16) !important; }" +
+    ".jobtable tr.bk-ready td { background:rgba(47,212,117,.15) !important; }" +
+    ".jobtable tr.bk-process td { background:rgba(34,194,227,.15) !important; }" +
+    ".jobtable tr.bk-unclaimed td { background:rgba(240,88,88,.16) !important; }" +
+    ".jobtable td.bucket-cell.bk-estimate { color:#ffd894 !important; box-shadow:inset 3px 0 0 0 #f6a21c; }" +
+    ".jobtable td.bucket-cell.bk-ready { color:#9af0bd !important; box-shadow:inset 3px 0 0 0 #2fd475; }" +
+    ".jobtable td.bucket-cell.bk-process { color:#a8e2f7 !important; box-shadow:inset 3px 0 0 0 #22c2e3; }" +
+    ".jobtable td.bucket-cell.bk-unclaimed { color:#ffc6c6 !important; box-shadow:inset 3px 0 0 0 #f05858; }" +
+    ".grphead td { background:#1c2b52 !important; color:#ffffff; font-weight:850; font-size:.7rem;" +
     " letter-spacing:.07em; text-transform:uppercase; padding:8px 12px; border-bottom:2px solid #9db4ff;" +
     " box-shadow:0 3px 10px rgba(84,111,255,.35); }" +
     ".grphead-count { float:right; color:var(--target); font-weight:800; text-transform:none; letter-spacing:0; }" +
@@ -4297,12 +4503,6 @@ function getDashboardCss_() {
     ".walkin-pair .wp-left { flex:1 1 50%; min-width:320px; }" +
     ".walkin-pair .wp-right { flex:1 1 50%; min-width:320px; display:flex; flex-direction:column; }" +
     ".wp-head { font-size:.92rem; font-weight:850; color:#182a40; margin:0 0 4px; letter-spacing:-.015em; }" +
-    // ---- placeholder modules (Decline repair / Requote-winback) ----
-    ".ph-tile { display:flex; gap:12px; align-items:center; border:2px dashed rgba(105,132,255,.55);" +
-    " border-radius:12px; padding:16px; background:rgba(84,116,255,.08); }" +
-    ".ph-tile .ph-icon { font-size:1.4rem; }" +
-    ".ph-tile .ph-text { font-size:.82rem; color:#475569; line-height:1.5; }" +
-    // ---- repair-bucket cell tone on the job table ----
     ".jobtable td.bucket-cell { font-weight:800; color:#bcd0ff; }" +
     // ============ INDEX LANDING — LIQUID GLASS tiles ============
     // Frosted translucent panes laid over a soft gradient backdrop (Apple
@@ -4386,6 +4586,8 @@ function getDashboardCss_() {
     ".fresh-row { display:flex; flex-wrap:wrap; gap:8px; }" +
     ".fresh-chip { display:inline-flex; align-items:center; gap:6px; background:rgba(28,43,82,.98);" +
     " border:1px solid rgba(150,170,255,.4); border-radius:999px; padding:4px 12px; font-size:.68rem; }" +
+    ".fresh-stamp { border-color:rgba(255,211,77,.55) !important; }" +
+    ".fresh-stamp i, #pageIndex .fresh-stamp i { color:#ffd34d !important; }" +
     ".fresh-chip i { font-style:normal; color:#5a6a99; font-weight:700; }" +
     ".fresh-chip b { color:#1d2f63; font-weight:800; }" +
     // ============ TASK 21 — dark liquid-glass index + glass material ============
@@ -4436,6 +4638,11 @@ function getDashboardCss_() {
     ".person-card { border:1px solid rgba(170,190,255,.30); }" +
     ".csat-chip { backdrop-filter:blur(10px); }" +
     // ---- AMC & Bundle tables: side by side, splitting the width ----
+    ".iv-split { display:flex; gap:14px; align-items:flex-start; flex-wrap:wrap; }" +
+    ".iv-split .iv-left { flex:1 1 400px; min-width:0; }" +
+    ".iv-split .iv-left table { width:100%; }" +
+    ".iv-split .iv-right { flex:0 0 200px; width:200px; display:flex; flex-direction:column; gap:12px; }" +
+    ".iv-split .iv-right .card { width:100%; }" +
     ".inc-pair { display:flex; gap:14px; align-items:stretch; flex-wrap:wrap; }" +
     ".inc-pair .inc-cat { flex:1 1 46%; min-width:340px; margin-bottom:0; }" +
     ".inc-pair table { width:100%; }" +
@@ -4452,17 +4659,15 @@ function getDashboardCss_() {
 
     // ---- next-slab chase line on the salesperson cards ----
     ".next-slab { color:#8fc7ff; font-weight:700; }" +
-    // ---- live clock card, top-middle of the page ----
-    // Task 30: gif animation removed; digits keep the LED texture, now in
-    // pale light sky blue, 20% bigger (1.08rem -> 1.296rem).
-    ".topbar-clock { position:relative; overflow:hidden; border-radius:14px; width:400px; height:96px; flex:0 0 auto;" +
-    " padding:10px 18px; box-sizing:border-box;" +
-    " display:flex; align-items:center; justify-content:center; border:1px solid rgba(140,160,230,.5);" +
-    " background:rgba(8,14,36,.92);" +
-    " box-shadow:0 8px 22px rgba(6,10,34,.4), inset 0 1px 0 rgba(255,255,255,.25); isolation:isolate; }" +
+    // ---- live clock, top-middle of the page ----
+    // Task 35: no card/frame at all — only the date & time digits, glowing
+    // golden yellow on the topbar.
+    ".topbar-clock { position:relative; overflow:visible; width:400px; height:96px; flex:0 0 auto;" +
+    " padding:0 8px; box-sizing:border-box;" +
+    " display:flex; align-items:center; justify-content:center; background:transparent; border:none; box-shadow:none; }" +
     ".clock-text { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:1.296rem; font-weight:800;" +
-    " letter-spacing:.05em; color:#b7dcff;" +
-    " text-shadow:0 0 6px rgba(120,180,255,.9), 0 0 14px rgba(100,160,255,.6), 0 0 30px rgba(90,140,250,.35);" +
+    " letter-spacing:.05em; color:#ffd34d;" +
+    " text-shadow:0 0 7px rgba(255,196,46,.95), 0 0 16px rgba(255,170,20,.75), 0 0 34px rgba(255,140,0,.5);" +
     " white-space:nowrap; font-variant-numeric:tabular-nums; }" +
     // ============ TASK 22 — one black-glitter backdrop for ALL pages ============
     "body { background:#3f444d; color:#dbe4f6; }" +
@@ -4473,6 +4678,7 @@ function getDashboardCss_() {
     ".topbar { background:rgba(8,12,32,.78); backdrop-filter:blur(14px) saturate(1.25);" +
     " -webkit-backdrop-filter:blur(14px) saturate(1.25); border-bottom:1px solid rgba(170,190,255,.22); }" +
     ".brand { color:#f5f8ff; text-shadow:0 2px 8px rgba(3,6,24,.7); }" +
+    ".brand-sub { color:#aebcff; font-size:.85rem; font-weight:700; letter-spacing:.04em; }" +
     ".topbar .meta { color:#aebcff; }" +
     ".topbar .note.ok { color:#6ee7b7; } .topbar .note.err { color:#ffb4c0; }" +
     ".tabs { background:rgba(12,17,42,.72); border-color:rgba(170,190,255,.25);" +
@@ -4490,8 +4696,6 @@ function getDashboardCss_() {
     ".src-hint { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
     ".repair-strip { background:rgba(28,43,82,.98); border-color:rgba(170,190,255,.28); }" +
     ".rs-label { color:#a9b6d8; } .rs-value { color:#ffffff; }" +
-    ".ph-tile { border-color:rgba(140,160,230,.45); background:rgba(28,43,82,.98); }" +
-    ".ph-text { color:#c7d2ee; }" +
     ".inc-cat-title { color:#cfe0ff; }" +
     ".wp-head { color:#f2f6ff; }" +
     ".map-line { color:#94a3bd; } .map-line b { color:#e6edff; }" +
@@ -4505,11 +4709,13 @@ function getDashboardCss_() {
     " border-radius:12px; padding:12px; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }" +
     // job table: entirely left-aligned
     ".jobtable th, .jobtable td { text-align:left; }" +
-    // C-SAT chips move BELOW the table, one horizontal row
-    ".csat-flex { flex-direction:column; align-items:stretch; }" +
-    ".csat-flex .csat-right { flex:0 0 auto; width:100%; min-width:0; max-width:100%;" +
-    " flex-direction:row; flex-wrap:wrap; gap:10px; margin-top:12px; }" +
-    ".csat-right .csat-chip { flex:1 1 190px; width:auto; max-width:280px; }" +
+    // Task 35: satisfaction table hugs the left; chips move to its right.
+    ".csat-flex { flex-direction:row; align-items:flex-start; flex-wrap:wrap; }" +
+    ".csat-flex .csat-left { flex:0 0 auto; max-width:100%; }" +
+    ".csat-flex table.csat-table { width:auto; min-width:0; }" +
+    ".csat-flex .csat-right { flex:0 0 240px; width:240px; min-width:200px; max-width:260px;" +
+    " flex-direction:column; gap:10px; }" +
+    ".csat-right .csat-chip { flex:0 0 auto; width:100%; max-width:100%; }" +
     // ---- index tiles: lighter glass, brighter luminous fonts ----
     ".glass-tile { background:rgba(28,43,82,.98);" +
     " border:1px solid rgba(255,255,255,.55); color:#f4f8ff; opacity:1; isolation:isolate;" +
@@ -4553,7 +4759,7 @@ function getDashboardCss_() {
     // Job management: force every cell left (beats .ptable td.num), and bucket
     // bands sweep from sky blue down to deep navy.
     ".jobtable th, .jobtable td { text-align:left !important; }" +
-    ".grphead td { background:linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%) !important;" +
+    ".grphead td { background:#1c2b52 !important;" +
     " border-bottom-color:#8cc9ff !important; box-shadow:0 3px 10px rgba(11,54,114,.5); }" +
     // ---- floating sheet-search chat bot (every page, bottom-right) ----
     ".chat-widget { position:fixed; right:18px; bottom:18px; z-index:90; display:flex;" +
@@ -4872,14 +5078,16 @@ function renderInvoiceValuation_(data) {
   return (
     '<section class="section" id="sec-invoice"><h2>🧾 Invoice Valuation</h2><div class="body">' +
     '<div class="sec-desc">Definition: what invoices are really worth — line count, unique invoice count, revenue and gross profit per revenue type, plus AR (accessory attachment) rate next to invoices that qualified for one.</div>' +
-    '<div class="scroll-x">' +
+    '<div class="iv-split">' +
+    '<div class="iv-left"><div class="scroll-x">' +
     "<table class=\"hdr-deep\"><thead><tr><th>Revenue Type</th><th>Invoice Lines</th><th>Unique Invoices</th><th>Revenue</th>" +
-    "<th>Gross Profit</th></tr></thead><tbody>" + rows + totalRow + "</tbody></table></div>" +
-    '<div class="cards" style="margin-top:14px">' +
+    "<th>Gross Profit</th></tr></thead><tbody>" + rows + totalRow + "</tbody></table></div></div>" +
+    '<div class="iv-right">' +
     '<div class="card"><div class="label">Bundle Unique Invoices</div><div class="value">' +
     data.invoiceValuation.bundleUniqueInvoices + "</div></div>" +
     '<div class="card"><div class="label">AMC Unique Invoices</div><div class="value">' +
     data.invoiceValuation.amcUniqueInvoices + "</div></div>" +
+    "</div>" +
     "</div>" +
     "</div></section>"
   );
