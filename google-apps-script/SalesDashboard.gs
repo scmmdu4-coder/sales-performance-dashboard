@@ -664,6 +664,49 @@ function incentiveForPct_(slabs, pctVal) {
   return s ? s.value : 0;
 }
 
+/* ============================================================================
+ * TASK 33 — PERSONAL REVENUE INCENTIVE (owner's IFS formula structure).
+ * p = achieved % of the salesperson's OWN monthly target, expressed as a
+ * 0-100 number. Payouts are pro-rata: base × p / band-reference.
+ *   Service   : >110%: 12000·p/110 · ≤109%: 11000·p/101 · 100-110: 10000·p/100
+ *               91+: 8000·p/99 · 81+: 7000·p/90 · 71+: 6000·p/80
+ *   Accessory : >110%: 8000·p/110 · 81+: 6000·p/100 · 71+: 4000·p/80
+ *               61+: 3000·p/70 · 51+: 2500·p/60
+ * Bands below the floor pay nothing ("TRUE → empty").
+ * ==========================================================================*/
+function serviceIncentiveForPct33_(pctVal) {
+  var p = (pctVal || 0) / 100;
+  if (p > 1.10) return 12000 * p / 1.10;
+  if (p <= 1.09) return 11000 * p / 1.01;
+  if (p >= 1.00) return 10000 * p / 1.00;
+  if (p >= 0.91) return 8000 * p / 0.99;
+  if (p >= 0.81) return 7000 * p / 0.90;
+  if (p >= 0.71) return 6000 * p / 0.80;
+  return 0;
+}
+function accessoryIncentiveForPct33_(pctVal) {
+  var p = (pctVal || 0) / 100;
+  if (p > 1.10) return 8000 * p / 1.10;
+  if (p >= 0.81) return 6000 * p / 1.00;
+  if (p >= 0.71) return 4000 * p / 0.80;
+  if (p >= 0.61) return 3000 * p / 0.70;
+  if (p >= 0.51) return 2500 * p / 0.60;
+  return 0;
+}
+// Chase tiers (ascending) for the "next slab" balance lines on person cards.
+var SVC_INC_TIERS33 = [71, 81, 91, 100, 110];
+var ACC_INC_TIERS33 = [51, 61, 71, 81, 110];
+function nextIncentiveSlab33_(tiers, formulaFn, pctVal, tgt, achVal) {
+  if (!tiers || !tiers.length || tgt <= 0) return null;
+  for (var i = 0; i < tiers.length; i++) {
+    if (pctVal < tiers[i]) {
+      var need = Math.max(0, Math.ceil((tiers[i] / 100) * tgt) - achVal);
+      return { label: tiers[i] + "%", pct: tiers[i], amount: formulaFn(tiers[i]), need: need };
+    }
+  }
+  return null;
+}
+
 function findRow_(rows, fromCol, toCol, re) {
   for (var r = 0; r < rows.length; r++) {
     for (var c = fromCol; c <= toCol; c++) {
@@ -1237,8 +1280,8 @@ function computeDashboard(allRows, target) {
     achGrossProfit = Math.round(achGrossProfit);
 
     // Service & accessory are the only revenue types that EARN incentive.
-    var svcInc = incentiveForPct_(target.serviceIncentive.service, pct_(ach.service, t.service));
-    var accInc = incentiveForPct_(target.serviceIncentive.accessory, pct_(ach.accessory, t.accessory));
+    var svcInc = serviceIncentiveForPct33_(pct_(ach.service, t.service));
+    var accInc = accessoryIncentiveForPct33_(pct_(ach.accessory, t.accessory));
     var earnedIncentive = svcInc + accInc;
 
     // Repair earns nothing itself — it is a STORE-LEVEL GATE (owner's rule):
@@ -1252,20 +1295,7 @@ function computeDashboard(allRows, target) {
     var repairGateMet = storeRepairTarget > 0 ? (storeRepairPct * 100) >= gatePct : false;
     var payableIncentive = repairGateMet ? earnedIncentive : 0;
 
-    // Balance still needed to step into the NEXT incentive slab for the two
-    // incentive-bearing types. Slab ranges live in target!A18:D25 as % of the
-    // personal target, so the money gap is (nextSlab.minPct × target) − won.
-    function nextSlab_(slabs, pctVal, tgt, achVal) {
-      if (!slabs || !slabs.length || tgt <= 0) return null;
-      var sorted = slabs.slice().sort(function (x, y) { return x.minPct - y.minPct; });
-      for (var i = 0; i < sorted.length; i++) {
-        if (pctVal < sorted[i].minPct) {
-          var need = Math.max(0, Math.ceil((sorted[i].minPct / 100) * tgt) - achVal);
-          return { label: sorted[i].label, pct: sorted[i].minPct, amount: sorted[i].value, need: need };
-        }
-      }
-      return null;
-    }
+    // NEXT-tier chase (Task 33 formula tiers, ascending).
 
     function mk(tg, a, inc) {
       return { target: tg, achieved: a, pct: pct_(a, tg), balance: Math.max(0, tg - a), incentive: inc || 0 };
@@ -1282,9 +1312,8 @@ function computeDashboard(allRows, target) {
       service: mk(t.service, ach.service, svcInc),
       accessory: mk(t.accessory, ach.accessory, accInc),
       repair: mk(storeRepairTarget, ach.repair, 0),
-      // Balance to the NEXT slab (target!A18:D25) so they can chase more incentive.
-      nextSvcSlab: nextSlab_(target.serviceIncentive.service, pct_(ach.service, t.service), t.service, ach.service),
-      nextAccSlab: nextSlab_(target.serviceIncentive.accessory, pct_(ach.accessory, t.accessory), t.accessory, ach.accessory),
+      nextSvcSlab: nextIncentiveSlab33_(SVC_INC_TIERS33, serviceIncentiveForPct33_, pct_(ach.service, t.service), t.service, ach.service),
+      nextAccSlab: nextIncentiveSlab33_(ACC_INC_TIERS33, accessoryIncentiveForPct33_, pct_(ach.accessory, t.accessory), t.accessory, ach.accessory),
       grossProfit: mk(t.grossProfit, achGrossProfit, 0),
       // Per-day target for this engineer = the BALANCE still needed for that
       // revenue type ÷ the number of working days REMAINING in the month.
@@ -2765,20 +2794,22 @@ function chatMobileQuery(mobile, origQ) {
     if (s.caseId) caseIds[s.caseId] = s;
   });
   var caseArr = Object.keys(caseIds);
-  if (caseArr.length) {
-    rows.push([chatTxt("<b>Case IDs</b>"), chatPlain(caseArr.join(", "))]);
-    rows.push([chatTxt("<b>CRM repair status</b>"), chatPlain(caseArr.map(function (c) {
-      var s = caseIds[c];
-      return c + " — " + (s.status || "open");
-    }).join(" · "))]);
-    var prods = [];
-    caseArr.forEach(function (c) { if (caseIds[c].product) prods.push(caseIds[c].product); });
-    if (prods.length) rows.push([chatTxt("<b>Product</b>"), chatPlain(prods.join(" · "))]);
-    rows.push([chatTxt("<b>GSX status</b>"), chatPlain(caseArr.map(function (c) {
-      var s = caseIds[c];
-      return c + " — " + (s.gsx || "—");
-    }).join(" · "))]);
-  }
+  // Task 33: one diagnostic block per case — Case ID, customer, product,
+  // CRM case status, GSX case status, CRM bucket, case date and the most
+  // recent communication-update date.
+  caseArr.forEach(function (c) {
+    var s = caseIds[c];
+    rows.push([chatTxt("<b>&#128736;&#65039; " + c + "</b>")]);
+    rows.push([chatTxt("Case ID"), chatTxt(c)]);
+    if (name) rows.push([chatTxt("Customer"), chatPlain(name)]);
+    rows.push([chatTxt("Product"), chatPlain(s.product || "—")]);
+    rows.push([chatTxt("CRM case status"), chatPlain(s.caseStatus || "—")]);
+    rows.push([chatTxt("GSX case status"), chatPlain(s.gsx || "—")]);
+    rows.push([chatTxt("CRM bucket"), chatPlain(s.status || "—")]);
+    rows.push([chatTxt("Case date"), chatPlain(s.caseDate || "—")]);
+    var commD = chatCommDateForCase_(ss, c);
+    rows.push([chatTxt("Comm updated"), chatPlain(commD || "no updates logged")]);
+  });
 
   // Invoices (walkin InvoiceCode joined to crm value)
   if (crm.invoices.length) {
@@ -2885,6 +2916,10 @@ function chatServiceRowsForMobile(ss, mobile) {
   var cStatus = findColumn_(values.header, [/^crm_?jobstatusdesc$/i, /crm.*status/i, /job.*status.*desc/i]);
   var cGsx = findColumn_(values.header, [/gsx/i, /repair.*status/i]);
   var cProd = findColumn_(values.header, [/product.*desc/i, /^product/i, /model/i]);
+  // Task 33: case status (service!Status), the CRM bucket and the case date
+  // ride along so the answer can list the full per-case diagnostic block.
+  var cCaseStatus = findColumn_(values.header, [/^status$/i, /^jobstatus$/i, /case.*status/i]);
+  var cCaseDate = findColumn_(values.header, [/^casedate$/i, /case.*date/i]);
   var out = [];
   values.rows.forEach(function (r) {
     if (chatDig(r[cMobile]) === mobile) {
@@ -2893,6 +2928,8 @@ function chatServiceRowsForMobile(ss, mobile) {
         last: cLast !== -1 ? str_(r[cLast]) : "",
         caseId: cCase !== -1 ? str_(r[cCase]) : "",
         status: cStatus !== -1 ? str_(r[cStatus]) : "",
+        caseStatus: cCaseStatus !== -1 ? str_(r[cCaseStatus]) : "",
+        caseDate: cCaseDate !== -1 ? str_(r[cCaseDate]) : "",
         gsx: cGsx !== -1 ? str_(r[cGsx]) : "",
         product: cProd !== -1 ? str_(r[cProd]) : "",
       });
@@ -2902,11 +2939,35 @@ function chatServiceRowsForMobile(ss, mobile) {
 }
 
 /**
+ * Latest communication-created date for a Case ID (Task 33). Reads the
+ * chat-display values of the communication sheet and keeps the newest
+ * parseable stamp; the day key comes back as dd-MM-yyyy for display.
+ */
+function chatCommDateForCase_(ss, caseId) {
+  var sh = getSheetByNames_(ss, CONFIG.COMM_SHEET_NAMES);
+  if (!sh) return "";
+  var values = chatSheetData(sh);
+  var cCase = findColumn_(values.header, COMM_SPEC.caseId);
+  var cDate = findColumn_(values.header, COMM_SPEC.createdDate);
+  if (cCase === -1 || cDate === -1) return "";
+  var want = str_(caseId).toLowerCase();
+  var best = null;
+  values.rows.forEach(function (r) {
+    if (str_(r[cCase]).toLowerCase() === want) {
+      var p = parseAnyDate_(r[cDate]);
+      if (p.valid && (!best || p.ts > best.ts)) best = p;
+    }
+  });
+  return best ? best.dayKey : "";
+}
+
+/**
  * Direct Case-ID lookup against service!CaseId (Task 30). Returns null when
  * the ID isn't on the sheet so the router can fall back to the guidance text.
  */
 function chatCaseQuery(caseId) {
-  var sh = getSheetByNames_(getSpreadsheet_(), CONFIG.SERVICE_SHEET_NAMES);
+  var ss = getSpreadsheet_();
+  var sh = getSheetByNames_(ss, CONFIG.SERVICE_SHEET_NAMES);
   if (!sh) return null;
   var values = chatSheetData(sh);
   var cCase = findColumn_(values.header, [/^caseid$/i, /^case.*id/i]);
@@ -2940,6 +3001,8 @@ function chatCaseQuery(caseId) {
   if (cStatus !== -1 && rows[0][cStatus]) outRows.push([chatTxt("<b>Case status</b>"), chatPlain(str_(rows[0][cStatus]))]);
   if (cAge !== -1 && rows[0][cAge] !== "") outRows.push([chatTxt("<b>Job age</b>"), chatTxt(String(rows[0][cAge]) + " days")]);
   if (cDate !== -1 && rows[0][cDate]) outRows.push([chatTxt("<b>Case opened</b>"), chatPlain(str_(rows[0][cDate]))]);
+  var commD = chatCommDateForCase_(ss, caseId);
+  outRows.push([chatTxt("<b>Comm updated</b>"), chatPlain(commD || "no updates logged")]);
   if (rows.length > 1) outRows.push([chatTxt('<span class="muted">' + rows.length + " rows carry this Case ID on the service sheet.</span>")]);
   return { title: "🧰 Case " + str_(caseId).toUpperCase(), rows: outRows, note: "From service!CaseId." };
 }
@@ -3426,6 +3489,7 @@ function buildDashboardPage_(data) {
     "        h+='</tbody></table>';" +
     "      }" +
     "      if(res.note){h+='<div class=\\\"muted\\\">'+res.note+'</div>';}" +
+    "      var pl=document.getElementById('chatPanel'); if(pl){pl.classList.toggle('half', !!(res.rows && res.rows.length));}" +
     "      finish(h);" +
     "    })" +
     "    .withFailureHandler(function(err){" +
@@ -3749,7 +3813,8 @@ function renderJobManagement_(jm) {
       bucketCell +
       ageCell(j.jobAge) +
       gsxDisplay +
-      // Task 30: CRM status column (service!CRM_JobStatusDesc) next to GSX status.
+      // Task 33: Repair Type right after GSX Repair Status, before CRM Status.
+      "<td>" + esc_(j.repairType) + "</td>" +
       "<td>" + esc_(j.crmRepairStatus || "—") + "</td>" +
       '<td class="sticky-col"><b>' + esc_(j.caseId) + "</b>" +
         (j.isUnclaimed ? ' <span class="badge-unclaimed sm">⚠ Unclaimed</span>' : "") +
@@ -3758,7 +3823,6 @@ function renderJobManagement_(jm) {
       "<td>" + esc_(j.name) + "</td>" +
       '<td class="num">' + esc_(j.mobile) + "</td>" +
       "<td>" + esc_(j.product) + "</td>" +
-      "<td>" + esc_(j.repairType) + "</td>" +
       "<td>" + comm + "</td>" +
       commDate +
       "</tr>";
@@ -3767,16 +3831,16 @@ function renderJobManagement_(jm) {
   var table =
     '<div class="scroll-x jobwrap"><table class="ptable jobtable">' +
     '<colgroup>' +
-    '<col style="width:10%"><col style="width:5%"><col style="width:10.5%">' +
-    '<col style="width:10.5%"><col style="width:10.5%"><col style="width:10%">' +
-    '<col style="width:9%"><col style="width:12.5%"><col style="width:9.5%">' +
+    '<col style="width:10%"><col style="width:4.5%"><col style="width:10.5%">' +
+    '<col style="width:10.5%"><col style="width:10.5%"><col style="width:9%">' +
+    '<col style="width:9.5%"><col style="width:9.5%"><col style="width:12.5%">' +
     '<col style="width:7.5%"><col style="width:5.5%">' +
     '</colgroup>' +
     '<thead><tr>' +
     "<th>Repair Bucket</th><th>Aging</th><th>GSX Repair Status</th>" +
-    "<th>CRM Status</th>" +
+    "<th>Repair Type</th><th>CRM Status</th>" +
     "<th>Case ID</th><th>Name</th><th>Number</th><th>Model</th>" +
-    "<th>Repair Type</th><th>Communicated</th><th>Comm. Updated</th>" +
+    "<th>Communicated</th><th>Comm. Updated</th>" +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>";
 
   // Resolved column mapping — printed under the section so the user can
@@ -3787,8 +3851,8 @@ function renderJobManagement_(jm) {
   }
   var mapLine = '<div class="map-line">' + [
     ["Repair Bucket","crmRepairStatus"],["Aging","jobAge"],
-    ["GSX Repair Status","gsxStatus"],["CRM Status","crmRepairStatus"],["Case ID","caseId"],["Number","mobile"],
-    ["Model","product"],["Repair Type","repairDocType"],["Open filter","status"]]
+    ["GSX Repair Status","gsxStatus"],["Repair Type","repairDocType"],["CRM Status","crmRepairStatus"],["Case ID","caseId"],["Number","mobile"],
+    ["Model","product"],["Open filter","status"]]
     .map(srcLine).join(" · ") + "</div>";
 
   return head + mapLine + table;
@@ -4142,8 +4206,8 @@ function getDashboardCss_() {
     // walk-in / comm status colours on the dark tables
     ".comm-yes { color:var(--achieved); font-weight:700; }" +
     ".comm-no { color:#fbbf24; font-weight:700; }" +
-    ".comm-pos { color:#12352d; background:#63e6b7 !important; font-weight:700; }" +
-    ".comm-neg { color:#5f2028; background:#ff9da7 !important; font-weight:700; }" +
+    ".comm-pos { color:#e6fff2 !important; background:#0f9d59 !important; font-weight:800; }" +
+    ".comm-neg { color:#ffe9e6 !important; background:#c62a33 !important; font-weight:800; }" +
     // unclaimed devices: keeps the amber identity, tuned for the dark table
     ".unclaimed-row td { background:rgba(255,212,119,.10) !important; }" +
     ".unclaimed-row:hover td { background:rgba(255,212,119,.16) !important; }" +
@@ -4469,11 +4533,14 @@ function getDashboardCss_() {
     ".chat-fab:hover { transform:translateY(-2px); box-shadow:0 14px 32px rgba(4,10,34,.7); }" +
     ".chat-fab-icon { font-size:1.05rem; }" +
     ".chat-panel { display:none; width:358px; max-width:calc(100vw - 30px); height:430px;" +
+    " transition:width .2s ease, max-height .2s ease;" +
     " max-height:calc(100vh - 110px); flex-direction:column; overflow:hidden; border-radius:16px;" +
     " background:rgba(10,15,40,.95); border:1px solid rgba(170,190,255,.3);" +
     " backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);" +
     " box-shadow:0 18px 46px rgba(2,6,26,.75); }" +
     ".chat-panel.open { display:flex; }" +
+    // Task 33: a mobile/case answer widens the panel to half the page width.
+    ".chat-panel.half { width:50vw; max-width:calc(100vw - 30px); height:70vh; max-height:calc(100vh - 60px); }" +
     ".chat-head { display:flex; align-items:center; gap:8px; padding:10px 12px;" +
     " border-bottom:1px solid rgba(170,190,255,.22); color:#f2f6ff; font-size:.85rem; }" +
     ".chat-head .chat-sub { font-size:.68rem; color:#9fb4e8; font-weight:500; }" +
@@ -4598,9 +4665,8 @@ function renderWorkingDaysCard_(data) {
 
 function renderSalespersonCards_(data) {
   // Incentive-bearing revenue types show target vs achieved, the balance
-  // still needed in (brackets), the incentive that type has earned, and —
-  // from the slab table at target!A18:D25 — the extra revenue that jumps
-  // this person into the NEXT (more rewarding) slab.
+  // still needed in (brackets), the incentive that type has earned, and the
+  // next chase tier of the Task-33 IFS formula (70s tier &rarr; 110% top).
   function incentiveLine_(label, b, nextSlab) {
     var balTxt = b.balance > 0
       ? ' <span class="muted">(' + money_(b.balance) + " to go)</span>"
@@ -4670,7 +4736,7 @@ function renderSalespersonCards_(data) {
     '<section class="section" id="sec-person"><h2>👤 Sales Person Performance</h2><div class="body">' +
     '<div class="person-grid">' + cards + "</div>" +
     '<p class="muted" style="font-size:12.5px;margin:14px 0 0">' +
-    "Only <b>Service</b> and <b>Accessory</b> revenue earn incentive; each also shows the balance that jumps you to the next slab (slab levels from <b>target!A18:D25</b>). " +
+    "Only <b>Service</b> and <b>Accessory</b> revenue earn incentive — payout is the pro-rata IFS formula. Service tiers 71/81/91/100&#8209;&#62;110% (&uarr;to &#8377;12,000); Accessory tiers 51/61/71/81&#8209;&#62;110% (&uarr;to &#8377;8,000). " +
     "<b>Repair</b> revenue pays nothing on its own — it is one shared store gate: once the store&rsquo;s combined repair achievement passes <b>" +
     CONFIG.REPAIR_INCENTIVE_GATE_PCT + "%</b> of the store repair target, <b>every salesperson is eligible to receive the incentive they earned</b>.</p>" +
     "</div></section>"

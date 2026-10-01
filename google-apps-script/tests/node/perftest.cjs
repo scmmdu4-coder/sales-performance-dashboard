@@ -4,6 +4,24 @@
  * It stubs SpreadsheetApp / CacheService / etc., feeds mock sheets through the
  * real script, and asserts the computed values and rendered HTML.
  */
+// Freeze "today" so month-relative assertions stay stable year-round: the
+// mock sheets are authored as September-2026 data (clock mock says
+// "24 Sep 2026, 10:30"), so the harness pins the clock to that day.
+var __REAL_DATE__=Date;
+(function(){
+  var FROZEN_TS=new __REAL_DATE__(2026,8,24,10,30,0).getTime();
+  function FakeDate(){
+    if(!(this instanceof FakeDate)) return __REAL_DATE__.apply(null,arguments).toString();
+    if(arguments.length===0) return new __REAL_DATE__(FROZEN_TS);
+    if(arguments.length===1) return new __REAL_DATE__(arguments[0]);
+    var a=Array.prototype.slice.call(arguments);
+    return new (Function.prototype.bind.apply(__REAL_DATE__,[null].concat(a)))();
+  }
+  FakeDate.prototype=__REAL_DATE__.prototype;
+  FakeDate.now=function(){return FROZEN_TS;};
+  FakeDate.UTC=__REAL_DATE__.UTC; FakeDate.parse=__REAL_DATE__.parse;
+  global.Date=FakeDate;
+})();
 global.Utilities={formatDate:function(d,tz,f){
   if(f&&f.indexOf("HH")>-1) return "24 Sep 2026, 10:30";
   function p(n){return(n<10?"0":"")+n;}
@@ -216,11 +234,11 @@ check("DISC/AMC notes hidden",page.indexOf("starts with DISC")===-1&&page.indexO
 check("date-wise GP column",page.indexOf('class="grp grp-0">Gross Profit</th>')>-1);
 check("legend shows GP daily target",page.indexOf("Gross Profit "+"₹"+subha.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
 check("GP daily target in legend for Dinesh",page.indexOf("Gross Profit "+"₹"+dinesh.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
-check("job table 11-col owner order (Task 30 adds CRM Status)",page.indexOf(
+check("job table 11-col owner order (Task 33: Repair Type next to GSX)",page.indexOf(
   "<th>Repair Bucket</th><th>Aging</th><th>GSX Repair Status</th>"+
-  "<th>CRM Status</th>"+
+  "<th>Repair Type</th><th>CRM Status</th>"+
   "<th>Case ID</th><th>Name</th><th>Number</th><th>Model</th>"+
-  "<th>Repair Type</th><th>Communicated</th><th>Comm. Updated</th>")>-1);
+  "<th>Communicated</th><th>Comm. Updated</th>")>-1);
 check("old job columns dropped",page.indexOf("<th>Warranty Type</th>")===-1
   &&page.indexOf("<th>Job created</th>")===-1&&page.indexOf("<th>Advance paid</th>")===-1);
 check("repair bucket cell tone",page.indexOf('class="bucket-cell"')>-1);
@@ -275,6 +293,8 @@ check("walkin rows: single flat navy (Task 31)",page.indexOf(".walkintable tbody
 check("token table",page.indexOf("% of creation")>-1&&page.indexOf("Total tokens generated")>-1);
 check("ready col gone",page.indexOf("Ready for pickup")===-1);
 check("comm pos/neg present",page.indexOf("comm-pos")>-1&&page.indexOf("comm-neg")>-1);
+check("comm cells contrast colors (Task 33)", page.indexOf(".comm-pos { color:#e6fff2 !important; background:#0f9d59")>-1
+  &&page.indexOf(".comm-neg { color:#ffe9e6 !important; background:#c62a33")>-1);
 check("mapping line owner columns",page.indexOf('class="map-line"')>-1
   &&page.indexOf("Number ← <b>MobileNo</b>")>-1&&page.indexOf("Repair Bucket ←")>-1
   &&page.indexOf("Open filter")>-1);
@@ -379,7 +399,9 @@ check("liquid glass material on tables", page.indexOf("backdrop-filter:blur(12px
 check("csat chips below table", page.indexOf(".csat-flex { flex-direction:column")>-1
   &&page.indexOf(".csat-flex .csat-right { flex:0 0 auto; width:100%")>-1);
 check("next-slab balance lines", (page.match(/class="next-slab"/g)||[]).length>=1||page.indexOf("top slab reached")>-1);
-check("subha next svc slab ₹1,21,000", subha.nextSvcSlab && subha.nextSvcSlab.need===121000, subha.nextSvcSlab && subha.nextSvcSlab.need);
+check("subha next svc slab ₹1,22,800 (71% tier, Task 33)", subha.nextSvcSlab && subha.nextSvcSlab.need===122800, subha.nextSvcSlab && subha.nextSvcSlab.need);
+check("subha next acc slab 51% tier (Task 33)", subha.nextAccSlab && subha.nextAccSlab.pct===51
+  &&subha.nextAccSlab.need===Math.ceil(0.51*90000)-900, subha.nextAccSlab);
 
 console.log("== TASK 22 batch ==");
 check("tile glass flat navy + fonts brighter", page.indexOf("background:rgba(28,43,82,.98)")>-1
@@ -451,6 +473,48 @@ var mobParsed=JSON.parse(mobJSON);
 check("serverQuery shape", mobParsed.title!==undefined&&Array.isArray(mobParsed.rows));
 var blankQ=JSON.parse(serverQuery(""));
 check("serverQuery empty guard", blankQ.title==="Say something first");
+
+console.log("== TASK 33 batch ==");
+// --- hardcoded IFS incentive ladders ---
+check("service IFS 95.2% pays 11000-pro-rata", Math.round(serviceIncentiveForPct33_(95.2))===10368,
+  serviceIncentiveForPct33_(95.2));
+check("service IFS 105% still 11000-ladder", Math.round(serviceIncentiveForPct33_(105))===Math.round(11000*1.05/1.01));
+check("service IFS 109.5% pays 10000-pro-rata", Math.round(serviceIncentiveForPct33_(109.5))===Math.round(10000*1.095));
+check("service IFS 110% pays 10000-floor edge", Math.round(serviceIncentiveForPct33_(110))===Math.round(10000*1.1));
+check("service IFS 111% pays 12000-pro-rata", Math.round(serviceIncentiveForPct33_(111))===Math.round(12000*1.11/1.10));
+check("service IFS upside grows past 110", serviceIncentiveForPct33_(135)>serviceIncentiveForPct33_(120));
+check("service IFS 50% no floor cut on ladder", Math.round(serviceIncentiveForPct33_(50))===Math.round(11000*0.5/1.01));
+check("accessory IFS 95.2% lands 6000-pro-rata", Math.round(accessoryIncentiveForPct33_(95.2))===5712,
+  accessoryIncentiveForPct33_(95.2));
+check("accessory IFS 80% 4000-pro-rata", Math.round(accessoryIncentiveForPct33_(80))===Math.round(4000*0.8/0.8));
+check("accessory IFS 65% 3000-pro-rata", Math.round(accessoryIncentiveForPct33_(65))===Math.round(3000*0.65/0.7));
+check("accessory IFS 55% 2500-pro-rata", Math.round(accessoryIncentiveForPct33_(55))===Math.round(2500*0.55/0.6));
+check("accessory IFS 50% none", accessoryIncentiveForPct33_(50)===0);
+check("accessory IFS 111% 8000-pro-rata", Math.round(accessoryIncentiveForPct33_(111))===Math.round(8000*1.11/1.1));
+var gsSrc33=fs.readFileSync(__dirname+"/../../SalesDashboard.gs","utf8");
+check("incentive helpers hardcoded, not sheet-driven", gsSrc33.indexOf("svcInc = serviceIncentiveForPct33_")>-1
+  &&gsSrc33.indexOf("accInc = accessoryIncentiveForPct33_")>-1);
+check("person card incentive footer no longer cites A18:D25", page.indexOf("target!A18:D25")===-1);
+// --- chatbot: half-page results + per-case diagnostic block ---
+check("chat panel half-width css", page.indexOf(".chat-panel.half { width:50vw")>-1, "chat-panel.half css");
+check("chat panel widens on result rows", page.indexOf("classList.toggle('half'")>-1);
+check("mobile case block fields", mobFlat.indexOf("CRM case status")>-1
+  &&mobFlat.indexOf("GSX case status")>-1&&mobFlat.indexOf("CRM bucket")>-1
+  &&mobFlat.indexOf("Case date")>-1&&mobFlat.indexOf("Comm updated")>-1,
+  mobFlat.slice(0,300));
+var d1=new Date(Date.now()-86400000);function p2(x){return(x<10?"0":"")+x;}
+var c1001Comm=p2(d1.getDate())+"-"+p2(d1.getMonth()+1)+"-"+d1.getFullYear();
+check("mobile case block carries case + customer", mobFlat.indexOf("C1001")>-1&&mobFlat.indexOf("Ravi")>-1);
+check("comm updated = latest for C1001 (1 day ago)", mobFlat.indexOf(c1001Comm)>-1, [c1001Comm,mobFlat.slice(0,400)]);
+check("chatCommDateForCase_ helper exists", typeof chatCommDateForCase_==="function"
+  &&chatCommDateForCase_(getSpreadsheet_(),"C1009")==="");
+check("case query adds comm-updated row", caseFlat.indexOf("Comm updated")>-1
+  &&caseFlat.indexOf(c1001Comm)>-1, caseFlat.slice(0,300));
+check("case query for C1002 comm = 4 days ago", chatQuery("C1002").rows.some(function(r){
+    var d4=new Date(Date.now()-4*86400000);
+    var k=p2(d4.getDate())+"-"+p2(d4.getMonth()+1)+"-"+d4.getFullYear();
+    return JSON.stringify(r).indexOf(k)>-1; })===true);
+
 console.log("== TASK 24 batch ==");
 check("tile video golden-frame asset swap", page.indexOf("1064124616/thumb/8.jpg")>-1
   &&page.indexOf("1063973464")===-1
@@ -510,9 +574,8 @@ check("WhatsApp integration removed", page.indexOf("waSendLast")===-1
   &&page.indexOf("#25d366")===-1&&page.indexOf("wa_chatid")===-1);
 
 console.log("== TASK 30 batch ==");
-check("jobs table has CRM Status next to GSX", page.indexOf("<th>GSX Repair Status</th>")>-1
-  &&page.indexOf("<th>CRM Status</th>")>-1
-  &&page.indexOf("<th>GSX Repair Status</th><th>CRM Status</th>")>-1);
+check("jobs table has Repair Type between GSX and CRM Status (Task 33)",
+  page.indexOf("<th>GSX Repair Status</th><th>Repair Type</th><th>CRM Status</th>")>-1);
 check("jobs table rows expose CRM status", page.indexOf("<td>Original Display Used</td>")>-1);
 var gsSrc2=gsSrc;
 check("server-side scan/date/part/fuzzy dead code removed",
