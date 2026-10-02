@@ -96,10 +96,10 @@ T[4][11]="TOTAL";        T[4][12]=12; T[4][14]=2; T[4][18]=14; T[4][19]="85.71%"
 
 // ---- crm ----
 var crm=[["InvoiceCode","InvoiceDate","SalesPersonName","RevenueType","ItemDescription",
- "SubCategory","SchemeCode","TaxableAmount","GrossProfit","TranType","ItemCode","PartType"],
- ["INV1","23-09-2026 10:15","Subha","Service","Svc","","",5000,1500,"SALES","",""],
- ["INV2","23-09-2026 11:00","Dinesh","Accessories","Case","","",1200,300,"SALES","",""],
- ["INV3","23-09-2026 12:00","Subha","Accessories","Care+ plan","","",900,250,"SALES","CPLUS",""]];
+ "SubCategory","SchemeCode","TaxableAmount","GrossProfit","TranType","ItemCode","PartType","OrderCode"],
+ ["INV1","23-09-2026 10:15","Subha","Service","Svc","","",5000,1500,"SALES","","","C1001"],
+ ["INV2","23-09-2026 11:00","Dinesh","Accessories","Case","","",1200,300,"SALES","","",""],
+ ["INV3","23-09-2026 12:00","Subha","Accessories","Care+ plan","","",900,250,"SALES","CPLUS","",""]];
 
 // ---- walkin ----
 var wl=[["MobileNo","TokenDate","VisitPurposeDesc","CaseId","InvoiceCode","Remark","TokenCreatedBy"],
@@ -123,18 +123,17 @@ var cm=[["CaseId","CreatedDate","Remark"],
 // ---- service ----
 var sv=[["CaseId","FirstName","LastName","MobileNo","ProductDescription","CaseDate",
  "RepairCreatedDate","JobAge","Status","DeliveredDate","GSXRepairStatusDescription","CRM_JobStatusDesc",
- "CoverageCodeDescription","RepairDocType","Ready_For_Pickup_Date_CRM","GSXCode","SerialNo1"],
+ "CoverageCodeDescription","RepairDocType","Ready_For_Pickup_Date_CRM","GSXCode","SerialNo1","PartDescription"],
  // duplicate of C1003 with an OLDER case date placed BEFORE the real row —
  // the merger must keep the later (real) row instead.
- ["C1003","Mani","Kandan","919876543212","Different Phone",daysAgoStr(5,"10"),"",5,"Open","","Diagnosis In Progress","","In Warranty","Walk-In Repair","","GSX6003-OLD","SN-OLD"],
- ["C1001","Ravi","Kumar","919876543210","iPhone 13",daysAgoStr(14,"10"),daysAgoStr(13,"11"),14,"Open","","Repair Complete","Original Display Used","In Warranty","Walk-In Repair",daysAgoStr(12,"10"),"GSX6001","SN-C1001"],
- ["C1002","Anita","Devi","919876543211","Samsung S23",daysAgoStr(4,"09"),daysAgoStr(3,"14"),4,"Open","","Unclaimed Device","Part Used","Out of Warranty","Carry-In Repair",daysAgoStr(1,"12"),"GSX6002","SN-C1002"],
- ["C1003","Mani","Kandan","919876543212","OnePlus 11",daysAgoStr(2,"10"),"",2,"Open","","Diagnosis In Progress","Device Unclaimed Device due","Out Of Warranty (No Coverage)","Walk-In Repair","","GSX6003","SN-C1003"],
- ["C1004","Peela","Dass","919876543217","Realme 12",daysAgoStr(1,"08"),"",1,"Open","","Repair In Progress","Ready For Pickup","In Warranty","Service Non-Repair","","GSX6004","SN-C1004"],
- ["C1005","Old","Closed","919876543218","Pixel 7",daysAgoStr(55,"09"),daysAgoStr(54,"10"),55,"Delivered",daysAgoStr(50,"10"),"Repair Complete","Part Used","In Warranty","Carry-In Repair",daysAgoStr(50,"10"),"GSX6005","SN-C1005"],
- ["C1006","Age","Fallback","919876543219","Moto G",daysAgoStr(20,"09"),"","","Open","","Waiting for Part","","Out Of Warranty (No Coverage)","Walk-In Repair","","GSX6006","SN-C1006"],
- ["C1007","Can","Cell","919876543220","Nokia",daysAgoStr(2,"09"),"",2,"Cancelled","","Aborted","","In Warranty","Carry-In Repair","","GSX6007","SN-C1007"]];
-
+ ["C1003","Mani","Kandan","919876543212","Different Phone",daysAgoStr(5,"10"),"",5,"Open","","Diagnosis In Progress","","In Warranty","Walk-In Repair","","GSX6003-OLD","SN-OLD",""],
+ ["C1001","Ravi","Kumar","919876543210","iPhone 13",daysAgoStr(14,"10"),daysAgoStr(13,"11"),14,"Open","","Repair Complete","Original Display Used","In Warranty","Walk-In Repair",daysAgoStr(12,"10"),"GSX6001","SN-C1001","Battery"],
+ ["C1002","Anita","Devi","919876543211","Samsung S23",daysAgoStr(4,"09"),daysAgoStr(3,"14"),4,"Open","","Unclaimed Device","Part Used","Out of Warranty","Carry-In Repair",daysAgoStr(1,"12"),"GSX6002","SN-C1002",""],
+ ["C1003","Mani","Kandan","919876543212","OnePlus 11",daysAgoStr(2,"10"),"",2,"Open","","Diagnosis In Progress","Device Unclaimed Device due","Out Of Warranty (No Coverage)","Walk-In Repair","","GSX6003","SN-C1003",""],
+ ["C1004","Peela","Dass","919876543217","Realme 12",daysAgoStr(1,"08"),"",1,"Open","","Repair In Progress","Ready For Pickup","In Warranty","Service Non-Repair","","GSX6004","SN-C1004",""],
+ ["C1005","Old","Closed","919876543218","Pixel 7",daysAgoStr(55,"09"),daysAgoStr(54,"10"),55,"Delivered",daysAgoStr(50,"10"),"Repair Complete","Part Used","In Warranty","Carry-In Repair",daysAgoStr(50,"10"),"GSX6005","SN-C1005",""],
+ ["C1006","Age","Fallback","919876543219","Moto G",daysAgoStr(20,"09"),"","","Open","","Waiting for Part","","Out Of Warranty (No Coverage)","Walk-In Repair","","GSX6006","SN-C1006",""],
+ ["C1007","Can","Cell","919876543220","Nokia",daysAgoStr(2,"09"),"",2,"Cancelled","","Aborted","","In Warranty","Carry-In Repair","","GSX6007","SN-C1007",""]];
 // ---- advance ----
 var av=[["MobileNo","AvailableBalance"],["919876543210",500],["919876543210",200],["919876543217",350],["919876543219",999]];
 
@@ -610,10 +609,53 @@ check("clock fits a bigger frame (Task 31)", page.indexOf("width:400px; height:9
   &&page.indexOf("font-size:1.296rem")>-1);
 check("deck tab present", page.indexOf('data-page="deck"')>-1&&page.indexOf('id="pageDeck"')>-1);
 check("deck NOT on index tiles", (page.match(/glass-tile[^>]*data-page="deck"/g)||[]).length===0);
-check("deck sections", page.indexOf('id="deck-store"')>-1&&page.indexOf('id="deck-kpi"')>-1
-  &&page.indexOf('id="deck-walkin"')>-1&&page.indexOf('id="deck-csat"')>-1&&page.indexOf('id="deck-jobs"')>-1);
-check("deck store table rows", (page.match(/decktable[\s\S]{0,4000}Gross Profit/g)||[]).length===1);
-check("deck csat totals", page.indexOf("85.71%")>-1||page.indexOf("Satisfied")>-1);
+console.log("== TASK 36: deck rework (8 tables, current month) ==");
+var dk=biz.deckAnalysis;
+check("deck month label", dk.monthLabel==="SEP-2026", dk.monthLabel);
+check("8 deck sections in owner order",
+  page.indexOf('id="deck-sales"')<page.indexOf('id="deck-walkin"')
+  &&page.indexOf('id="deck-walkin"')<page.indexOf('id="deck-repair"')
+  &&page.indexOf('id="deck-repair"')<page.indexOf('id="deck-accessories"')
+  &&page.indexOf('id="deck-accessories"')<page.indexOf('id="deck-service"')
+  &&page.indexOf('id="deck-service"')<page.indexOf('id="deck-gp"')
+  &&page.indexOf('id="deck-gp"')<page.indexOf('id="deck-walkin-analysis"')
+  &&page.indexOf('id="deck-walkin-analysis"')<page.indexOf('id="deck-coverage"'));
+check("sales revenue rows RR/AR/SR", dk.salesRev.rows[0].label==="Repair Revenue"&&dk.salesRev.rows[0].count===0
+  &&dk.salesRev.rows[1].count===2&&dk.salesRev.rows[1].value===2100
+  &&dk.salesRev.rows[2].count===1&&dk.salesRev.rows[2].value===5000
+  &&dk.salesRev.totalCount===3&&dk.salesRev.totalValue===7100);
+check("walkin details 7/3", dk.walkins.unique===7&&dk.walkins.uniqBills===3);
+check("repair analysis iPhone 1 @5000 via orderCode link",
+  dk.repairRev.rows[0].label==="iPhone"&&dk.repairRev.rows[0].count===1&&dk.repairRev.rows[0].value===5000, dk.repairRev.rows[0]);
+check("repair analysis Others 4 (SNR C1004 out, Jul C1005 out)",
+  dk.repairRev.rows[3].label==="Others"&&dk.repairRev.rows[3].count===4&&dk.repairRev.totalCount===5);
+check("accessories buckets Case 1/1200, AC+ 1/900",
+  dk.accessoriesRev.rows[1].label==="Case"&&dk.accessoriesRev.rows[1].count===1&&dk.accessoriesRev.rows[1].value===1200
+  &&dk.accessoriesRev.rows[3].label==="AC+"&&dk.accessoriesRev.rows[3].value===900
+  &&dk.accessoriesRev.totalCount===2&&dk.accessoriesRev.totalValue===2100, dk.accessoriesRev.rows);
+check("service pivot blank item code", dk.serviceRev.rows.length===1
+  &&dk.serviceRev.rows[0].label==="(blank item code)"&&dk.serviceRev.rows[0].value===5000
+  &&dk.serviceRev.totalValue===5000);
+check("gp value rows + GP%", dk.gpValue.rows[0].label==="Accessories Revenue"
+  &&dk.gpValue.rows[0].pct===26.2&&dk.gpValue.rows[2].pct===30.0
+  &&dk.gpValue.total.value===7100&&dk.gpValue.total.gp===2050&&dk.gpValue.total.pct===28.9, dk.gpValue);
+var waVals=dk.walkinAnalysis.map(function(r){return r.value;});
+check("walkin analysis 7,3,3,2,0,1,43%,4",
+  waVals[0]===7&&waVals[1]===3&&waVals[2]===3&&waVals[3]===2&&waVals[4]===0&&waVals[5]===1
+  &&waVals[6]==="43%"&&waVals[7]===4, waVals);
+check("coverage iPhone Battery W1 (part=Batt), Others W2/NW3",
+  dk.coverage.rows[1].label==="iPhone Battery"&&dk.coverage.rows[1].count===1&&dk.coverage.rows[1].w===1
+  &&dk.coverage.rows[4].count===5&&dk.coverage.rows[4].w===2&&dk.coverage.rows[4].nw===3
+  &&dk.coverage.total.count===6&&dk.coverage.total.w===3&&dk.coverage.total.nw===3, dk.coverage);
+check("deck renders key numbers", page.indexOf("Walkin to Bills %")>-1&&page.indexOf("iPhone Battery")>-1
+  &&page.indexOf("(blank item code)")>-1);
+check("index tiles: decline 2 + winback 2 live",
+  page.indexOf("Declined repairs</span><b>2</b>")>-1&&page.indexOf("Win-backs</span><b>2</b>")>-1);
+check("comm contrast lifted vs bucket tints (Task 36-C)",
+  page.indexOf(".jobtable tbody tr td.comm-neg")>-1&&page.indexOf("#ffd3d7")>-1&&page.indexOf("#bbf0d0")>-1);
+check("csat right chips compact (Task 36-B)",
+  page.indexOf(".csat-right .csat-chip { flex:1 1 0; padding:6px 10px")>-1
+  &&page.indexOf(".csat-right .cc-value { font-size:1.05rem")>-1);
 var gsSrc=fs.readFileSync(__dirname+"/../../SalesDashboard.gs","utf8");
 check("refresh includes deck", page.indexOf("deck:'pageDeck'")>-1&&gsSrc.indexOf("deck: renderDeckHtml_(")>-1);
 

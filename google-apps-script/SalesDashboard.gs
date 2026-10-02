@@ -313,6 +313,8 @@ function loadDashboardData_() {
   var allRows = parseCrmRows(crmValues);
   var target = parseTargetSheet(targetValues);
   var result = { ss: ss, data: computeDashboard(allRows, target) };
+  // Task 36-D — the deck numbers ride on the same parse, current month only.
+  result.data.deckAnalysis = computeDeckAnalysis_(ss, allRows);
 
   // Store code for the page title — read straight from crm!C2, exactly the
   // cell the previous script used for its location header.
@@ -546,6 +548,7 @@ function parseCrmRows(values) {
     grossProfit: findColumn_(header, [/gross.*profit/i]),
     tranType: findColumn_(header, [/tran.*type/i]),
     itemCode: findColumn_(header, [/item.*code/i]),
+    orderCode: findColumn_(header, [/^ordercode$/i, /^order\s*code$/i, /order.*(code|no|num)/i]),
     partType: findColumn_(header, [/part.*type/i]),
   };
 
@@ -587,6 +590,7 @@ function parseCrmRows(values) {
       grossProfit: num_(row[col.grossProfit]),
       tranType: str_(row[col.tranType]),
       itemCode: col.itemCode !== -1 ? str_(row[col.itemCode]) : "",
+      orderCode: col.orderCode !== -1 ? str_(row[col.orderCode]) : "",
       partType: col.partType !== -1 ? str_(row[col.partType]) : "",
     });
   }
@@ -1706,6 +1710,8 @@ var SERVICE_SPEC = {
   // Task 34 — GSX ID and device serial shown on the Open Jobs table.
   gsxCode: [/^gsxcode$/i, /^gsx.*(code|id|no\.?|number)$/i, /gsx.*(job|case).*id/i],
   serialNo1: [/^serialno1$/i, /serial.*no\.?1/i, /serial.*number/i, /^serial/i, /device.*serial/i, /imei/i],
+  // Task 36 — replaced part for coverage split (battery / display buckets).
+  partDescription: [/^partdescription$/i, /^partdesc$/i, /^part\s*description$/i],
 };
 
 var ADVANCE_SPEC = {
@@ -2622,108 +2628,323 @@ function renderOperationHtml_(pd) {
   return out.join("");
 }
 
-/** DECK page (Task 24): last tab, not on the index. Summary cards only —
- *  store target vs achievement, KPI achievement, walk-ins, C-SAT, open jobs. */
-function renderDeckHtml_(data, pd) {
-  var s = data.store;
-  var out = [];
 
-  // ---- 1) Store target vs achievement ----
-  var storeGroups = [
-    ["Service", s.service], ["Accessories", s.accessory], ["Repair", s.repair],
-    ["Total", s.total], ["Gross Profit", s.grossProfit],
-  ];
-  var storeRows = storeGroups.map(function (g) {
-    var b = g[1] || { target: 0, achieved: 0 };
-    var pct = b.target > 0 ? (100 * b.achieved / b.target) : 0;
-    var cls = pct >= 100 ? "pos" : pct >= 60 ? "" : "neg";
-    return "<tr><td><b>" + esc_(g[0]) + "</b></td>" +
-      '<td class="num">' + money_(b.target) + "</td>" +
-      '<td class="num">' + money_(b.achieved) + "</td>" +
-      '<td class="num ' + cls + '"><b>' + pct.toFixed(1) + "%</b></td>" +
-      '<td class="num">' + money_(Math.max(0, b.target - b.achieved)) + "</td></tr>";
-  }).join("");
-  out.push(
-    '<section class="section" id="deck-store"><h2>🎯 Store Target vs Achievement</h2><div class="body">' +
-    '<div class="scroll-x"><table class="ptable decktable">' +
-    "<thead><tr><th>Type</th><th class=\"num\">Target</th><th class=\"num\">Achievement</th><th class=\"num\">Achieved %</th><th class=\"num\">Balance</th></tr></thead><tbody>" +
-    storeRows + "</tbody></table></div></div></section>");
 
-  // ---- 2) KPI achievement ----
-  var kpis = data.kpi.ar.concat(data.kpi.rr, data.kpi.sr);
-  var kT = 0, kA = 0, kHit = 0;
-  kpis.forEach(function (k) {
-    kT += k.target; kA += k.achieved;
-    if (k.target > 0 && k.achieved >= k.target) kHit++;
+/** TASK 36-D: DECK numbers. Everything is CURRENT MONTH only (the owner keeps
+ *  previous months manually). crm!TranType == "SALESRETURN" is excluded at the
+ *  parse boundary — every valuation below runs on isSaleRow_ rows only. */
+function computeDeckAnalysis_(ss, crmRows) {
+  var out = { available: true, monthLabel: "" };
+  var now = new Date();
+  var curY = now.getFullYear(), curM = now.getMonth() + 1;
+  var MNAME = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+  out.monthLabel = MNAME[now.getMonth()] + "-" + curY;
+  var curMKey = curY * 100 + curM;                        // 2026*100+9 → 202609
+  function mkeyTs(ts) { var d = new Date(ts); return d.getFullYear() * 100 + (d.getMonth() + 1); }
+
+  // ---- CRM rows for the current month, TranType == SALES only ----
+  var saleAll = (crmRows || []).filter(isSaleRow_);
+  var sale = saleAll.filter(function (r) { return r.year === curY && r.month === curM; });
+  // The crm sheet normally holds exactly the running month; if the calendar
+  // rolled over before the sheet was swapped, keep the sheet's rows rather
+  // than rendering an empty deck.
+  if (!sale.length) sale = saleAll;
+
+  function mkType(name) { return { name: name, count: 0, value: 0, gp: 0, invoices: {} }; }
+  var rb = { repair: mkType("Repair Revenue"), accessory: mkType("Accessories Revenue"), service: mkType("Service Revenue") };
+  var billSet = {};
+  sale.forEach(function (r) {
+    var k = revenueTypeKey_(r.revenueType);
+    if (!k) return;
+    var b = rb[k];
+    b.count++;                                    // invoice lines — AR+SR+RR sums to Bills
+    b.value += r.taxableAmount;
+    b.gp += r.grossProfit;
+    var inv = str_(r.invoiceCode);
+    if (inv) { billSet[inv] = true; b.invoices[inv] = true; }
   });
-  var kPct = kT > 0 ? (100 * kA / kT) : 0;
-  function dc(klabel, kvalue, ksub) {
-    return '<div class="card"><div class="label">' + esc_(klabel) + '</div><div class="value">' +
-      esc_(String(kvalue)) + '</div><div class="sub">' + esc_(ksub || "") + "</div></div>";
-  }
-  out.push(
-    '<section class="section" id="deck-kpi"><h2>📊 KPI Achievement</h2><div class="body">' +
-    '<div class="cards">' +
-    dc("KPIs Hit", kHit + " / " + kpis.length, "count at or above target") +
-    dc("Overall Target", kT, "sum of all KPI targets") +
-    dc("Overall Achieved", kA, "sum of all KPI achievements") +
-    dc("Achievement %", kPct.toFixed(1) + "%", "achieved ÷ target") +
-    "</div></div></section>");
+  function uniqKeys(set) { return Object.keys(set).length; }
 
-  // ---- 3) Walk-in details ----
-  if (pd.walkin && pd.walkin.available) {
-    var t = pd.walkin.totals;
-    out.push(
-      '<section class="section" id="deck-walkin"><h2>🚶 Walk-in Details</h2><div class="body">' +
-      '<div class="cards">' +
-      dc("Total Walk-ins", t.walkins, t.activeDays + " active days") +
-      dc("Unique Walk-ins", t.unique, "distinct mobile numbers") +
-      dc("Cases Created", t.cases, "walk-ins → service case") +
-      dc("Invoices Created", t.invoices, "walk-ins → sale") +
-      dc("Dead Leads", t.deadLeads, "no case · no invoice · no remark") +
-      "</div></div></section>");
-  } else {
-    out.push('<section class="section" id="deck-walkin"><h2>🚶 Walk-in Details</h2><div class="body">' +
-      '<div class="subnote">No walkin sheet found.</div></div></section>');
-  }
+  // 1) Sales Revenue Analysis — revenue type, count, value.
+  out.salesRev = {
+    rows: ["repair", "accessory", "service"].map(function (k) {
+      var b = rb[k];
+      return { label: b.name, count: b.count, value: Math.round(b.value) };
+    }),
+  };
+  out.salesRev.totalCount = out.salesRev.rows.reduce(function (s, r) { return s + r.count; }, 0);
+  out.salesRev.totalValue = out.salesRev.rows.reduce(function (s, r) { return s + r.value; }, 0);
 
-  // ---- 4) Customer satisfaction ----
-  if (pd.targetBlock && pd.targetBlock.available) {
-    var tb = pd.targetBlock;
-    var satPct = tb.totalRow.total > 0 ? Math.round((100 * tb.satTotal) / tb.totalRow.total) : 0;
-    out.push(
-      '<section class="section" id="deck-csat"><h2>🎯 Customer Satisfaction — ' + esc_(tb.periodName || "current period") + '</h2><div class="body">' +
-      '<div class="cards">' +
-      dc("Total Responses", tb.totalRow.total, "people surveyed") +
-      dc("Satisfied", tb.satTotal, satPct + "% of responses") +
-      dc("Dissatisfied", tb.disTotal, (100 - satPct) + "% of responses") +
-      (tb.csat !== "" ? dc("C-SAT", esc_(tb.csat), "from the sheet TOTAL row") : "") +
-      (tb.cfi !== "" ? dc("CFI", esc_(tb.cfi), "from the sheet TOTAL row") : "") +
-      "</div></div></section>");
-  } else {
-    out.push('<section class="section" id="deck-csat"><h2>⭐ Customer Satisfaction</h2><div class="body">' +
-      '<div class="subnote">C-SAT table not found on the target sheet.</div></div></section>');
+  // 2) Walk-in details — unique walkins (walkin!MobileNo) + unique invoices (crm!InvoiceCode)
+  var wk = countWalkins_(ss);
+  out.walkins = { unique: wk.unique, uniqBills: uniqKeys(billSet) };
+
+  // ---- service cases: dedupe per CaseId (latest CaseDate wins), current month ----
+  var serviceSheet = getSheetByNames_(ss, CONFIG.SERVICE_SHEET_NAMES);
+  var caseMonth = [];
+  if (serviceSheet) {
+    var read = readSheetRows_(serviceSheet, SERVICE_SPEC, ["caseDate"]);
+    var best = {}, order = [];
+    read.rows.forEach(function (r, idx) {
+      var id = str_(r.caseId) || ("_row" + idx);
+      var pd = parseAnyDate_(r.caseDate);
+      var ts = pd.valid ? pd.ts : 0;
+      if (!best[id]) { best[id] = { row: r, ts: ts }; order.push(id); }
+      else if (ts > best[id].ts) best[id] = { row: r, ts: ts };
+    });
+    order.forEach(function (id) {
+      var b = best[id];
+      if (b.ts && mkeyTs(b.ts) === curMKey) caseMonth.push(b.row);
+    });
   }
 
-  // ---- 5) Open jobs count ----
-  if (pd.jobs && pd.jobs.available) {
-    var j = pd.jobs.totals;
-    out.push(
-      '<section class="section" id="deck-jobs"><h2>🔧 Open Jobs</h2><div class="body">' +
-      '<div class="cards">' +
-      dc("Open Jobs", j.openJobs, j.closedExcluded + " excluded (delivered/closed)") +
-      (j.unclaimed > 0 ? dc("⚠ Unclaimed", j.unclaimed, "chase these customers") : "") +
-      dc("Communicated", j.communicated, j.commRate + "% of open") +
-      dc("Not Communicated", j.notCommunicated, "no comm record yet") +
-      "</div></div></section>");
-  } else {
-    out.push('<section class="section" id="deck-jobs"><h2>🔧 Open Jobs</h2><div class="body">' +
-      '<div class="subnote">No service sheet found.</div></div></section>');
+  function deckFamily_(prod) {
+    var t = str_(prod).toLowerCase();
+    if (/iphone|\bvin\b/.test(t)) return "iPhone";
+    if (/\bmac|imac|macbook/.test(t)) return "Mac";
+    if (/ipad|airpods?/.test(t)) return "iPad / Airpods";
+    return "Others";
+  }
+  var FAMS = ["iPhone", "Mac", "iPad / Airpods", "Others"];
+
+  // 3) Repair Revenue Analysis — count = unique service!SerialNo1 per product
+  //    family; value = crm!TaxableAmount matched on service!CaseId ↔ crm!OrderCode.
+  var covCases = caseMonth;                                     // coverage keeps every case type
+  var repairCases = caseMonth.filter(function (r) { return !isSNRType_(str_(r.repairDocType)); });
+  var famSerial = {}, famValue = {};
+  FAMS.forEach(function (f) { famSerial[f] = {}; famValue[f] = 0; });
+  var caseFamily = {};                                          // service!CaseId → family bucket
+  repairCases.forEach(function (r) {
+    var f = deckFamily_(r.product);
+    var sn = str_(r.serialNo1);
+    var cid = str_(r.caseId);
+    famSerial[f][sn || ("#" + cid)] = true;                     // unique count, deduped
+    if (cid && !caseFamily[cid]) caseFamily[cid] = f;
+  });
+  sale.forEach(function (r) {
+    var oc = str_(r.orderCode);
+    if (oc && caseFamily[oc]) famValue[caseFamily[oc]] += r.taxableAmount;
+  });
+  out.repairRev = {
+    rows: FAMS.map(function (f) {
+      return { label: f, count: uniqKeys(famSerial[f]), value: Math.round(famValue[f]) };
+    }),
+  };
+  out.repairRev.totalCount = out.repairRev.rows.reduce(function (s, r) { return s + r.count; }, 0);
+  out.repairRev.totalValue = out.repairRev.rows.reduce(function (s, r) { return s + r.value; }, 0);
+
+  // 4) Accessories Revenue Analysis — crm!ItemDescription buckets.
+  //    Owner's wildcard spellings kept verbatim (tg / temper(ed) / temepered /
+  //    tamper(ed) glass; adapter|cable; AppleCare+/AC+; protect+; amc).
+  var ACC_DEFS = [
+    ["Tempered Glass", /(\btg\b|temper|temeper|tamper)/i],
+    ["Case", /case/i],
+    ["Adapter & Cable", /adapter|cable/i],
+    ["AC+", /apple\s*care\s*\+|care\s*\+|\bac\s*\+/i],
+    ["Protect Plus", /protect\s*\+|protect\s*plus/i],
+    ["AMC Charge", /\bamc\b/i],
+  ];
+  var acc = ACC_DEFS.map(function (d) { return { label: d[0], count: 0, value: 0 }; });
+  acc.push({ label: "Others", count: 0, value: 0 });
+  sale.forEach(function (r) {
+    if (revenueTypeKey_(r.revenueType) !== "accessory") return;
+    var d = str_(r.itemDescription);
+    var bucket = acc[acc.length - 1];
+    for (var i = 0; i < ACC_DEFS.length; i++) {
+      if (ACC_DEFS[i][1].test(d)) { bucket = acc[i]; break; }
+    }
+    bucket.count++;
+    bucket.value += r.taxableAmount;
+  });
+  out.accessoriesRev = {
+    rows: acc,
+    totalCount: acc.reduce(function (s, r) { return s + r.count; }, 0),
+    totalValue: acc.reduce(function (s, r) { return s + r.value; }, 0),
+  };
+
+  // 5) Service Revenue Analysis — pivot on crm!ItemCode, Service rows only.
+  var svcPivot = {};
+  sale.forEach(function (r) {
+    if (revenueTypeKey_(r.revenueType) !== "service") return;
+    var code = str_(r.itemCode) || "(blank item code)";
+    if (!svcPivot[code]) svcPivot[code] = { label: code, count: 0, value: 0 };
+    svcPivot[code].count++;
+    svcPivot[code].value += r.taxableAmount;
+  });
+  out.serviceRev = {
+    rows: Object.keys(svcPivot).sort().map(function (k) {
+      var b = svcPivot[k];
+      return { label: b.label, count: b.count, value: Math.round(b.value) };
+    }),
+  };
+  out.serviceRev.totalCount = out.serviceRev.rows.reduce(function (s, r) { return s + r.count; }, 0);
+  out.serviceRev.totalValue = out.serviceRev.rows.reduce(function (s, r) { return s + r.value; }, 0);
+
+  // 6) Gross Profit Analysis — Value: invoice value, GP value, GP%.
+  out.gpValue = {
+    rows: ["accessory", "repair", "service"].map(function (k) {
+      var b = rb[k];
+      return { label: b.name, value: Math.round(b.value), gp: Math.round(b.gp),
+        pct: b.value > 0 ? Math.round((1000 * b.gp) / b.value) / 10 : 0 };
+    }),
+  };
+  var tv = out.gpValue.rows.reduce(function (s, r) { return s + r.value; }, 0);
+  var tg = out.gpValue.rows.reduce(function (s, r) { return s + r.gp; }, 0);
+  out.gpValue.total = { value: tv, gp: tg, pct: tv > 0 ? Math.round((1000 * tg) / tv) / 10 : 0 };
+
+  // 7) Walk-in Analysis — unique walkins from walkin!MobileNo; unique bills from
+  //    crm!InvoiceCode; Bills = total invoice lines; AR/RR/SR = unique invoice
+  //    count per crm!RevenueType; % = unique bills ÷ walk-ins; Enquiry =
+  //    walk-ins − unique bills.
+  var walkins = out.walkins.unique;
+  var uniqBills = out.walkins.uniqBills;
+  out.walkinAnalysis = [
+    { label: "No. Of Walkin", value: walkins },
+    { label: "Unique Bill", value: uniqBills },
+    { label: "Bills", value: sale.length },
+    { label: "AR", value: uniqKeys(rb.accessory.invoices) },
+    { label: "RR", value: uniqKeys(rb.repair.invoices) },
+    { label: "SR", value: uniqKeys(rb.service.invoices) },
+    { label: "Walkin to Bills %", value: walkins > 0 ? Math.round((100 * uniqBills) / walkins) + "%" : "—" },
+    { label: "Enquiry", value: walkins - uniqBills },
+  ];
+
+  // 8) Coverage Analysis | LOB — iPhone / iPhone Battery / iPhone Display / Mac /
+  //    Others from service!ProductDescription & service!PartDescription (both
+  //    must match); W/NW from service!CoverageCodeDescription.
+  function covBucket_(prod, part) {
+    var t = str_(prod).toLowerCase();
+    var p = str_(part).toLowerCase();
+    var iphone = /iphone|\bvin\b/.test(t);
+    if (iphone && /batt/.test(p)) return "iPhone Battery";
+    if (iphone && /display|screen|lcd/.test(p)) return "iPhone Display";
+    if (iphone) return "iPhone";
+    if (/\bmac|imac|macbook/.test(t)) return "Mac";
+    return "Others";
+  }
+  var COV_ORDER = ["iPhone", "iPhone Battery", "iPhone Display", "Mac", "Others"];
+  var cov = {};
+  COV_ORDER.forEach(function (n) { cov[n] = { label: n, count: 0, w: 0, nw: 0 }; });
+  covCases.forEach(function (r) {
+    var c = cov[covBucket_(r.product, r.partDescription)];
+    c.count++;
+    if (/^\s*in\s*warranty/i.test(str_(r.warranty))) c.w++;
+    else c.nw++;
+  });
+  out.coverage = { rows: COV_ORDER.map(function (n) { return cov[n]; }) };
+  out.coverage.total = {
+    count: out.coverage.rows.reduce(function (s, r) { return s + r.count; }, 0),
+    w: out.coverage.rows.reduce(function (s, r) { return s + r.w; }, 0),
+    nw: out.coverage.rows.reduce(function (s, r) { return s + r.nw; }, 0),
+  };
+
+  return out;
+}
+
+/** DECK page (Task 36): full rework — the owner's 8 tables, current month
+ *  only, in the given order. All values come from computeDeckAnalysis_. */
+function renderDeckHtml_(data, pd) {
+  var d = (data && data.deckAnalysis) || {};
+  var month = d.monthLabel || "";
+  var stamp = month ? '<span class="fresh-chip fresh-stamp"><i>current month</i><b>' + esc_(month) + "</b></span>" : "";
+
+  function th(cells) {
+    return "<thead><tr>" + cells.map(function (c, i) {
+      return "<th" + (i > 0 ? ' class="num"' : "") + ">" + esc_(c) + "</th>";
+    }).join("") + "</tr></thead>";
+  }
+  function tr(cells, total) {
+    return "<tr" + (total ? ' class="totrow"' : "") + ">" + cells.map(function (c, i) {
+      return "<td" + (i === 0 ? ">" : ' class="num">') + c + "</td>";
+    }).join("") + "</tr>";
+  }
+  function money0(v) { return money_(v || 0); }
+  function table(id, icon, title, sub, head, body, foot) {
+    return '<section class="section" id="' + id + '"><h2>' + icon + " " + esc_(title) + "</h2>" +
+      '<div class="body"><div class="subnote2">' + sub + "</div>" +
+      '<div class="scroll-x"><table class="ptable decktable">' + th(head) + "<tbody>" +
+      body + (foot || "") + "</tbody></table></div></div></section>";
   }
 
-  return '<section class="sec"><div class="sec-head"><h2>🗂 Deck — Month at a Glance</h2>' +
-    '<p class="sec-sub">Store target vs achievement · KPI achievement · walk-ins · C-SAT · open jobs at a glance.</p></div></section>' +
-    out.join("");
+  var sections = [];
+
+  // ---- 1) Sales Revenue Analysis (revenue details) ----
+  var sr = d.salesRev || { rows: [] };
+  sections.push(table("deck-sales", "📊", "Sales Revenue Analysis",
+    "Revenue details — count & value per crm!RevenueType · crm!TaxableAmount. " +
+    "crm!TranType = SALESRETURN is excluded from every valuation on this page.",
+    ["Revenue Type", "Count", "Value"],
+    sr.rows.map(function (r) { return tr([esc_(r.label), r.count, money0(r.value)]); }).join(""),
+    tr(["<b>Total</b>", "<b>" + (sr.totalCount || 0) + "</b>", "<b>" + money0(sr.totalValue) + "</b>"], true)));
+
+  // ---- 2) Walk-in details ----
+  var w = d.walkins || {};
+  sections.push(table("deck-walkin", "🚶", "Walk-in Details",
+    "Total unique walk-in count from walkin!MobileNo · unique invoice count from crm!InvoiceCode.",
+    ["Metric", "Count"],
+    tr(["No. Of Walkin (unique)", w.unique || 0]) +
+    tr(["Unique Invoice", w.uniqBills || 0])));
+
+  // ---- 3) Repair Revenue Analysis ----
+  var rr = d.repairRev || { rows: [] };
+  sections.push(table("deck-repair", "🔧", "Repair Revenue Analysis",
+    "Product families by service!ProductDescription · unique count from service!SerialNo1 · " +
+    "value = crm!TaxableAmount where service!CaseId = crm!OrderCode. Service Non-Repair excluded.",
+    ["Product", "Count", "Value"],
+    rr.rows.map(function (r) { return tr([esc_(r.label), r.count, money0(r.value)]); }).join(""),
+    tr(["<b>Total</b>", "<b>" + (rr.totalCount || 0) + "</b>", "<b>" + money0(rr.totalValue) + "</b>"], true)));
+
+  // ---- 4) Accessories Revenue Analysis ----
+  var ar = d.accessoriesRev || { rows: [] };
+  sections.push(table("deck-accessories", "📱", "Accessories Revenue Analysis",
+    "Buckets from crm!ItemDescription — tg / temper(ed) glass / tamper → Tempered Glass; " +
+    "Case; Adapter & Cable; AppleCare+/AC+; Protect Plus; AMC; rest → Others. Value = crm!TaxableAmount.",
+    ["Product", "Count", "Value"],
+    ar.rows.map(function (r) { return tr([esc_(r.label), r.count, money0(r.value)]); }).join(""),
+    tr(["<b>Total</b>", "<b>" + (ar.totalCount || 0) + "</b>", "<b>" + money0(ar.totalValue) + "</b>"], true)));
+
+  // ---- 5) Service Revenue Analysis ----
+  var sv = d.serviceRev || { rows: [] };
+  sections.push(table("deck-service", "🧾", "Service Revenue Analysis",
+    "Pivot on crm!ItemCode — Service Revenue only; crm!TranType = SALESRETURN excluded.",
+    ["Item Code", "Count", "Value"],
+    sv.rows.map(function (r) { return tr([esc_(r.label), r.count, money0(r.value)]); }).join("") ||
+      tr(['<span class="muted">no Service Revenue rows this month</span>', "0", money0(0)]),
+    tr(["<b>Total</b>", "<b>" + (sv.totalCount || 0) + "</b>", "<b>" + money0(sv.totalValue) + "</b>"], true)));
+
+  // ---- 6) Gross Profit Analysis — Value ----
+  var gp = d.gpValue || { rows: [] };
+  sections.push(table("deck-gp", "💰", "Gross Profit Analysis — Value",
+    "Invoice value = Σ crm!TaxableAmount · GP value = Σ crm!GrossProfit · GP% = GP ÷ invoice value.",
+    ["Revenue Type", "Invoice Value", "GP Value", "GP %"],
+    gp.rows.map(function (r) {
+      return tr([esc_(r.label), money0(r.value), money0(r.gp), r.pct.toFixed(1) + "%"]);
+    }).join(""),
+    (gp.total ? tr(["<b>Total</b>", "<b>" + money0(gp.total.value) + "</b>",
+      "<b>" + money0(gp.total.gp) + "</b>", "<b>" + gp.total.pct.toFixed(1) + "%</b>"], true) : "")));
+
+  // ---- 7) Walk-in Analysis (rank: most important) ----
+  var wa = d.walkinAnalysis || [];
+  sections.push(table("deck-walkin-analysis", "📈", "Walk-in Analysis",
+    "No. Of Walkin = unique walkin!MobileNo · Unique Bill = unique crm!InvoiceCode · Bills = total invoices · " +
+    "AR/RR/SR = unique invoice count per crm!RevenueType · Walkin to Bills % = unique bills ÷ walk-ins · Enquiry = walk-ins − unique bills.",
+    ["Metric", "Count"],
+    wa.map(function (r) { return tr([esc_(r.label), r.value]); }).join("")));
+
+  // ---- 8) Coverage Analysis | LOB ----
+  var cov = d.coverage || { rows: [] };
+  sections.push(table("deck-coverage", "🛡", "Coverage Analysis | LOB",
+    "Product + battery/display from service!ProductDescription & service!PartDescription (must match) · " +
+    "W / NW from service!CoverageCodeDescription.",
+    ["Product", "Cases", "W", "NW"],
+    cov.rows.map(function (r) { return tr([esc_(r.label), r.count, r.w, r.nw]); }).join(""),
+    (cov.total ? tr(["<b>Total</b>", "<b>" + cov.total.count + "</b>",
+      "<b>" + cov.total.w + "</b>", "<b>" + cov.total.nw + "</b>"], true) : "")));
+
+  return '<section class="sec"><div class="sec-head"><h2>🗂 Deck — ' + esc_(month || "Current Month") + " " + stamp + '</h2>' +
+    '<p class="sec-sub">Owner order — revenue · walk-in · repair · accessories · service · GP · walk-in analysis · coverage. ' +
+    "Current month only; previous months are kept manually by the owner. SALESRETURN is excluded everywhere.</p></div></section>" +
+    sections.join("");
 }
 
 /** OPEN JOBS page: job management. */
@@ -3320,6 +3541,8 @@ function renderIndexHtml_(data, perfData) {
   var jobT = perfData && perfData.jobs && perfData.jobs.available ? perfData.jobs.totals : null;
   var csatT = perfData && perfData.targetBlock && perfData.targetBlock.available ? perfData.targetBlock : null;
   var ra = perfData && perfData.repair && perfData.repair.available ? perfData.repair : null;
+  var exDecl = perfData && perfData.opsExtras ? perfData.opsExtras.decline : null;
+  var exWin = perfData && perfData.opsExtras ? perfData.opsExtras.winback : null;
 
   function tile(page, icon, title, blurb, stats) {
     var statHtml = stats && stats.length
@@ -3466,8 +3689,16 @@ function renderIndexHtml_(data, perfData) {
       ["Satisfied", csatT.totalRow.total > 0 ? Math.round((csatT.satTotal / csatT.totalRow.total) * 100) + "%" : "—"],
       ["C-SAT", csatT.csat || "—"],
     ] : [["Status", "target sheet block empty"], ["", "fill L1:U5"]]) +
-    tile("operation", "🚫", "Decline Repair", "Estimate declined by customer", null) +
-    tile("operation", "🔁", "Requote - Winback", "Re-quoted & won back customers", null);
+    tile("operation", "🚫", "Decline Repair", "Estimate declined by customer", exDecl ? [
+      ["Declined repairs", exDecl.count],
+      ["Reason", "Rejected by Local Approver"],
+      ["From sheet", exDecl.sheetName || "—"],
+    ] : [["Status", "decline sheet not found"], ["", "add decline sheet"]]) +
+    tile("operation", "🔁", "Requote - Winback", "Re-quoted & won back customers", exWin ? [
+      ["Win-backs", exWin.count],
+      ["Filter", "Repair Revenue · approved"],
+      ["From sheet", exWin.sheetName || "—"],
+    ] : [["Status", "quote sheet not found"], ["", "add quote sheet"]]);
 
   var openJobTiles =
     tile("jobs", "🔧", "Job Management", "Open jobs by repair bucket", jobT ? [
@@ -3561,7 +3792,7 @@ function buildDashboardPage_(data) {
     ["🧰 Open Jobs", "jobs",      "pageJobs",      renderJobsHtml_(perfData), perfMeta_(perfData)],
     ["📅 DATE",      "date",      "pageDate",      renderDateHtml_(data),     renderMetaText_(data)],
     // DECK lives as the last tab but is intentionally NOT on the index page.
-    ["🗂 Deck",      "deck",      "pageDeck",      renderDeckHtml_(data, perfData), "Month at a glance — store, KPI, walk-ins, C-SAT, jobs"],
+    ["🗂 Deck",      "deck",      "pageDeck",      renderDeckHtml_(data, perfData), "Current month — revenue, walk-ins, repairs, accessories, service, GP & coverage"],
   ];
 
   var tabs = PAGES.map(function (pg, idx) {
@@ -4431,6 +4662,9 @@ function getDashboardCss_() {
     ".comm-no { color:#fbbf24; font-weight:700; }" +
     ".comm-pos { color:#0f5a37 !important; background:#b9f2cf !important; font-weight:800; }" +
     ".comm-neg { color:#8a1d28 !important; background:#ffd6da !important; font-weight:800; }" +
+    // right here — bucket-row tints (.jobtable tr.bk-* td) once overrode these.
+".jobtable tbody tr td.comm-pos { color:#0f5a37 !important; background:#bbf0d0 !important; font-weight:800; }" +
+".jobtable tbody tr td.comm-neg { color:#a01220 !important; background:#ffd3d7 !important; font-weight:800; }" +
     // unclaimed devices: keeps the amber identity, tuned for the dark table
     ".unclaimed-row td { background:rgba(255,212,119,.10) !important; }" +
     ".unclaimed-row:hover td { background:rgba(255,212,119,.16) !important; }" +
@@ -4715,6 +4949,12 @@ function getDashboardCss_() {
     ".csat-flex table.csat-table { width:auto; min-width:0; }" +
     ".csat-flex .csat-right { flex:0 0 240px; width:240px; min-width:200px; max-width:260px;" +
     " flex-direction:column; gap:10px; }" +
+    // Task 36-B: fill the right column to the table height with compact chips.
+".csat-right { align-self:stretch; justify-content:space-between; gap:6px; }" +
+".csat-right .csat-chip { flex:1 1 0; padding:6px 10px; }" +
+".csat-right .cc-label { font-size:9.5px; }" +
+".csat-right .cc-value { font-size:1.05rem; line-height:1.15; }" +
+".csat-right .cc-sub { font-size:10px; }" +
     ".csat-right .csat-chip { flex:0 0 auto; width:100%; max-width:100%; }" +
     // ---- index tiles: lighter glass, brighter luminous fonts ----
     ".glass-tile { background:rgba(28,43,82,.98);" +
