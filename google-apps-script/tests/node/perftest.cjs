@@ -102,14 +102,14 @@ var crm=[["InvoiceCode","InvoiceDate","SalesPersonName","RevenueType","ItemDescr
  ["INV3","23-09-2026 12:00","Subha","Accessories","Care+ plan","","",900,250,"SALES","CPLUS","",""]];
 
 // ---- walkin ----
-var wl=[["MobileNo","TokenDate","VisitPurposeDesc","CaseId","InvoiceCode","Remark","TokenCreatedBy"],
- ["919876543210","2026-09-23 09:15:00","Repair Submission","C1001","IV9001","Needs original glass","Subha"],
- ["919876543211","2026-09-23 09:40:00","Repair Submission","C1002","IV9002","Warranty valid","Subha"],
- ["919876543212","2026-09-23 10:05:00","General/Sales Enquiry","C1003","","Follow up in 2 days","Dinesh"],
- ["919876543213","2026-09-23 11:15:00","Collection","","IV9003","Bought case","Dinesh"],
- ["919876543214","2026-09-23 12:30:00","General/Sales Enquiry","","","","Dinesh"],
- ["919876543215","2026-09-22 10:20:00","Repair Submission","C1000","","Waiting for part","Subha"],
- ["919876543216","2026-09-22 13:00:00","Collection","C0999","IV8999","","Priya"]];
+var wl=[["MobileNo","TokenDate","VisitPurposeDesc","CaseId","InvoiceCode","Remark","TokenCreatedBy","CustomerVisitSource"],
+ ["919876543210","2026-09-23 09:15:00","Repair Submission","C1001","IV9001","Needs original glass","Subha","Walk-by"],
+ ["919876543211","2026-09-23 09:40:00","Repair Submission","C1002","IV9002","Warranty valid","Subha","Walk-by"],
+ ["919876543212","2026-09-23 10:05:00","General/Sales Enquiry","C1003","","Follow up in 2 days","Dinesh","Google"],
+ ["919876543213","2026-09-23 11:15:00","Collection","","IV9003","Bought case","Dinesh","Google"],
+ ["919876543214","2026-09-23 12:30:00","General/Sales Enquiry","","","","Dinesh","Reference"],
+ ["919876543215","2026-09-22 10:20:00","Repair Submission","C1000","","Waiting for part","Subha","Walk-by"],
+ ["919876543216","2026-09-22 13:00:00","Collection","C0999","IV8999","","Priya","Reference"]];
 
 // ---- comm dates relative to today (staleness uses the server clock) ----
 function daysAgoStr(n,h){var d=new Date(Date.now()-n*86400000);function p(x){return(x<10?"0":"")+x;}
@@ -470,6 +470,19 @@ check("day-wise token table full width", page.indexOf('class="wp-daytable"')>-1
   &&page.indexOf('wp-head">📅 Day-wise Walk-in')>-1
   &&page.indexOf(".wp-daytable .walkintable { width:100%")>-1);
 check("walkin analysis split remains", page.indexOf("ptable walksum")>-1&&page.indexOf("ptable walkintable")>-1);
+
+console.log("== TASK 37: customer source analysis + layout fits ==");
+check("source pivot pivot present (srcstable)", page.indexOf("ptable srcstable")>-1);
+check("source table sits between walkin analysis & tokens",
+  page.indexOf('<div class="wp-left">')<page.indexOf('<div class="wp-mid">')&&page.indexOf('<div class="wp-mid">')<page.indexOf('<div class="wp-right">'));
+check("source pivot numbers",
+  page.indexOf("<td><b>Walk-by</b></td><td class=\"num\">3</td><td class=\"num\">42.9%</td>")>-1
+  &&page.indexOf("<td><b>Google</b></td><td class=\"num\">2</td><td class=\"num\">28.6%</td>")>-1
+  &&page.indexOf("<td><b>Reference</b></td><td class=\"num\">2</td><td class=\"num\">28.6%</td>")>-1);
+check("source total row", page.indexOf("Total walk-ins</b></td><td class=\"num\"><b>7</b></td><td class=\"num\"><b>100%</b></td>")>-1);
+check("walkin pair is three panes now", page.indexOf(".walkin-pair { grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr); }")>-1);
+check("jobs table wraps instead of ellipsis", page.indexOf(".jobtable th, .jobtable td { white-space:normal; overflow:visible; text-overflow:clip")>-1);
+check("csat table fills its lane", page.indexOf(".csat-flex .csat-left table.csat-table { width:100%; table-layout:fixed; }")>-1);
 check("csat chips flat navy + light text", page.indexOf(".csat-chip { background:rgba(28,43,82,.98)")
   >-1&&page.indexOf(".csat-chip .cc-value { font-size:1.5rem; font-weight:800; color:#f4f8ff")>-1);
 check("jobtable forced left", page.indexOf(".jobtable th, .jobtable td { text-align:left !important")>-1);

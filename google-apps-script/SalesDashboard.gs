@@ -1528,6 +1528,8 @@ var WALKIN_SPEC = {
   remark: [/remark/i, /comment/i, /note/i],
   // Who generated the token. Optional — auto-detected from common spellings.
   createdBy: [/token.*creat.*by/i, /creat.*by/i, /token.*user/i, /user.*id/i, /^user.*name$/i, /staff/i, /employee/i],
+  // Task 37: customer source for the source-analysis pivot (walkin!CustomerVisitSource).
+  visitSource: [/customer.*visit.*source/i, /visit.*source.*desc/i, /customer.*source/i, /how.*did.*(you|they).*find/i],
 };
 
 /**
@@ -1557,10 +1559,12 @@ function computeWalkinAnalysis_(ss) {
   var read = readSheetRows_(sheet, WALKIN_SPEC, ["tokenDate"]);
   var rows = read.rows;
   var hasCreator = read.col && read.col.createdBy !== -1;
+  var hasSource = read.col && read.col.visitSource !== -1;   // Task 37
 
   var dayMap = {};
   var purposeTotals = {};
   var creatorTotals = {};
+  var sourceTotals = {};
   var allMobiles = {};
   var totals = { walkins: 0, cases: 0, invoices: 0, remarks: 0, deadLeads: 0, unique: 0 };
 
@@ -1612,6 +1616,13 @@ function computeWalkinAnalysis_(ss) {
       bucket.creators[by] = (bucket.creators[by] || 0) + 1;
       creatorTotals[by] = (creatorTotals[by] || 0) + 1;
     }
+
+    // Task 37: customer source pivot — walkin!CustomerVisitSource, against the
+    // total number of walk-ins. Kept EXACTLY as written in the sheet.
+    if (hasSource) {
+      var srcv = str_(r.visitSource) || "Not specified";
+      sourceTotals[srcv] = (sourceTotals[srcv] || 0) + 1;
+    }
   });
 
   function toSortedList(obj) {
@@ -1631,6 +1642,11 @@ function computeWalkinAnalysis_(ss) {
   var creators = toSortedList(creatorTotals).map(function (c) {
     c.share = pct_(c.count, totals.walkins);
     return c;
+  });
+  // Task 37: source pivot descending, share of total walk-ins.
+  var sources = toSortedList(sourceTotals).map(function (s) {
+    s.share = pct_(s.count, totals.walkins);
+    return s;
   });
 
   // Pivot columns: purposes ordered by volume; beyond 8 they merge into "Others".
@@ -1661,10 +1677,12 @@ function computeWalkinAnalysis_(ss) {
 
   return {
     available: true, sheetName: sheet.getName(), hasCreator: hasCreator,
+    hasSource: hasSource,
     days: days,
     purposeCols: purposeCols,
     purposeColTotals: purposeColTotals,
     creators: creators,
+    sources: sources,
     totals: {
       walkins: totals.walkins, unique: totals.unique || 0, cases: totals.cases, invoices: totals.invoices,
       remarks: totals.remarks, deadLeads: totals.deadLeads,
@@ -2587,12 +2605,16 @@ function renderWalkinHtml_(pd) {
     '<div class="wp-left"><div class="wp-head">🚶 Walk-in Analysis</div>' +
     '<p class="sec-desc" style="margin:-2px 0 10px">month-to-date walk-in summary — visitors, cases, invoices, remarks and dead leads.</p>' +
     renderWalkinAnalysis_(wl) + "</div>";
+  var mid =
+    '<div class="wp-mid"><div class="wp-head">🧭 Customer Source Analysis</div>' +
+    '<p class="sec-desc" style="margin:-2px 0 10px">pivot on walkin!CustomerVisitSource against the total number of walk-ins.</p>' +
+    renderCustomerSource_(wl) + "</div>";
   var right =
     '<div class="wp-right"><div class="wp-head">🎟 Token Creation</div>' +
     '<p class="sec-desc" style="margin:-2px 0 10px">how many walk-in tokens each user created, and their share of the month&rsquo;s tokens.</p>' +
     renderTokenCreation_(wl) + "</div>";
 
-  return head + left + right + "</div>" +
+  return head + left + mid + right + "</div>" +
     '<div class="wp-daytable"><div class="wp-head">📅 Day-wise Walk-in &amp; Token Details</div>' +
     renderWalkinDayTable_(wl) + "</div></div></section>";
 }
@@ -4107,6 +4129,33 @@ function renderWalkinDayTable_(wl) {
   return table;
 }
 
+/** Task 37: customer source analysis — pivot walkin!CustomerVisitSource. */
+function renderCustomerSource_(wl) {
+  if (!wl.available) return "";
+  if (!wl.hasSource) {
+    return '<div class="subnote">No customer-source column was detected in the ' +
+      "<b>" + esc_(wl.sheetName) + "</b> sheet yet. Add a column named <b>CustomerVisitSource</b> " +
+      "(e.g. Walk-by / Google / Reference) and the pivot appears here automatically.</div>";
+  }
+  var t = wl.totals;
+  var rows = (wl.sources || []).map(function (s) {
+    return "<tr>" +
+      "<td><b>" + esc_(s.name) + "</b></td>" +
+      '<td class="num">' + s.count + "</td>" +
+      '<td class="num">' + s.share + "%</td>" +
+      "</tr>";
+  }).join("");
+  var foot =
+    '<tr class="totrow"><td><b>Total walk-ins</b></td>' +
+    '<td class="num"><b>' + t.walkins + "</b></td>" +
+    '<td class="num"><b>100%</b></td></tr>';
+  return (
+    '<div class="scroll-x"><table class="ptable srcstable">' +
+    "<thead><tr><th>Customer Source</th><th>Walk-ins</th><th>% of walk-ins</th></tr></thead>" +
+    "<tbody>" + rows + foot + "</tbody></table></div>"
+  );
+}
+
 function renderTokenCreation_(wl) {
   if (!wl.available) return "";
   if (!wl.hasCreator) {
@@ -4939,10 +4988,24 @@ function getDashboardCss_() {
     // walk-in analysis + token creation locked side by side, sharing the width
     ".walkin-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:stretch; }" +
     ".walkin-pair .wp-left, .walkin-pair .wp-right { min-width:0; }" +
+    // Task 37: three panes side by side — analysis | source | tokens.
+    ".walkin-pair { grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr); }" +
+    ".walkin-pair .wp-mid { min-width:0; background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.18);" +
+    " border-radius:12px; padding:12px; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }" +
+    ".srcstable thead th { white-space:normal; }" +
+    ".srcstable td { white-space:normal; word-break:break-word; }" +
+    ".srcstable .totrow td { background:#101a38 !important; color:#ffffff; font-weight:900; border-top:1px solid rgba(142,170,255,.6); }" +
+    // walk-in lane tables: fill their pane, wrap long headers — nothing hidden.
+    ".walkin-pair table.walksum, .walkin-pair table.tokentable, .walkin-pair table.srcstable { width:100%; table-layout:fixed; }" +
+    ".walkin-pair table th, .walkin-pair table td { white-space:normal; word-break:break-word; }" +
+    "@media (max-width:1150px) { .walkin-pair { grid-template-columns:minmax(0,1fr); } }" +
     ".walkin-pair .wp-right { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.18);" +
     " border-radius:12px; padding:12px; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }" +
     // job table: entirely left-aligned
     ".jobtable th, .jobtable td { text-align:left; }" +
+    // Task 37: every job cell fully visible — wrap instead of hidden ellipsis.
+    ".jobtable th, .jobtable td { white-space:normal; overflow:visible; text-overflow:clip; word-break:break-word; line-height:1.28; }" +
+    ".jobtable td.num, .jobtable th.num { white-space:nowrap; word-break:normal; }" +
     // Task 35: satisfaction table hugs the left; chips move to its right.
     ".csat-flex { flex-direction:row; align-items:flex-start; flex-wrap:wrap; }" +
     ".csat-flex .csat-left { flex:0 0 auto; max-width:100%; }" +
@@ -4955,6 +5018,12 @@ function getDashboardCss_() {
 ".csat-right .cc-label { font-size:9.5px; }" +
 ".csat-right .cc-value { font-size:1.05rem; line-height:1.15; }" +
 ".csat-right .cc-sub { font-size:10px; }" +
+    // Task 37: the table fills the lane left of the chips — no overflow, no scroll.
+    ".csat-flex .csat-left { flex:1 1 0; min-width:0; }" +
+    ".csat-flex .csat-left table.csat-table { width:100%; table-layout:fixed; }" +
+    ".csat-flex .csat-left table.csat-table th, .csat-flex .csat-left table.csat-table td {" +
+    " white-space:normal; overflow:hidden; text-overflow:clip; word-break:break-word; padding:7px 7px; }" +
+    ".csat-flex .csat-left table.csat-table thead th { font-size:.62rem; letter-spacing:.03em; }" +
     ".csat-right .csat-chip { flex:0 0 auto; width:100%; max-width:100%; }" +
     // ---- index tiles: lighter glass, brighter luminous fonts ----
     ".glass-tile { background:rgba(28,43,82,.98);" +
