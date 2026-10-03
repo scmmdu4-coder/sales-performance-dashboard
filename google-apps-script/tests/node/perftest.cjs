@@ -265,12 +265,12 @@ check("DISC/AMC notes hidden",page.indexOf("starts with DISC")===-1&&page.indexO
 check("date-wise GP column",page.indexOf('class="grp grp-0">Gross Profit</th>')>-1);
 check("legend shows GP daily target",page.indexOf("Gross Profit "+"₹"+subha.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
 check("GP daily target in legend for Dinesh",page.indexOf("Gross Profit "+"₹"+dinesh.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
-check("job table 12-col owner order (Task 34: GSX ID + S.No in, Communicated out)",page.indexOf(
+check("job table 11-col owner order (Task 38: CRM Status column removed)",page.indexOf(
   "<th>Repair Bucket</th><th>Aging</th><th>GSX Repair Status</th>"+
-  "<th>Repair Type</th><th>CRM Status</th>"+
+  "<th>Repair Type</th>"+
   "<th>Case ID</th><th>Name</th><th>Number</th>"+
   "<th>GSX ID</th><th>S.No</th><th>Model</th>"+
-  "<th>Comm. Updated</th>")>-1);
+  "<th>Comm. Updated</th>")>-1&&page.indexOf("<th>CRM Status</th>")===-1);
 check("old job columns dropped",page.indexOf("<th>Warranty Type</th>")===-1
   &&page.indexOf("<th>Job created</th>")===-1&&page.indexOf("<th>Advance paid</th>")===-1
   &&page.indexOf("<th>Communicated</th>")===-1);
@@ -431,7 +431,7 @@ check("live clock card, no gif + tick js (Task 30)", page.indexOf('class="topbar
   &&page.indexOf("AC40")===-1&&page.indexOf("clock-gif")===-1&&page.indexOf("tickClock")>-1);
 check("amc & bundle side-by-side", page.indexOf('class="inc-pair"')>-1);
 check("repair matrix removed so no duo", page.indexOf('class="duo-pair"')===-1);
-check("job table fixed layout", page.indexOf(".jobtable { table-layout:fixed")>-1&&page.indexOf("<colgroup>")>-1);
+check("job table auto layout (Task 38)", page.indexOf(".jobtable { table-layout:auto")>-1&&page.indexOf("<colgroup>")>-1);
 check("person band colours removed: one table color set (Task 31)",
   page.indexOf("#8a9bd4")===-1&&page.indexOf("#b8860b")===-1&&page.indexOf("#0f9d8f")===-1
   &&page.indexOf("#7a3fd4")===-1&&page.indexOf("#c04a68")===-1
@@ -481,7 +481,7 @@ check("source pivot numbers",
   &&page.indexOf("<td><b>Reference</b></td><td class=\"num\">2</td><td class=\"num\">28.6%</td>")>-1);
 check("source total row", page.indexOf("Total walk-ins</b></td><td class=\"num\"><b>7</b></td><td class=\"num\"><b>100%</b></td>")>-1);
 check("walkin pair is three panes now", page.indexOf(".walkin-pair { grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr); }")>-1);
-check("jobs table wraps instead of ellipsis", page.indexOf(".jobtable th, .jobtable td { white-space:normal; overflow:visible; text-overflow:clip")>-1);
+check("jobs table single-line, nothing hidden (Task 38)", page.indexOf(".jobtable th, .jobtable td { white-space:nowrap; overflow:visible; text-overflow:clip; }")>-1);
 check("csat table fills its lane", page.indexOf(".csat-flex .csat-left table.csat-table { width:100%; table-layout:fixed; }")>-1);
 check("csat chips flat navy + light text", page.indexOf(".csat-chip { background:rgba(28,43,82,.98)")
   >-1&&page.indexOf(".csat-chip .cc-value { font-size:1.5rem; font-weight:800; color:#f4f8ff")>-1);
@@ -717,10 +717,39 @@ check("WhatsApp integration removed", page.indexOf("waSendLast")===-1
   &&page.indexOf("#25d366")===-1&&page.indexOf("wa_chatid")===-1);
 
 console.log("== TASK 30 batch ==");
-check("jobs table has Repair Type between GSX and CRM Status (Task 33)",
-  page.indexOf("<th>GSX Repair Status</th><th>Repair Type</th><th>CRM Status</th>")>-1);
-check("jobs table rows expose CRM status", page.indexOf("<td>Original Display Used</td>")>-1);
+check("jobs table: CRM Status dropped, Repair Type still after GSX (Task 38)",
+  page.indexOf("<th>GSX Repair Status</th><th>Repair Type</th><th>Case ID</th>")>-1);
+check("repair bucket still carries the crm status", page.indexOf(">Original Display Used</td>")>-1);
+
+console.log("== TASK 38: case popup + single-line rows + deck fallback ==");
+check("case ids clickable (caselink)", page.indexOf('class="caselink"')>-1
+  &&page.indexOf('onclick="openCaseDetails')>-1);
+check("case modal markup + data island", page.indexOf('id="caseModal"')>-1
+  &&page.indexOf('id="caseDetailData"')>-1&&page.indexOf('id="cmTable"')>-1);
+check("popup client handlers", clientJS.indexOf("function openCaseDetails(")>-1
+  &&clientJS.indexOf("function closeCaseDetails(")>-1&&clientJS.indexOf("caseDetailsMap_")>-1);
+check("popup carries every requested field", page.indexOf('"readyDate"')>-1
+  &&page.indexOf('"repairDate"')>-1&&page.indexOf('"bucket"')>-1&&page.indexOf('"gsxStatus"')>-1);
+check("ready pickup date parsed onto jobs", j.jobs.filter(function(o){return o.readyDate;}).length===5);
+var c1001d=j.jobs.find(function(o){return o.caseId==="C1001";});
+check("C1001 popup snapshot complete", c1001d.readyDate.length>0&&c1001d.repairDate.length>0
+  &&c1001d.crmRepairStatus==="Original Display Used"&&c1001d.gsxStatus==="Repair Complete");
 var gsSrc2=gsSrc;
+console.log("== TASK 38: deck stale-month fallback ==");
+// Push every service-case date back to July (= older than the frozen month),
+// then the case-driven deck tables must still produce numbers via fallback.
+var svStale=sv.map(function(row,i){ if(i===0)return row;
+  return row.map(function(v){ return typeof v==="string"?v.replace(/2026-09-/g,"2026-07-"):v; }); });
+var staleSheets=[mockSheet("target",T),mockSheet("walkin",wl),mockSheet("service",svStale)];
+var ssStale={getSheets:function(){return staleSheets;},
+  getSheetByName:function(n){for(var i=0;i<staleSheets.length;i++)if(staleSheets[i].getName()===n)return staleSheets[i];return null;}};
+var dkStale=computeDeckAnalysis_(ssStale,parseCrmRows(crm));
+check("stale service sheet: repair table still valued via fallback",
+  dkStale.repairRev.totalCount===6&&dkStale.repairRev.rows[0].count===1
+  &&dkStale.repairRev.rows[0].value===5000&&dkStale.repairRev.rows[3].count===5,dkStale.repairRev);
+check("stale service sheet: coverage still valued via fallback",
+  dkStale.coverage.total.count===7&&dkStale.coverage.rows[1].count===1
+  &&dkStale.coverage.rows[4].w===3)
 check("server-side scan/date/part/fuzzy dead code removed",
   gsSrc2.indexOf("function chatAllSheetsScan_")===-1
   &&gsSrc2.indexOf("function chatSalesQuery")===-1

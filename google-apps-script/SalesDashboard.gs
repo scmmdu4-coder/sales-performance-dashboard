@@ -1826,6 +1826,7 @@ function computeJobManagement_(ss) {
 
     var created = parseAnyDate_(r.caseDate);
     var repair = parseAnyDate_(r.repairCreatedDate);
+    var ready = parseAnyDate_(r.readyPickup);   // Task 38 — popup detail
 
     // Prefer the sheet's own JobAge; fall back to days since the case date.
     var age = num_(r.jobAge);
@@ -1877,6 +1878,7 @@ function computeJobManagement_(ss) {
       createdDate: created.valid ? created.dayKey : "—",
       createdTs: created.valid ? created.ts : 0,
       repairDate: repair.valid ? repair.dayKey : "—",
+      readyDate: ready.valid ? ready.dayKey : "—",
       jobAge: age,
       advance: advance,
       communicated: !!comm,
@@ -2714,10 +2716,16 @@ function computeDeckAnalysis_(ss, crmRows) {
       if (!best[id]) { best[id] = { row: r, ts: ts }; order.push(id); }
       else if (ts > best[id].ts) best[id] = { row: r, ts: ts };
     });
+    var allCases = [];
     order.forEach(function (id) {
       var b = best[id];
+      allCases.push(b.row);
       if (b.ts && mkeyTs(b.ts) === curMKey) caseMonth.push(b.row);
     });
+    // Task 38: at month change the service export still holds last month's
+    // cases — mirror the CRM fallback above so the two case-driven tables
+    // (Repair Revenue & Coverage) never sit at zero on a stale sheet.
+    if (!caseMonth.length) caseMonth = allCases;
   }
 
   function deckFamily_(prod) {
@@ -3957,6 +3965,29 @@ function buildDashboardPage_(data) {
     "    })" +
     "    .serverQuery(q);" +
     "}" +
+    // Task 38 — case detail popover. Values arrive in the #caseDetailData
+    // island on the jobs page; escape everything before innerHTML.
+    "function escText_(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}" +
+    "var CASE_DETAILS_CACHE=null;" +
+    "function caseDetailsMap_(){if(CASE_DETAILS_CACHE===null){" +
+    "  var el=document.getElementById('caseDetailData');" +
+    "  try{CASE_DETAILS_CACHE=el?JSON.parse(el.textContent||'{}'):{};}catch(e){CASE_DETAILS_CACHE={};}" +
+    "}return CASE_DETAILS_CACHE;}" +
+    "function openCaseDetails(cid){" +
+    "  var d=(caseDetailsMap_()||{})[cid]; if(!d)return;" +
+    "  var rows=[['Case ID',d.caseId],['Job Created Date',d.createdDate]," +
+    "    ['Repair Created Date',d.repairDate],['Repair Bucket',d.bucket]," +
+    "    ['Customer Name',d.name],['Product',d.product]," +
+    "    ['Communication Updated',d.commDate],['Ready For Pickup',d.readyDate]," +
+    "    ['GSX Repair Status',d.gsxStatus]];" +
+    "  var h='';for(var i=0;i<rows.length;i++){" +
+    "    h+='<tr><td>'+escText_(rows[i][0])+'</td><td>'+escText_(rows[i][1])+'</td></tr>';}" +
+    "  document.getElementById('cmTable').innerHTML=h;" +
+    "  document.getElementById('cmTitle').textContent='CASE '+d.caseId;" +
+    "  document.getElementById('caseModal').style.display='flex';" +
+    "}" +
+    "function closeCaseDetails(){var m=document.getElementById('caseModal');if(m)m.style.display='none';}" +
+    "document.addEventListener('keydown',function(e){if(e.key==='Escape')closeCaseDetails();});" +
     "</script>";
 
   var bizMeta = renderMetaText_(data);
@@ -4258,7 +4289,7 @@ function renderJobManagement_(jm) {
   // Repair bucket · Aging · GSX repair status · Repair type · CRM status ·
   // Case ID · Name · Number · GSX ID · Device S.No · Model · Comm updated.
   // Rows stay grouped under a colour-coded band per repair bucket.
-  var NCOLS = 12;
+  var NCOLS = 11;
   var prevGroup = null;
   var grpAccent = "";
   var rowParts = [];
@@ -4311,10 +4342,12 @@ function renderJobManagement_(jm) {
       bucketCell +
       ageCell(j.jobAge) +
       gsxDisplay +
-      // Task 33: Repair Type right after GSX Repair Status, before CRM Status.
+      // Task 33: Repair Type right after GSX Repair Status.
+      // Task 38: the duplicate "CRM Status" column is gone — Repair Bucket
+      // (first column) already carries the CRM status.
       "<td>" + esc_(j.repairType) + "</td>" +
-      "<td>" + esc_(j.crmRepairStatus || "—") + "</td>" +
-      '<td class="sticky-col"><b>' + esc_(j.caseId) + "</b>" +
+      '<td class="sticky-col"><button type="button" class="caselink" data-case="' + esc_(j.caseId) +
+        '" onclick="openCaseDetails(this.dataset.case)"><b>' + esc_(j.caseId) + "</b></button>" +
         (j.isUnclaimed ? ' <span class="badge-unclaimed sm">⚠ Unclaimed</span>' : "") +
         (j.noRepairLate ? ' <span class="badge-norepair sm">⚠ No repair started</span>' : "") +
         (j.oowNoAdvance ? ' <span class="badge-oow sm">⚠ OOW · no advance</span>' : "") + "</td>" +
@@ -4331,14 +4364,14 @@ function renderJobManagement_(jm) {
   var table =
     '<div class="scroll-x jobwrap"><table class="ptable jobtable">' +
     '<colgroup>' +
-    '<col style="width:9.5%"><col style="width:4%"><col style="width:9.5%">' +
-    '<col style="width:9.5%"><col style="width:9.5%"><col style="width:8%">' +
-    '<col style="width:8.5%"><col style="width:8.5%"><col style="width:8%">' +
-    '<col style="width:8%"><col style="width:10.5%"><col style="width:6.5%">' +
+    '<col style="width:10%"><col style="width:5%"><col style="width:10%">' +
+    '<col style="width:8%"><col style="width:9%"><col style="width:9%">' +
+    '<col style="width:9%"><col style="width:9%"><col style="width:9%">' +
+    '<col style="width:10%"><col style="width:12%">' +
     '</colgroup>' +
     '<thead><tr>' +
     "<th>Repair Bucket</th><th>Aging</th><th>GSX Repair Status</th>" +
-    "<th>Repair Type</th><th>CRM Status</th>" +
+    "<th>Repair Type</th>" +
     "<th>Case ID</th><th>Name</th><th>Number</th>" +
     "<th>GSX ID</th><th>S.No</th><th>Model</th>" +
     "<th>Comm. Updated</th>" +
@@ -4352,12 +4385,30 @@ function renderJobManagement_(jm) {
   }
   var mapLine = '<div class="map-line">' + [
     ["Repair Bucket","crmRepairStatus"],["Aging","jobAge"],
-    ["GSX Repair Status","gsxStatus"],["Repair Type","repairDocType"],["CRM Status","crmRepairStatus"],["Case ID","caseId"],["Number","mobile"],
+    ["GSX Repair Status","gsxStatus"],["Repair Type","repairDocType"],["Case ID","caseId"],["Number","mobile"],
     ["GSX ID","gsxCode"],["Device S.No","serialNo1"],
     ["Model","product"],["Open filter","status"]]
     .map(srcLine).join(" · ") + "</div>";
 
-  return head + mapLine + table;
+  // Task 38: case-id popup details. A hidden data island carries one JSON
+  // row per open job; openCaseDetails() (client script) renders the modal.
+  var cdMap = {};
+  jm.jobs.forEach(function (j) {
+    cdMap[j.caseId] = {
+      caseId: j.caseId, createdDate: j.createdDate, repairDate: j.repairDate,
+      bucket: j.crmRepairStatus, name: j.name, product: j.product,
+      commDate: j.commDate, readyDate: j.readyDate || "—", gsxStatus: j.gsxStatus,
+    };
+  });
+  var caseBits =
+    '<div id="caseDetailData" hidden>' + JSON.stringify(cdMap).replace(/</g, "\u003c") + "</div>" +
+    '<div class="casemodal-overlay" id="caseModal" style="display:none" ' +
+    'onclick="if(event.target===this)closeCaseDetails()">' +
+    '<div class="casemodal"><div class="cm-top"><b id="cmTitle">Case details</b>' +
+    '<button type="button" onclick="closeCaseDetails()" aria-label="Close">&times;</button></div>' +
+    '<table id="cmTable"></table></div></div>';
+
+  return head + mapLine + table + caseBits;
 }
 
 /** Job management section (OPEN JOBS page). */
@@ -4935,9 +4986,9 @@ function getDashboardCss_() {
     " border-radius:9px; background:#ffffff; padding:10px 12px 14px; }" +
     // ---- job table: fixed layout compressed to the page width ----
     ".jobwrap { overflow-x:auto; }" +
-        ".jobtable { table-layout:fixed; width:100%; min-width:0; }" +
+        ".jobtable { table-layout:auto; width:max-content; min-width:100%; }" +
     ".jobtable th, .jobtable td { font-size:.72rem; padding:6px 7px; white-space:nowrap;" +
-    " overflow:hidden; text-overflow:ellipsis; font-weight:500; }" +
+    " overflow:visible; text-overflow:clip; font-weight:500; }" +
     ".jobtable th { font-weight:800; }" +
 
     // ---- next-slab chase line on the salesperson cards ----
@@ -5003,9 +5054,24 @@ function getDashboardCss_() {
     " border-radius:12px; padding:12px; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }" +
     // job table: entirely left-aligned
     ".jobtable th, .jobtable td { text-align:left; }" +
-    // Task 37: every job cell fully visible — wrap instead of hidden ellipsis.
-    ".jobtable th, .jobtable td { white-space:normal; overflow:visible; text-overflow:clip; word-break:break-word; line-height:1.28; }" +
-    ".jobtable td.num, .jobtable th.num { white-space:nowrap; word-break:normal; }" +
+    // Task 38: owner wants every value on ONE line — cells never wrap, never
+    // truncate; the table grows to content and .jobwrap scrolls sideways.
+    ".jobtable th, .jobtable td { white-space:nowrap; overflow:visible; text-overflow:clip; }" +
+    // Task 38 — case detail popover (click a Case ID).
+    ".caselink { background:none; border:none; color:#9fd7ff; font:inherit; font-weight:800;" +
+    " cursor:pointer; padding:0; text-decoration:underline dotted; }" +
+    ".caselink:hover, .caselink:focus { color:#d9efff; }" +
+    ".casemodal-overlay { position:fixed; inset:0; z-index:80; background:rgba(3,7,24,.72);" +
+    " backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; }" +
+    ".casemodal { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.42); border-radius:14px;" +
+    " padding:16px 18px; max-width:460px; width:92%; box-shadow:0 24px 60px rgba(2,6,28,.7); }" +
+    ".casemodal .cm-top { display:flex; justify-content:space-between; align-items:center;" +
+    " margin-bottom:10px; color:#f2f6ff; font-size:1.02rem; }" +
+    ".casemodal .cm-top button { background:none; border:none; color:#ff9db0; font-size:1.2rem; cursor:pointer; line-height:1; }" +
+    ".casemodal table { width:100%; border-collapse:collapse; font-size:.82rem; }" +
+    ".casemodal td { padding:6px 8px; border-bottom:1px solid rgba(105,132,255,.16); color:#e9edff;" +
+    " vertical-align:top; white-space:normal; }" +
+    ".casemodal td:first-child { color:#9fb4e8; font-weight:700; width:46%; white-space:nowrap; }" +
     // Task 35: satisfaction table hugs the left; chips move to its right.
     ".csat-flex { flex-direction:row; align-items:flex-start; flex-wrap:wrap; }" +
     ".csat-flex .csat-left { flex:0 0 auto; max-width:100%; }" +
