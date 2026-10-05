@@ -245,10 +245,10 @@ check("store tile card",page.indexOf('class="card rtile')>-1);
 check("status pill text",page.indexOf("In Progress")>-1||page.indexOf("Completed")>-1);
 check("per-day requirement strip",page.indexOf("Per Day Requirement")>-1);
 check("metric grid",page.indexOf('class="metric a"')>-1&&page.indexOf('class="metric b"')>-1);
-// Title from crm!C2 (mock C2 = "Subha")
-check("title uses crm C2",page.indexOf("iPlanetcare Subha — Store Performance Dashboard")>-1);
+// Title from crm!D2 (mock D2 = "Service" — the mock's 4th column carries it)
+check("title uses crm D2 (Task 39)",page.indexOf("iPlanetcare Service — Store Performance Dashboard")>-1);
 check("two-line brand: iPlanetcare + Store Performance Dashboard (Task 35)",
-  page.indexOf('<div class="brand">')>-1&&page.indexOf("iPlanetcare Subha</div>")>-1
+  page.indexOf('<div class="brand">')>-1&&page.indexOf("iPlanetcare Service</div>")>-1
   &&page.indexOf('class="brand-sub"')>-1&&page.indexOf("Store Performance Dashboard</div>")>-1);
 check("seven tabs: Index/GP/KPI/WALK-IN/Operation/Jobs/DATE",
   page.indexOf("🏠 Index")>-1&&page.indexOf("🎯 GP")>-1&&page.indexOf("📊 KPI")>-1
@@ -432,6 +432,28 @@ check("live clock card, no gif + tick js (Task 30)", page.indexOf('class="topbar
 check("amc & bundle side-by-side", page.indexOf('class="inc-pair"')>-1);
 check("repair matrix removed so no duo", page.indexOf('class="duo-pair"')===-1);
 check("job table auto layout (Task 38)", page.indexOf(".jobtable { table-layout:auto")>-1&&page.indexOf("<colgroup>")>-1);
+
+console.log("== TASK 39 ==");
+check("weekly revenue-type colours on groups", page.indexOf('grp grp-0 wt-svc')>-1
+  &&page.indexOf('wt-acc')>-1&&page.indexOf('wt-rep')>-1&&page.indexOf('wt-gp')>-1);
+check("weekly wt css", page.indexOf("#sec-weekly td.wt-svc { background:rgba(90,150,255,.14)")>-1
+  &&page.indexOf("#sec-weekly th.wt-gp  { color:#b9f08c")>-1);
+var opsPair=page.slice(page.indexOf('class="ops-pair"'),page.indexOf('class="ops-pair"')+6000);
+check("decline & win-back side by side (ops-pair)",
+  page.indexOf('class="ops-pair"')>-1
+  &&page.indexOf(".ops-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr)")>-1
+  &&opsPair.indexOf("Decline Repair</h2>")>-1&&opsPair.indexOf("Win-back</h2>")>-1
+  &&opsPair.indexOf("Decline Repair</h2>")<opsPair.indexOf("Win-back</h2>"));
+check("repair type renders N-repair", page.indexOf("<td>N-repair</td>")>-1);
+check("repairTypeShort_ mappings", repairTypeShort_("Service Non-Repair")==="N-repair"
+  &&repairTypeShort_("Whole Unit Mail-In Return to Service Location")==="mail-in"
+  &&repairTypeShort_("Walk-In Repair")==="Walk-In Repair");
+check("case badges stacked under the case id", page.indexOf('class="casebadges"')>-1
+  &&page.indexOf(".casebadges { display:flex; flex-direction:column")>-1);
+check("deck: 8 tables as 4 side-by-side pairs",
+  (page.match(/class="deck-pair"/g)||[]).length===4
+  &&page.indexOf(".deck-pair { display:grid")>-1);
+check("freshness chips carry date AND time", page.indexOf("23-09-2026 12:00")>-1);
 check("person band colours removed: one table color set (Task 31)",
   page.indexOf("#8a9bd4")===-1&&page.indexOf("#b8860b")===-1&&page.indexOf("#0f9d8f")===-1
   &&page.indexOf("#7a3fd4")===-1&&page.indexOf("#c04a68")===-1

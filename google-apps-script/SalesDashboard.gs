@@ -316,10 +316,10 @@ function loadDashboardData_() {
   // Task 36-D — the deck numbers ride on the same parse, current month only.
   result.data.deckAnalysis = computeDeckAnalysis_(ss, allRows);
 
-  // Store code for the page title — read straight from crm!C2, exactly the
-  // cell the previous script used for its location header.
+  // Store code for the page title — the owner keeps it in crm!D2 now
+  // (moved from crm!C2 with the new sheet layout).
   result.data.store.storeCode =
-    (crmValues[1] && crmValues[1].length > 2) ? str_(crmValues[1][2]) : "";
+    (crmValues[1] && crmValues[1].length > 3) ? str_(crmValues[1][3]) : "";
 
   // Average revenue per unique walk-in — the walkin sheet is optional, so a
   // missing tab simply leaves this metric blank instead of failing the page.
@@ -1991,6 +1991,14 @@ function productFamily_(desc) {
   return "Other";
 }
 
+/** Task 39: compact repair-type labels for the narrow jobs columns. */
+function repairTypeShort_(t) {
+  var s = str_(t);
+  if (/service\s*non[\s-]*repair/i.test(s)) return "N-repair";
+  if (/whole\s*unit.*mail[\s-]*in/i.test(s) || /mail[\s-]*in.*service\s*locat/i.test(s)) return "mail-in";
+  return s;
+}
+
 function isSNRType_(t) { return /service\s*non[\s-]*repair/i.test(t || ""); }
 
 function computeRepairAnalytics_(serviceRows) {
@@ -2394,8 +2402,27 @@ function loadPerformanceData_() {
     });
     return key || "no rows";
   }
+  // Task 39: the freshness line also shows the TIME of the last record.
+  function latestStamp_(names, spec, field) {
+    var sheet = getSheetByNames_(ss, names);
+    if (!sheet) return null;
+    var rd = readSheetRows_(sheet, spec, [field]);
+    var ts = 0, lab = "";
+    rd.rows.forEach(function (r) {
+      var d = parseAnyDate_(r[field]);
+      if (d.valid && d.ts > ts) {
+        ts = d.ts;
+        var hh = Math.floor(d.minutes / 60), mi = d.minutes % 60;
+        lab = d.dayKey + (d.minutes ? " " + (hh < 10 ? "0" + hh : hh) + ":" + (mi < 10 ? "0" + mi : mi) : "");
+      }
+    });
+    return ts ? lab : null;
+  }
   var freshness = {
-    comm: latestDateKey_(CONFIG.COMM_SHEET_NAMES, { createdDate: COMM_SPEC.createdDate }, "createdDate") || "no comm sheet",
+    crm: latestStamp_([CONFIG.CRM_SHEET_NAME], { invoiceDate: [/invoice.*date/i, /^inv.*date/i] }, "invoiceDate") || "no rows",
+    walkin: latestStamp_(CONFIG.WALKIN_SHEET_NAMES, { tokenDate: WALKIN_SPEC.tokenDate }, "tokenDate") || "no rows",
+    service: latestStamp_(CONFIG.SERVICE_SHEET_NAMES, { caseDate: SERVICE_SPEC.caseDate }, "caseDate") || "no rows",
+    comm: latestStamp_(CONFIG.COMM_SHEET_NAMES, { createdDate: COMM_SPEC.createdDate }, "createdDate") || "no comm sheet",
     advance: "no date column",
   };
 
@@ -2630,17 +2657,16 @@ function renderOperationHtml_(pd) {
   // Task 35 — Decline Repair: unique decline!CaseId whose GSX status is
   // "Declined - Rejected by Local Approver".
   out.push(
-    '<section class="sec"><div class="sec-head"><h2>🚫 Decline Repair</h2>' +
+    '<div class="ops-pair"><section class="sec"><div class="sec-head"><h2>🚫 Decline Repair</h2>' +
     '<p class="sec-sub">Unique CaseIDs in <b>decline</b> where GSXRepairStatusDescription is ' +
     '"Declined - Rejected by Local Approver".</p></div>' +
     '<div class="cards">' +
     '<div class="card"><div class="label">Declined repairs</div><div class="value">' +
       (ex.decline.count || 0) + '</div>' +
       '<div class="sub">' + (ex.decline.sheetName ? "unique CaseIDs · from " + esc_(ex.decline.sheetName) : "no decline sheet found") + '</div></div>' +
-    "</div></section>");
+    "</div></section>" +
   // Task 35 — Requote & Win-back: quote rows with RevenueType "Repair Revenue"
   // AND lastAction "approved" (counted once per unique CaseID).
-  out.push(
     '<section class="sec"><div class="sec-head"><h2>🔁 Requote &amp; Win-back</h2>' +
     '<p class="sec-sub">Unique CaseIDs in <b>quote</b> where RevenueType is "Repair Revenue" ' +
     'and lastAction is "approved".</p></div>' +
@@ -2648,7 +2674,7 @@ function renderOperationHtml_(pd) {
     '<div class="card"><div class="label">Win-backs</div><div class="value">' +
       (ex.winback.count || 0) + '</div>' +
       '<div class="sub">' + (ex.winback.sheetName ? "unique CaseIDs · from " + esc_(ex.winback.sheetName) : "no quote sheet found") + '</div></div>' +
-    "</div></section>");
+    "</div></section></div>");
   return out.join("");
 }
 
@@ -2749,7 +2775,14 @@ function computeDeckAnalysis_(ss, crmRows) {
     var sn = str_(r.serialNo1);
     var cid = str_(r.caseId);
     famSerial[f][sn || ("#" + cid)] = true;                     // unique count, deduped
-    if (cid && !caseFamily[cid]) caseFamily[cid] = f;
+  });
+  // Value link runs over EVERY deduped case (not just the month window) so an
+  // invoice always finds its case → TaxableAmount, for each revenue type.
+  var linkCases = (typeof allCases !== "undefined" && allCases.length) ? allCases : repairCases;
+  linkCases.forEach(function (r) {
+    if (isSNRType_(str_(r.repairDocType))) return;
+    var cid = str_(r.caseId);
+    if (cid && !caseFamily[cid]) caseFamily[cid] = deckFamily_(r.product);
   });
   sale.forEach(function (r) {
     var oc = str_(r.orderCode);
@@ -2971,10 +3004,15 @@ function renderDeckHtml_(data, pd) {
     (cov.total ? tr(["<b>Total</b>", "<b>" + cov.total.count + "</b>",
       "<b>" + cov.total.w + "</b>", "<b>" + cov.total.nw + "</b>"], true) : "")));
 
+  // Task 39: same owner order, laid out as four side-by-side pairs.
+  var grid = "";
+  for (var pi = 0; pi < sections.length; pi += 2) {
+    grid += '<div class="deck-pair">' + sections[pi] + (sections[pi + 1] || "") + "</div>";
+  }
   return '<section class="sec"><div class="sec-head"><h2>🗂 Deck — ' + esc_(month || "Current Month") + " " + stamp + '</h2>' +
     '<p class="sec-sub">Owner order — revenue · walk-in · repair · accessories · service · GP · walk-in analysis · coverage. ' +
     "Current month only; previous months are kept manually by the owner. SALESRETURN is excluded everywhere.</p></div></section>" +
-    sections.join("");
+    grid;
 }
 
 /** OPEN JOBS page: job management. */
@@ -3760,36 +3798,16 @@ function renderIndexHtml_(data, perfData) {
 
 /** Bottom line on the index: latest dated record seen in each sheet. */
 function freshnessLineHtml_(data, perfData) {
-  function fmtDateKey(year, month, day) {
-    function p(x) { return x < 10 ? "0" + x : x; }
-    return p(day) + "-" + p(month) + "-" + year;
-  }
   var bits = [];
-  // crm — from the date-wise rows of the business data
-  var latestCrm = null;
-  (data.days || []).forEach(function (d) {
-    if (d.undated || !d.dateKey) return;
-    if (!latestCrm || d.sortKey > latestCrm.sortKey) latestCrm = d;
-  });
-  bits.push(["crm (sales)", latestCrm ? latestCrm.dateKey : "no rows"]);
+  // Task 39: every chip reads the sheet's own LAST record date AND time.
+  var fr = perfData && perfData.freshness ? perfData.freshness : {};
+  bits.push(["crm (sales)", fr.crm || "no rows"]);
   bits.push(["target (plan)", "refreshed " +
-    Utilities.formatDate(data.generatedAt, Session.getScriptTimeZone(), "dd-MM-yyyy" )]);
-  // walkin
-  var wlD = perfData && perfData.walkin && perfData.walkin.days
-    ? perfData.walkin.days.filter(function (d) { return !d.undated; })[0] : null;
-  bits.push(["walkin", wlD ? wlD.dateKey : "no rows"]);
-  // service (open jobs page) — max CaseDate among parsed rows
-  var svcTs = 0, svcKey = "";
-  (perfData && perfData.jobs && perfData.jobs.serviceRows || []).forEach(function (r) {
-    if (r.caseTs > svcTs) { svcTs = r.caseTs; svcKey = r.createdDate || ""; }
-  });
-  bits.push(["service", svcTs ? (svcKey || "—") : "no rows"]);
-  // advance / comm freshness carried by the perf loader when present
-  var fr = perfData && perfData.freshness ? perfData.freshness : null;
-  if (fr) {
-    bits.push(["advance", fr.advance || "—"]);
-    bits.push(["comm", fr.comm || "—"]);
-  }
+    Utilities.formatDate(data.generatedAt, Session.getScriptTimeZone(), "dd-MM-yyyy HH:mm" )]);
+  bits.push(["walkin", fr.walkin || "no rows"]);
+  bits.push(["service", fr.service || "no rows"]);
+  bits.push(["advance", fr.advance || "—"]);
+  bits.push(["comm", fr.comm || "—"]);
   var li = bits.map(function (b) {
     return '<span class="fresh-chip"><i>' + esc_(b[0]) + "</i><b>" + esc_(b[1]) + "</b></span>";
   }).join("");
@@ -4345,12 +4363,16 @@ function renderJobManagement_(jm) {
       // Task 33: Repair Type right after GSX Repair Status.
       // Task 38: the duplicate "CRM Status" column is gone — Repair Bucket
       // (first column) already carries the CRM status.
-      "<td>" + esc_(j.repairType) + "</td>" +
+      "<td>" + esc_(repairTypeShort_(j.repairType)) + "</td>" +
       '<td class="sticky-col"><button type="button" class="caselink" data-case="' + esc_(j.caseId) +
         '" onclick="openCaseDetails(this.dataset.case)"><b>' + esc_(j.caseId) + "</b></button>" +
-        (j.isUnclaimed ? ' <span class="badge-unclaimed sm">⚠ Unclaimed</span>' : "") +
-        (j.noRepairLate ? ' <span class="badge-norepair sm">⚠ No repair started</span>' : "") +
-        (j.oowNoAdvance ? ' <span class="badge-oow sm">⚠ OOW · no advance</span>' : "") + "</td>" +
+        ((j.isUnclaimed || j.noRepairLate || j.oowNoAdvance)
+          ? '<div class="casebadges">' +
+            (j.isUnclaimed ? '<span class="badge-unclaimed sm">⚠ Unclaimed</span>' : "") +
+            (j.noRepairLate ? '<span class="badge-norepair sm">⚠ No repair started</span>' : "") +
+            (j.oowNoAdvance ? '<span class="badge-oow sm">⚠ OOW · no advance</span>' : "") +
+            "</div>"
+          : "") + "</td>" +
       "<td>" + esc_(j.name) + "</td>" +
       '<td class="num">' + esc_(j.mobile) + "</td>" +
       // Task 34: GSX ID + device serial right after Number, before Model.
@@ -5072,6 +5094,27 @@ function getDashboardCss_() {
     ".casemodal td { padding:6px 8px; border-bottom:1px solid rgba(105,132,255,.16); color:#e9edff;" +
     " vertical-align:top; white-space:normal; }" +
     ".casemodal td:first-child { color:#9fb4e8; font-weight:700; width:46%; white-space:nowrap; }" +
+    // ============ TASK 39 — weekly revenue-type colours, deck/ops grids ============
+    // Weekly Revenue Analysis: soft per-type tints so the four groups read apart.
+    "#sec-weekly th.wt-svc { color:#8ecbff; }" +
+    "#sec-weekly th.wt-acc { color:#7fe3c2; }" +
+    "#sec-weekly th.wt-rep { color:#ffcf8f; }" +
+    "#sec-weekly th.wt-gp  { color:#b9f08c; }" +
+    "#sec-weekly td.wt-svc { background:rgba(90,150,255,.14) !important; }" +
+    "#sec-weekly td.wt-acc { background:rgba(70,220,185,.11) !important; }" +
+    "#sec-weekly td.wt-rep { background:rgba(255,185,85,.12) !important; }" +
+    "#sec-weekly td.wt-gp  { background:rgba(155,235,105,.10) !important; }" +
+    // Decline Repair & Requote/Win-back side by side (Operation page).
+    ".ops-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:stretch; }" +
+    ".ops-pair > .sec { margin-bottom:0; height:100%; }" +
+    // Deck page: the eight tables as four side-by-side pairs.
+    ".deck-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:stretch; margin-bottom:16px; }" +
+    ".deck-pair > .section { margin-bottom:0; height:100%; }" +
+    // Case badges stacked under the Case ID (saves horizontal space).
+    ".casebadges { display:flex; flex-direction:column; align-items:flex-start; gap:3px; margin-top:3px; }" +
+    ".casebadges > span { display:inline-block; }" +
+    "@media (max-width:1100px) { .deck-pair, .ops-pair { grid-template-columns:minmax(0,1fr); } }" +
+
     // Task 35: satisfaction table hugs the left; chips move to its right.
     ".csat-flex { flex-direction:row; align-items:flex-start; flex-wrap:wrap; }" +
     ".csat-flex .csat-left { flex:0 0 auto; max-width:100%; }" +
@@ -5548,6 +5591,9 @@ function computeWeeklyAnalysis_(data) {
     { key: "repair", label: "Repair", monthTarget: data.store.repair.target },
     { key: "grossProfit", label: "Gross Profit", monthTarget: data.store.grossProfit.target },
   ];
+  // Task 39: one soft colour per revenue type so the groups read apart.
+  var WCLASS = { service: "wt-svc", accessory: "wt-acc", repair: "wt-rep", grossProfit: "wt-gp" };
+  TYPES.forEach(function (t) { t.wc = WCLASS[t.key]; });
 
   // Week chunks of the month: 1–7, 8–14, 15–21, 22–28, 29–end.
   var weeks = [];
@@ -5610,10 +5656,11 @@ function renderWeeklyAnalysis_(data) {
   var head1 = '<tr><th rowspan="2" class="sticky-col">Week</th><th rowspan="2">Wrk Days</th><th rowspan="2">Status</th>';
   var head2 = "<tr>";
   TYPES.forEach(function (t, i) {
-    head1 += '<th colspan="3" class="grp grp-' + (i % 5) + '">' + esc_(t.label) + "</th>";
-    head2 += '<th class="grp grp-' + (i % 5) + '">Achieved</th>' +
-      '<th class="grp grp-' + (i % 5) + '">Week Target</th>' +
-      '<th class="grp grp-' + (i % 5) + '">Balance</th>';
+    var wc = " " + t.wc;
+    head1 += '<th colspan="3" class="grp grp-' + (i % 5) + wc + '">' + esc_(t.label) + "</th>";
+    head2 += '<th class="grp grp-' + (i % 5) + wc + '">Achieved</th>' +
+      '<th class="grp grp-' + (i % 5) + wc + '">Week Target</th>' +
+      '<th class="grp grp-' + (i % 5) + wc + '">Balance</th>';
   });
   head1 += "</tr>";
   head2 += "</tr>";
@@ -5627,14 +5674,15 @@ function renderWeeklyAnalysis_(data) {
       '<td><span class="muted">' + esc_(w.status) + "</span></td>";
     TYPES.forEach(function (t, i) {
       var tk = t.key;
+      var wc = " " + t.wc;
       var ach = w.achieved[tk], tgt = w.tgt[tk];
       var bal = Math.max(0, tgt - ach);
       var pill = tgt > 0
         ? '<span class="apill ' + (ach >= tgt ? "ok" : "no") + '">' + money_(ach) + "</span>"
         : '<span class="muted">' + money_(ach) + "</span>";
-      tr += '<td class="cell-' + (i % 5) + '">' + pill + "</td>" +
-        '<td class="cell-' + (i % 5) + '"><span class="tgt">' + money_(tgt) + "</span></td>" +
-        '<td class="cell-' + (i % 5) + '">' + (bal > 0
+      tr += '<td class="cell-' + (i % 5) + wc + '">' + pill + "</td>" +
+        '<td class="cell-' + (i % 5) + wc + '"><span class="tgt">' + money_(tgt) + "</span></td>" +
+        '<td class="cell-' + (i % 5) + wc + '">' + (bal > 0
           ? '<span class="muted">' + money_(bal) + "</span>"
           : '<span class="apill ok">done</span>') + "</td>";
     });
@@ -5645,11 +5693,12 @@ function renderWeeklyAnalysis_(data) {
     wa.totalWorkingDays + "</td><td></td>";
   TYPES.forEach(function (t, i) {
     var tk = t.key;
+    var wc = " " + t.wc;
     var ach = wa.monthTotals[tk], tgt = t.monthTarget;
     var bal = Math.max(0, tgt - ach);
-    foot += '<td class="cell-' + (i % 5) + '"><b>' + money_(ach) + "</b></td>" +
-      '<td class="cell-' + (i % 5) + '"><span class="tgt">' + money_(tgt) + "</span></td>" +
-      '<td class="cell-' + (i % 5) + '">' + money_(bal) + "</td>";
+    foot += '<td class="cell-' + (i % 5) + wc + '"><b>' + money_(ach) + "</b></td>" +
+      '<td class="cell-' + (i % 5) + wc + '"><span class="tgt">' + money_(tgt) + "</span></td>" +
+      '<td class="cell-' + (i % 5) + wc + '">' + money_(bal) + "</td>";
   });
   foot += "</tr>";
 
