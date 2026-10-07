@@ -911,6 +911,27 @@ function parseTargetSheet(rows) {
     }
   }
 
+  // ---- Task 40: fixed-address fallback — the owner's slab card lives at
+  //      target!A29:F33 (range in A, AMC rate in B, acc-AMC count in D,
+  //      acc-AMC rate in E). Used when the loose anchor above found nothing.
+  if (!amcSlabs.length) {
+    for (var fr = 28; fr <= 32 && fr < rows.length; fr++) {
+      var fLab = at(fr, 0), fRate = at(fr, 1), fAccCnt = parseMoney_(at(fr, 3)), fAccRate = at(fr, 4);
+      if (!fLab || !/^\d/.test(fLab)) continue;
+      var fRange = parseRangeLabel_(fLab);
+      var fRateInfo = parseAmcRate_(fRate);
+      var fAccInfo = parseAmcRate_(fAccRate);
+      if (fRateInfo.rate <= 0 && fRateInfo.fixed <= 0) continue;
+      amcSlabs.push({
+        label: fLab, rateLabel: fRate, rate: fRateInfo.rate, fixed: fRateInfo.fixed,
+        min: Math.min(fRange.min, OPEN_ENDED), max: Math.min(Math.max(fRange.max, fRange.min), OPEN_ENDED),
+        accCount: fAccCnt > 0 ? fAccCnt : undefined,
+        accRate: fAccInfo.rate > 0 ? fAccInfo.rate : undefined,
+        accFixed: fAccInfo.fixed > 0 ? fAccInfo.fixed : undefined,
+      });
+    }
+  }
+
   // ---- ANCHOR: bundle slabs, "slab level" row + "slab incentive" row below it (cols M..P) ----
   var bundleSlabs = [];
   var levelCell = findCell_(rows, 12, 17, /slab\s*level/i);
@@ -1730,6 +1751,11 @@ var SERVICE_SPEC = {
   serialNo1: [/^serialno1$/i, /serial.*no\.?1/i, /serial.*number/i, /^serial/i, /device.*serial/i, /imei/i],
   // Task 36 — replaced part for coverage split (battery / display buckets).
   partDescription: [/^partdescription$/i, /^partdesc$/i, /^part\s*description$/i],
+  // Task 40 (Coverage v2): battery/display from service!IssueDescription and
+  // the W/NW split from service!ProductWarrantyDesc — owner's final columns.
+  issue: [/^issuedescription$/i, /issue.*desc/i, /^issue$/i],
+  productWarranty: [/^productwarrantydescription$/i, /^productwarrantydesc$/i,
+    /product.*warranty.*desc/i, /product.*warranty/i],
 };
 
 var ADVANCE_SPEC = {
@@ -2349,8 +2375,9 @@ function renderTargetBlock_(tb, ra) {
 
   // Owner layout: table shrunk and left-aligned; the summary chips stack in a
   // column immediately to the table's right.
-  var table = '<div class="csat-flex"><div class="scroll-x csat-left"><table class="ptable csat-table">' + thead + body +
-    '</table></div><div class="csat-right">' + chips.join("") + "</div></div>";
+  // Task 40: chips sit BELOW the table in one horizontal band (owner's layout).
+  var table = '<div class="scroll-x csat-left"><table class="ptable csat-table">' + thead + body +
+    '</table></div><div class="csat-brow">' + chips.join("") + "</div>";
 
   // Repairs comparison strip — Service Non-Repair excluded (kept from before).
   var strip = "";
@@ -2776,11 +2803,12 @@ function computeDeckAnalysis_(ss, crmRows) {
     var cid = str_(r.caseId);
     famSerial[f][sn || ("#" + cid)] = true;                     // unique count, deduped
   });
-  // Value link runs over EVERY deduped case (not just the month window) so an
-  // invoice always finds its case → TaxableAmount, for each revenue type.
-  var linkCases = (typeof allCases !== "undefined" && allCases.length) ? allCases : repairCases;
+  // Task 40: the value join must run over the SAME population the count is
+  // taken from (the month-window repair set; caseMonth already carries the
+  // stale-sheet fallback). Linking to a wider set printed values beside a
+  // zero count — the owner's "0 counts but value shows" bug.
+  var linkCases = repairCases;
   linkCases.forEach(function (r) {
-    if (isSNRType_(str_(r.repairDocType))) return;
     var cid = str_(r.caseId);
     if (cid && !caseFamily[cid]) caseFamily[cid] = deckFamily_(r.product);
   });
@@ -2872,26 +2900,34 @@ function computeDeckAnalysis_(ss, crmRows) {
     { label: "Enquiry", value: walkins - uniqBills },
   ];
 
-  // 8) Coverage Analysis | LOB — iPhone / iPhone Battery / iPhone Display / Mac /
-  //    Others from service!ProductDescription & service!PartDescription (both
-  //    must match); W/NW from service!CoverageCodeDescription.
-  function covBucket_(prod, part) {
+  // 8) Coverage Analysis | LOB (Task 40 spec) — family from
+  //    service!ProductDescription (iPhone / Mac / Watch / iPad / AirPods /
+  //    Others). Battery & display are split off the iPhone row via text in
+  //    service!IssueDescription (was PartDescription). The W/NW split reads
+  //    service!ProductWarrantyDesc (was CoverageCodeDescription): words like
+  //    "Product Warranty" / "In Warranty" → W; "out of", "no ...", expired
+  //    or blank → NW.
+  function covBucket_(prod, issue) {
     var t = str_(prod).toLowerCase();
-    var p = str_(part).toLowerCase();
+    var p = str_(issue).toLowerCase();
     var iphone = /iphone|\bvin\b/.test(t);
     if (iphone && /batt/.test(p)) return "iPhone Battery";
     if (iphone && /display|screen|lcd/.test(p)) return "iPhone Display";
     if (iphone) return "iPhone";
     if (/\bmac|imac|macbook/.test(t)) return "Mac";
+    if (/watch/.test(t)) return "Watch";
+    if (/ipad/.test(t)) return "iPad";
+    if (/airpods?/.test(t)) return "AirPods";
     return "Others";
   }
-  var COV_ORDER = ["iPhone", "iPhone Battery", "iPhone Display", "Mac", "Others"];
+  var COV_ORDER = ["iPhone", "iPhone Battery", "iPhone Display", "Mac", "Watch", "iPad", "AirPods", "Others"];
   var cov = {};
   COV_ORDER.forEach(function (n) { cov[n] = { label: n, count: 0, w: 0, nw: 0 }; });
   covCases.forEach(function (r) {
-    var c = cov[covBucket_(r.product, r.partDescription)];
+    var c = cov[covBucket_(r.product, r.issue)];
     c.count++;
-    if (/^\s*in\s*warranty/i.test(str_(r.warranty))) c.w++;
+    var wtxt = str_(r.productWarranty).toLowerCase();
+    if (/warrant|coverage/.test(wtxt) && !/out|no\s|non|expired|void/.test(wtxt)) c.w++;
     else c.nw++;
   });
   out.coverage = { rows: COV_ORDER.map(function (n) { return cov[n]; }) };
@@ -2924,7 +2960,7 @@ function renderDeckHtml_(data, pd) {
   function money0(v) { return money_(v || 0); }
   function table(id, icon, title, sub, head, body, foot) {
     return '<section class="section" id="' + id + '"><h2>' + icon + " " + esc_(title) + "</h2>" +
-      '<div class="body"><div class="subnote2">' + sub + "</div>" +
+      '<div class="body">' +
       '<div class="scroll-x"><table class="ptable decktable">' + th(head) + "<tbody>" +
       body + (foot || "") + "</tbody></table></div></div></section>";
   }
@@ -4366,13 +4402,7 @@ function renderJobManagement_(jm) {
       "<td>" + esc_(repairTypeShort_(j.repairType)) + "</td>" +
       '<td class="sticky-col"><button type="button" class="caselink" data-case="' + esc_(j.caseId) +
         '" onclick="openCaseDetails(this.dataset.case)"><b>' + esc_(j.caseId) + "</b></button>" +
-        ((j.isUnclaimed || j.noRepairLate || j.oowNoAdvance)
-          ? '<div class="casebadges">' +
-            (j.isUnclaimed ? '<span class="badge-unclaimed sm">⚠ Unclaimed</span>' : "") +
-            (j.noRepairLate ? '<span class="badge-norepair sm">⚠ No repair started</span>' : "") +
-            (j.oowNoAdvance ? '<span class="badge-oow sm">⚠ OOW · no advance</span>' : "") +
-            "</div>"
-          : "") + "</td>" +
+        "</td>" +
       "<td>" + esc_(j.name) + "</td>" +
       '<td class="num">' + esc_(j.mobile) + "</td>" +
       // Task 34: GSX ID + device serial right after Number, before Model.
@@ -4469,7 +4499,7 @@ function getDashboardCss_() {
     "* { box-sizing:border-box; }" +
     // +2 points across the whole page: every size below is rem-based, so a
     // slightly larger root font scales all text up evenly.
-    "html { font-size:18px; }" +
+    "html { font-size:20.7px; }" +
     "body { margin:0; min-height:100vh;" +
     " background:linear-gradient(180deg,#edf2f7 0%,#e7edf3 100%); color:#17263a;" +
     " font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }" +
@@ -4513,7 +4543,7 @@ function getDashboardCss_() {
     ".section .body { padding:0; }" +
     // ---- cards: the old .kpi-card dark navy tile ----
     ".cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,225px),1fr)); gap:10px; margin-bottom:16px; }" +
-    ".card { background:rgba(28,43,82,.98);" +
+    ".card { background:rgba(28,43,82,.60);" +
     " border:1px solid var(--line); border-radius:12px; box-shadow:0 16px 38px rgba(2,4,18,.55), inset 0 1px 0 rgba(255,255,255,.14);" +
     " min-width:0; overflow:hidden; padding:13px; }" +
     ".card .label { color:var(--muted); display:block; font-size:.6rem; font-weight:800;" +
@@ -4524,12 +4554,12 @@ function getDashboardCss_() {
     " font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }" +
     ".card .sub { display:block; margin-top:4px; color:var(--muted); font-size:.72rem; font-weight:500; }" +
     ".card .value.pos { color:var(--achieved); } .card .value.neg { color:var(--danger); }" +
-    ".card-unclaimed { background:rgba(28,43,82,.98); }" +
+    ".card-unclaimed { background:rgba(28,43,82,.60); }" +
     ".card-unclaimed .value { color:var(--white); }" +
     // ---- Section 1 store tiles: 1:1 port of the old page's kpi-card pieces ----
     ".rgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,225px),1fr)); gap:10px; }" +
     ".rtile { padding:11px; }" +
-    ".rtile.done { background:rgba(28,43,82,.98); }" +
+    ".rtile.done { background:rgba(28,43,82,.60); }" +
     ".rt-head { align-items:center; display:flex; gap:6px; justify-content:space-between; margin-bottom:8px; min-width:0; }" +
     ".rt-head h3 { color:#fff; font-size:.88rem; font-weight:850; letter-spacing:-.015em; margin:0;" +
     " min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }" +
@@ -4588,7 +4618,7 @@ function getDashboardCss_() {
     " background:#1c2b52 !important; }" +
     "table.hdr-deep tr.total-row td { background:#101a38 !important; border-top:2px solid rgba(120,150,255,.45); }" +
     "table { width:100%; border-collapse:separate; border-spacing:0; font-size:.8rem;" +
-    " background:rgba(28,43,82,.98); border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
+    " background:rgba(28,43,82,.60); border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
     " box-shadow:0 10px 26px rgba(8,12,48,.38), 0 2px 10px rgba(76,111,255,.14); }" +
     "th { text-align:right; background:#1c2b52; color:#ffffff;" +
     " font-size:.68rem; font-weight:800; text-shadow:0 1px 2px rgba(12,20,70,.65);" +
@@ -4615,11 +4645,6 @@ function getDashboardCss_() {
     ".rs-item { display:flex; flex-direction:column; gap:2px; }" +
     ".rs-label { font-size:12px; color:#5b6675; font-weight:600; }" +
     ".rs-value { font-size:20px; font-weight:800; color:#17263a; }" +
-    ".csat-flex { display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap; }" +
-    ".csat-flex .csat-left { flex:0 0 auto; max-width:100%; }" +
-    ".csat-flex table.csat-table { width:auto; min-width:0; }" +
-    ".csat-flex .csat-right { flex:0 0 230px; width:230px; min-width:230px; max-width:230px; display:flex; flex-direction:column; gap:10px; }" +
-    ".csat-right .csat-chip { flex:0 0 auto; width:100%; }" +
     ".csat-chips { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:12px; }" +
     ".csat-chip { flex:1 1 150px; background:#fff; border:1px solid #d5dde6; border-radius:10px;" +
     " padding:10px 14px; display:flex; flex-direction:column; gap:2px; box-shadow:0 2px 6px rgba(15,23,42,.06); }" +
@@ -4642,7 +4667,7 @@ function getDashboardCss_() {
     "table.csat-table td.num { font-variant-numeric:tabular-nums; text-align:center; }" +
     ".csat-table .totrow td { background:#101a38 !important; color:#ffffff; font-weight:800; border-top:1px solid rgba(142,170,255,.6); }" +
     ".csat-pos { color:#52e9ac; font-weight:700; } .csat-neg { color:#ff8f9d; font-weight:700; } .csat-mid { color:#ffd477; font-weight:600; }" +
-    "table.vmatrix { width:100%; border-collapse:collapse; background:rgba(28,43,82,.98);" +
+    "table.vmatrix { width:100%; border-collapse:collapse; background:rgba(28,43,82,.60);" +
     " border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
     " box-shadow:0 10px 26px rgba(8,12,48,.38), 0 2px 10px rgba(76,111,255,.14); }" +
     "table.vmatrix th, table.vmatrix td { padding:8px 12px; border-bottom:1px solid rgba(105,132,255,.16); font-size:.85rem; }" +
@@ -4672,7 +4697,7 @@ function getDashboardCss_() {
     ".scroll-x { overflow-x:auto; border-radius:11px; }" +
     // Performance-page tile row: one navy card per bucket, fits any width.
     ".tile-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr)); gap:10px; margin-bottom:14px; }" +
-    ".tile { background:rgba(28,43,82,.98);" +
+    ".tile { background:rgba(28,43,82,.60);" +
     " border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 20px rgba(0,0,0,.18);" +
     " min-width:0; overflow:hidden; padding:13px; }" +
     ".tile .label { color:var(--muted); display:block; font-size:.6rem; font-weight:800;" +
@@ -4688,8 +4713,8 @@ function getDashboardCss_() {
     ".foot { text-align:center; color:#64748b; font-size:.74rem; padding:14px 0 26px; font-weight:500; }" +
     // ---- incentive gate notes inside person cards ----
     ".gate { margin-top:10px; padding:9px 11px; border-radius:8px; font-size:.78rem; line-height:1.45; }" +
-    ".gate.met { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.35); color:#cfe0ff; }" +
-    ".gate.blocked { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.35); color:#cfe0ff; }" +
+    ".gate.met { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.35); color:#cfe0ff; }" +
+    ".gate.blocked { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.35); color:#cfe0ff; }" +
     ".incentive-line { display:flex; justify-content:space-between; font-size:.78rem; margin-top:6px;" +
     " color:var(--white); font-variant-numeric:tabular-nums; padding-bottom:5px;" +
     " border-bottom:1px solid rgba(58,85,117,.45); }" +
@@ -4761,7 +4786,7 @@ function getDashboardCss_() {
 
     // dark tables inside the process page (jobs / tokens), matching the old date-report
     ".ptable { border-collapse:separate; border-spacing:0; width:100%; font-size:.8rem;" +
-    " background:rgba(28,43,82,.98); border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
+    " background:rgba(28,43,82,.60); border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
     " box-shadow:0 10px 26px rgba(8,12,48,.38), 0 2px 10px rgba(76,111,255,.14); }" +
     ".ptable th, .ptable td { text-align:left; padding:8px 11px; border-bottom:1px solid rgba(105,132,255,.16);" +
     " vertical-align:top; white-space:nowrap; font-weight:400; color:#e9edff; }" +
@@ -4807,9 +4832,9 @@ function getDashboardCss_() {
     ".tokentable .totrow td { background:#101a38 !important; color:#ffffff; font-weight:900; border-top:1px solid rgba(142,170,255,.6); }" +
     ".age-warn { color:var(--balance); font-weight:600; }" +
     ".age-crit { color:var(--danger); font-weight:700; }" +
-    ".subnote { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.32); border-radius:8px; padding:9px 12px;" +
+    ".subnote { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.32); border-radius:8px; padding:9px 12px;" +
     " font-size:.78rem; color:#6b5410; margin-bottom:12px; font-weight:500; }" +
-    ".empty-perf { background:rgba(28,43,82,.98); border:1px dashed rgba(170,190,255,.4); border-radius:9px; padding:22px; color:#a9b6d8;" +
+    ".empty-perf { background:rgba(28,43,82,.60); border:1px dashed rgba(170,190,255,.4); border-radius:9px; padding:22px; color:#a9b6d8;" +
     " text-align:center; font-size:.82rem; color:#64748b; font-weight:500; }" +
     // Task 34 — one distinguishable colour per owner-named repair bucket.
     ".grphead.bk-estimate td { background:linear-gradient(180deg,#f6a21c 0%,#c97a08 55%,#a25f06 100%) !important; }" +
@@ -4923,7 +4948,7 @@ function getDashboardCss_() {
     ".tile-go { position:absolute; left:14px; bottom:11px; font-size:.7rem; font-weight:800; color:#3f5ce0; }" +
     ".glass-tile:hover .tile-go { color:#1d2f63; }" +
     // --- pie under each group title ---
-    ".gpie-wrap { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.32); border-radius:14px;" +
+    ".gpie-wrap { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.32); border-radius:14px;" +
     " padding:10px; box-shadow:0 6px 16px rgba(40,60,120,.12), inset 0 1px 0 rgba(255,255,255,.8); }" +
     ".gpie-title { font-size:.7rem; font-weight:800; color:#c9d4f5; text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px; }" +
     ".gpie-body { display:flex; align-items:center; gap:10px; }" +
@@ -4940,7 +4965,7 @@ function getDashboardCss_() {
     " border:1px solid rgba(255,255,255,.7); box-shadow:0 6px 16px rgba(40,60,120,.10); }" +
     ".fresh-line-head { font-size:.66rem; font-weight:850; color:#5a6a99; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }" +
     ".fresh-row { display:flex; flex-wrap:wrap; gap:8px; }" +
-    ".fresh-chip { display:inline-flex; align-items:center; gap:6px; background:rgba(28,43,82,.98);" +
+    ".fresh-chip { display:inline-flex; align-items:center; gap:6px; background:rgba(28,43,82,.60);" +
     " border:1px solid rgba(150,170,255,.4); border-radius:999px; padding:4px 12px; font-size:.68rem; }" +
     ".fresh-stamp { border-color:rgba(255,211,77,.55) !important; }" +
     ".fresh-stamp i, #pageIndex .fresh-stamp i { color:#ffd34d !important; }" +
@@ -4954,7 +4979,7 @@ function getDashboardCss_() {
     ".bgnd-video { position:absolute; z-index:0; inset:0; width:100%; height:100%; object-fit:cover;" +
     " opacity:.8; pointer-events:none; }" +
     "#pageIndex .index-hero h2 { color:#f5f8ff; text-shadow:0 2px 10px rgba(3,6,24,.7); }" +
-    "#pageIndex .tile-board { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.28);" +
+    "#pageIndex .tile-board { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.28);" +
     " backdrop-filter:blur(10px) saturate(1.2); -webkit-backdrop-filter:blur(10px) saturate(1.2);" +
     " box-shadow:0 16px 40px rgba(2,5,24,.55), inset 0 1px 0 rgba(255,255,255,.14); }" +
     "#pageIndex .tile-group-head, #pageIndex .tile-group-link { color:#e6ecff; }" +
@@ -4965,11 +4990,11 @@ function getDashboardCss_() {
     ".glass-tile:hover .tile-glitter-vid, .glass-tile:focus-visible .tile-glitter-vid { opacity:.62; }" +
     ".glass-tile .tile-data, .glass-tile .tile-go { z-index:1; }" +
     // index-side group charts & freshness strip on the dark backdrop
-    "#pageIndex .gpie-wrap { background:rgba(28,43,82,.98); }" +
-    "#pageIndex .fresh-line { background:rgba(28,43,82,.98); border-color:rgba(170,190,255,.28);" +
+    "#pageIndex .gpie-wrap { background:rgba(28,43,82,.60); }" +
+    "#pageIndex .fresh-line { background:rgba(28,43,82,.60); border-color:rgba(170,190,255,.28);" +
     " backdrop-filter:blur(10px); }" +
     "#pageIndex .fresh-line-head { color:#aebcff; }" +
-    "#pageIndex .fresh-chip { background:rgba(28,43,82,.98); border-color:rgba(170,190,255,.28); }" +
+    "#pageIndex .fresh-chip { background:rgba(28,43,82,.60); border-color:rgba(170,190,255,.28); }" +
     "#pageIndex .fresh-chip i { color:#aebcff; } #pageIndex .fresh-chip b { color:#ffffff; }" +
     // ---- horizontal bar chart under each group title ----
     ".gbar-group { display:flex; flex-direction:column; gap:5px; }" +
@@ -4982,7 +5007,7 @@ function getDashboardCss_() {
     " box-shadow:0 0 8px rgba(80,120,255,.45), inset 0 -1px 2px rgba(0,0,0,.25), inset 0 1px 1px rgba(255,255,255,.5); }" +
     ".gbar-val { width:56px; flex-shrink:0; text-align:right; font-size:.72rem; font-weight:850; color:#ffffff; }" +
     // ---- liquid-glass material for every table & tile (owner's dribbble ref) ----
-    "table { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.32);" +
+    "table { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.32);" +
     " backdrop-filter:blur(12px) saturate(1.2); -webkit-backdrop-filter:blur(12px) saturate(1.2);" +
     " box-shadow:0 18px 44px rgba(2,4,18,.6), 0 3px 12px rgba(2,4,18,.5), inset 0 1px 0 rgba(255,255,255,.14); }" +
     "td { background:rgba(34,43,90,.92); }" +
@@ -5042,15 +5067,15 @@ function getDashboardCss_() {
     ".tab-btn { color:#c3cfee; }" +
     ".tab-btn.active { background:linear-gradient(180deg,#ffffff,#dfe8ff); color:#1b2a52; box-shadow:0 4px 12px rgba(4,8,26,.5); }" +
     // dark liquid-glass shells for every section on every page
-    ".sec { background:rgba(28,43,82,.98); border-color:rgba(170,190,255,.28);" +
+    ".sec { background:rgba(28,43,82,.60); border-color:rgba(170,190,255,.28);" +
     " backdrop-filter:blur(12px) saturate(1.15); -webkit-backdrop-filter:blur(12px) saturate(1.15);" +
     " box-shadow:0 14px 34px rgba(4,8,26,.5), inset 0 1px 0 rgba(255,255,255,.10); }" +
-    ".duo-pair > .section { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.28);" +
+    ".duo-pair > .section { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.28);" +
     " backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); }" +
     ".section h2, .sec h2, .section-title { color:#f2f6ff; }" +
     ".sec-sub, .section-sub, .sec-desc { color:#a9b6d8; }" +
     ".src-hint { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
-    ".repair-strip { background:rgba(28,43,82,.98); border-color:rgba(170,190,255,.28); }" +
+    ".repair-strip { background:rgba(28,43,82,.60); border-color:rgba(170,190,255,.28); }" +
     ".rs-label { color:#a9b6d8; } .rs-value { color:#ffffff; }" +
     ".inc-cat-title { color:#cfe0ff; }" +
     ".wp-head { color:#f2f6ff; }" +
@@ -5063,7 +5088,7 @@ function getDashboardCss_() {
     ".walkin-pair .wp-left, .walkin-pair .wp-right { min-width:0; }" +
     // Task 37: three panes side by side — analysis | source | tokens.
     ".walkin-pair { grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr); }" +
-    ".walkin-pair .wp-mid { min-width:0; background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.18);" +
+    ".walkin-pair .wp-mid { min-width:0; background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.18);" +
     " border-radius:12px; padding:12px; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }" +
     ".srcstable thead th { white-space:normal; }" +
     ".srcstable td { white-space:normal; word-break:break-word; }" +
@@ -5072,7 +5097,7 @@ function getDashboardCss_() {
     ".walkin-pair table.walksum, .walkin-pair table.tokentable, .walkin-pair table.srcstable { width:100%; table-layout:fixed; }" +
     ".walkin-pair table th, .walkin-pair table td { white-space:normal; word-break:break-word; }" +
     "@media (max-width:1150px) { .walkin-pair { grid-template-columns:minmax(0,1fr); } }" +
-    ".walkin-pair .wp-right { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.18);" +
+    ".walkin-pair .wp-right { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.18);" +
     " border-radius:12px; padding:12px; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }" +
     // job table: entirely left-aligned
     ".jobtable th, .jobtable td { text-align:left; }" +
@@ -5110,32 +5135,32 @@ function getDashboardCss_() {
     // Deck page: the eight tables as four side-by-side pairs.
     ".deck-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:stretch; margin-bottom:16px; }" +
     ".deck-pair > .section { margin-bottom:0; height:100%; }" +
-    // Case badges stacked under the Case ID (saves horizontal space).
-    ".casebadges { display:flex; flex-direction:column; align-items:flex-start; gap:3px; margin-top:3px; }" +
-    ".casebadges > span { display:inline-block; }" +
     "@media (max-width:1100px) { .deck-pair, .ops-pair { grid-template-columns:minmax(0,1fr); } }" +
+    // Task 40 — date-wise table: bigger tiles, high-contrast text and the
+    // alternating light/dark salesperson shades (sp-a = light, sp-b = dark).
+    "#dwTable { font-size:.95rem; }" +
+    "#dwTable th, #dwTable td { padding:10px 12px; }" +
+    "#dwTable .apill { font-size:1rem; padding:4px 11px; }" +
+    "#dwTable td .tgt { font-size:.72rem; color:#c3d0fa; }" +
+    "#dwTable th.grp.sp-a { background:rgba(72,103,205,.62); color:#ffffff; }" +
+    "#dwTable th.grp.sp-b { background:rgba(16,26,70,.85); color:#e5ecff; }" +
+    "#dwTable td.sp-a { background:rgba(96,128,235,.16); }" +
+    "#dwTable td.sp-b { background:rgba(10,16,44,.34); }" +
+    "#sec-datewise .legend-card.sp-a { border-left:4px solid rgba(126,156,255,.85); }" +
+    "#sec-datewise .legend-card.sp-b { border-left:4px solid rgba(52,74,170,.95); }" +
+    "#sec-datewise .card .value { font-size:1.55rem; color:#ffffff; }" +
+    "#sec-datewise .card .label { color:#b9c6f2; }" +
 
-    // Task 35: satisfaction table hugs the left; chips move to its right.
-    ".csat-flex { flex-direction:row; align-items:flex-start; flex-wrap:wrap; }" +
-    ".csat-flex .csat-left { flex:0 0 auto; max-width:100%; }" +
-    ".csat-flex table.csat-table { width:auto; min-width:0; }" +
-    ".csat-flex .csat-right { flex:0 0 240px; width:240px; min-width:200px; max-width:260px;" +
-    " flex-direction:column; gap:10px; }" +
-    // Task 36-B: fill the right column to the table height with compact chips.
-".csat-right { align-self:stretch; justify-content:space-between; gap:6px; }" +
-".csat-right .csat-chip { flex:1 1 0; padding:6px 10px; }" +
-".csat-right .cc-label { font-size:9.5px; }" +
-".csat-right .cc-value { font-size:1.05rem; line-height:1.15; }" +
-".csat-right .cc-sub { font-size:10px; }" +
-    // Task 37: the table fills the lane left of the chips — no overflow, no scroll.
-    ".csat-flex .csat-left { flex:1 1 0; min-width:0; }" +
-    ".csat-flex .csat-left table.csat-table { width:100%; table-layout:fixed; }" +
-    ".csat-flex .csat-left table.csat-table th, .csat-flex .csat-left table.csat-table td {" +
+    // Task 40: satisfaction table takes the full width; the chips become one
+    // wrapped horizontal band underneath it (was a narrow right column).
+    ".csat-left table.csat-table { width:100%; table-layout:fixed; }" +
+    ".csat-left table.csat-table th, .csat-left table.csat-table td {" +
     " white-space:normal; overflow:hidden; text-overflow:clip; word-break:break-word; padding:7px 7px; }" +
-    ".csat-flex .csat-left table.csat-table thead th { font-size:.62rem; letter-spacing:.03em; }" +
-    ".csat-right .csat-chip { flex:0 0 auto; width:100%; max-width:100%; }" +
+    ".csat-left table.csat-table thead th { font-size:.62rem; letter-spacing:.03em; }" +
+    ".csat-brow { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; }" +
+    ".csat-brow .csat-chip { flex:1 1 170px; width:auto; max-width:100%; }" +
     // ---- index tiles: lighter glass, brighter luminous fonts ----
-    ".glass-tile { background:rgba(28,43,82,.98);" +
+    ".glass-tile { background:rgba(28,43,82,.60);" +
     " border:1px solid rgba(255,255,255,.55); color:#f4f8ff; opacity:1; isolation:isolate;" +
     " box-shadow:0 10px 28px rgba(3,7,26,.5), inset 0 1px 0 rgba(255,255,255,.6), inset 0 -10px 18px rgba(255,255,255,.06); }" +
     ".tile-title { color:#ffffff; text-shadow:0 2px 8px rgba(4,8,26,.85); }" +
@@ -5173,7 +5198,7 @@ function getDashboardCss_() {
     ".wp-daytable .scroll-x { width:100%; }" +
     ".wp-daytable .walkintable { width:100%; }" +
     // C-SAT chips: soften the glare — slightly grey-shaded instead of pure white.
-    ".csat-chip { background:rgba(28,43,82,.98); border-color:rgba(170,190,255,.32); box-shadow:0 2px 8px rgba(10,20,50,.18); }" +
+    ".csat-chip { background:rgba(28,43,82,.60); border-color:rgba(170,190,255,.32); box-shadow:0 2px 8px rgba(10,20,50,.18); }" +
     // Job management: force every cell left (beats .ptable td.num), and bucket
     // bands sweep from sky blue down to deep navy.
     ".jobtable th, .jobtable td { text-align:left !important; }" +
@@ -5409,35 +5434,41 @@ function renderIncentiveTable_(data) {
     amcTot.cnt += a.amcCount; amcTot.elig += a.amcEligible;
     amcTot.accCnt += a.accessoryCount; amcTot.accElig += a.accessoryEligible;
     amcTot.inc += a.projectedIncentive;
+    // Task 40: the Acc-AMC cell must answer "how many more to close the next
+    // slab" (slab card at target!A29:F33), not just restate the raw count.
     return "<tr><td>" + esc_(a.name) + "</td><td>" + a.amcCount + "</td><td>" + money_(a.amcEligible) +
-      "</td><td>" + a.accessoryCount + "</td><td>" + money_(a.accessoryEligible) + "</td><td>" +
+      "</td><td>" + (a.accessoryNextSlab ? a.accessoryRemaining + " more (slab " + a.accessoryNextSlab.accCount + ")" : "top slab") +
+      "</td><td>" + money_(a.accessoryEligible) + "</td><td>" +
       (a.amcNextSlab ? a.amcRemaining + " more" : "top slab") + '</td><td class="pos">' + money_(a.projectedIncentive) +
       "</td></tr>";
   }).join("");
   var amcFoot = '<tr class="total-row"><td>All salespersons</td><td>' + amcTot.cnt + "</td><td>" +
-    money_(amcTot.elig) + "</td><td>" + amcTot.accCnt + "</td><td>" + money_(amcTot.accElig) +
+    money_(amcTot.elig) + "</td><td></td><td>" + money_(amcTot.accElig) +
     "<td></td>" + '<td class="pos">' + money_(amcTot.inc) + "</td></tr>";
 
   // ---- Category 2: Bundle (DISC scheme) ----
   var bunTot = { cnt: 0, inc: 0 };
+  // Task 40: bundle rows also carry the gap to the next slab (minimum
+  // incentive tier) — the owner wants the count needed, not just the count.
   var bunRows = data.amc.map(function (a) {
     var b = bundleByKey[a.key] || { count: 0, projectedIncentive: 0 };
     bunTot.cnt += b.count; bunTot.inc += b.projectedIncentive;
-    return "<tr><td>" + esc_(a.name) + "</td><td>" + b.count + '</td><td class="pos">' +
-      money_(b.projectedIncentive) + "</td></tr>";
+    return "<tr><td>" + esc_(a.name) + "</td><td>" + b.count + "</td><td>" +
+      (b.nextSlab ? b.remaining + " more (slab " + b.nextSlab.min + ")" : "top slab") +
+      '</td><td class="pos">' + money_(b.projectedIncentive) + "</td></tr>";
   }).join("");
   var bunFoot = '<tr class="total-row"><td>All salespersons</td><td>' + bunTot.cnt +
-    '</td><td class="pos">' + money_(bunTot.inc) + "</td></tr>";
+    '</td><td></td><td class="pos">' + money_(bunTot.inc) + "</td></tr>";
 
   return (
     '<section class="section" id="sec-incentive"><h2>💰 Sales Person Incentive — AMC &amp; Bundle</h2><div class="body">' +
     '<div class="inc-pair">' +
     '<div class="inc-cat"><div class="inc-cat-title">Category 1 · AMC</div>' +
     '<div class="scroll-x"><table><thead><tr><th>Salesperson</th><th>AMC Count</th><th>AMC Eligible</th>' +
-    "<th>Acc-AMC Count</th><th>Acc-AMC Eligible</th><th>AMC To Next</th><th>AMC Incentive</th></tr></thead><tbody>" +
+    "<th>Need To Close Next Slab</th><th>Acc-AMC Eligible</th><th>AMC To Next</th><th>AMC Incentive</th></tr></thead><tbody>" +
     amcRows + amcFoot + "</tbody></table></div></div>" +
     '<div class="inc-cat"><div class="inc-cat-title">Category 2 · Bundle (DISC scheme)</div>' +
-    '<div class="scroll-x"><table><thead><tr><th>Salesperson</th><th>Bundle Count</th><th>Bundle Incentive</th></tr></thead><tbody>' +
+    '<div class="scroll-x"><table><thead><tr><th>Salesperson</th><th>Bundle Count</th><th>Bundle To Next</th><th>Bundle Incentive</th></tr></thead><tbody>' +
     bunRows + bunFoot + "</tbody></table></div></div></div>" +
     "</div></section>"
   );
@@ -5734,10 +5765,13 @@ function renderDateWiseTable_(data) {
   // ---- header: two banded rows, one per salesperson group ----
   var head1 = '<tr><th rowspan="2" class="sticky-col">Date</th>';
   var head2 = "<tr>";
+  // Task 40: every salesperson block alternates between a light and a dark
+  // shade (sp-a / sp-b) so neighbouring people are visually separated.
   people.forEach(function (p, i) {
-    head1 += '<th colspan="' + TYPES.length + '" class="grp grp-' + (i % 5) + '">' + esc_(p.name) + "</th>";
+    var sp = " sp-" + (i % 2 ? "b" : "a");
+    head1 += '<th colspan="' + TYPES.length + '" class="grp grp-' + (i % 5) + sp + '">' + esc_(p.name) + "</th>";
     TYPES.forEach(function (pair) {
-      head2 += '<th class="grp grp-' + (i % 5) + '">' + esc_(pair[1]) + "</th>";
+      head2 += '<th class="grp grp-' + (i % 5) + sp + '">' + esc_(pair[1]) + "</th>";
     });
   });
   head1 += "</tr>";
@@ -5776,7 +5810,7 @@ function renderDateWiseTable_(data) {
         var figure = tgt > 0
           ? '<span class="apill ' + (achieved >= tgt ? "ok" : "no") + '">' + money_(achieved) + "</span>"
           : '<span class="muted">' + money_(achieved) + "</span>";
-        tr += '<td class="cell-' + (i % 5) + '">' + figure +
+        tr += '<td class="cell-' + (i % 5) + (i % 2 ? " sp-b" : " sp-a") + '">' + figure +
           '<span class="tgt">/ ' + money_(tgt) + "</span></td>";
       });
     });
@@ -5793,7 +5827,7 @@ function renderDateWiseTable_(data) {
   people.forEach(function (p, i) {
     TYPES.forEach(function (pair) {
       var tk = pair[0];
-      foot += '<td class="cell-' + (i % 5) + '">' + money_(p[tk].achieved) +
+      foot += '<td class="cell-' + (i % 5) + (i % 2 ? " sp-b" : " sp-a") + '">' + money_(p[tk].achieved) +
         '<span class="tgt">/ ' + money_(p[tk].target) + "</span></td>";
     });
   });
@@ -5801,7 +5835,7 @@ function renderDateWiseTable_(data) {
 
   // ---- per-person daily target legend ----
   var legend = people.map(function (p, i) {
-    return '<div class="legend-card cell-' + (i % 5) + '">' +
+    return '<div class="legend-card cell-' + (i % 5) + (i % 2 ? " sp-b" : " sp-a") + '">' +
       "<b>" + esc_(p.name) + '</b> <span class="muted">daily targets</span><br>' +
       TYPES.map(function (pair) {
         return esc_(pair[1]) + " " + money_(p.dailyTargets[pair[0]]);

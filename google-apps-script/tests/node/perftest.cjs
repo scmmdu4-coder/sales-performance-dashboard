@@ -123,17 +123,18 @@ var cm=[["CaseId","CreatedDate","Remark"],
 // ---- service ----
 var sv=[["CaseId","FirstName","LastName","MobileNo","ProductDescription","CaseDate",
  "RepairCreatedDate","JobAge","Status","DeliveredDate","GSXRepairStatusDescription","CRM_JobStatusDesc",
- "CoverageCodeDescription","RepairDocType","Ready_For_Pickup_Date_CRM","GSXCode","SerialNo1","PartDescription"],
+ "CoverageCodeDescription","RepairDocType","Ready_For_Pickup_Date_CRM","GSXCode","SerialNo1","PartDescription",
+ "IssueDescription","ProductWarrantyDesc"],
  // duplicate of C1003 with an OLDER case date placed BEFORE the real row —
  // the merger must keep the later (real) row instead.
- ["C1003","Mani","Kandan","919876543212","Different Phone",daysAgoStr(5,"10"),"",5,"Open","","Diagnosis In Progress","","In Warranty","Walk-In Repair","","GSX6003-OLD","SN-OLD",""],
- ["C1001","Ravi","Kumar","919876543210","iPhone 13",daysAgoStr(14,"10"),daysAgoStr(13,"11"),14,"Open","","Repair Complete","Original Display Used","In Warranty","Walk-In Repair",daysAgoStr(12,"10"),"GSX6001","SN-C1001","Battery"],
- ["C1002","Anita","Devi","919876543211","Samsung S23",daysAgoStr(4,"09"),daysAgoStr(3,"14"),4,"Open","","Unclaimed Device","Part Used","Out of Warranty","Carry-In Repair",daysAgoStr(1,"12"),"GSX6002","SN-C1002",""],
- ["C1003","Mani","Kandan","919876543212","OnePlus 11",daysAgoStr(2,"10"),"",2,"Open","","Diagnosis In Progress","Device Unclaimed Device due","Out Of Warranty (No Coverage)","Walk-In Repair","","GSX6003","SN-C1003",""],
- ["C1004","Peela","Dass","919876543217","Realme 12",daysAgoStr(1,"08"),"",1,"Open","","Repair In Progress","Ready For Pickup","In Warranty","Service Non-Repair","","GSX6004","SN-C1004",""],
- ["C1005","Old","Closed","919876543218","Pixel 7",daysAgoStr(55,"09"),daysAgoStr(54,"10"),55,"Delivered",daysAgoStr(50,"10"),"Repair Complete","Part Used","In Warranty","Carry-In Repair",daysAgoStr(50,"10"),"GSX6005","SN-C1005",""],
- ["C1006","Age","Fallback","919876543219","Moto G",daysAgoStr(20,"09"),"","","Open","","Waiting for Part","","Out Of Warranty (No Coverage)","Walk-In Repair","","GSX6006","SN-C1006",""],
- ["C1007","Can","Cell","919876543220","Nokia",daysAgoStr(2,"09"),"",2,"Cancelled","","Aborted","","In Warranty","Carry-In Repair","","GSX6007","SN-C1007",""]];
+ ["C1003","Mani","Kandan","919876543212","Different Phone",daysAgoStr(5,"10"),"",5,"Open","","Diagnosis In Progress","","In Warranty","Walk-In Repair","","GSX6003-OLD","SN-OLD","","","Out Of Warranty (No Coverage)"],
+ ["C1001","Ravi","Kumar","919876543210","iPhone 13",daysAgoStr(14,"10"),daysAgoStr(13,"11"),14,"Open","","Repair Complete","Original Display Used","In Warranty","Walk-In Repair",daysAgoStr(12,"10"),"GSX6001","SN-C1001","Battery","Weak battery backup","Product Warranty"],
+ ["C1002","Anita","Devi","919876543211","Samsung S23",daysAgoStr(4,"09"),daysAgoStr(3,"14"),4,"Open","","Unclaimed Device","Part Used","Out of Warranty","Carry-In Repair",daysAgoStr(1,"12"),"GSX6002","SN-C1002","","Cracked display glass","Out Of Warranty (No Coverage)"],
+ ["C1003","Mani","Kandan","919876543212","OnePlus 11",daysAgoStr(2,"10"),"",2,"Open","","Diagnosis In Progress","Device Unclaimed Device due","Out Of Warranty (No Coverage)","Walk-In Repair","","GSX6003","SN-C1003","","","Out Of Warranty (No Coverage)"],
+ ["C1004","Peela","Dass","919876543217","Realme 12",daysAgoStr(1,"08"),"",1,"Open","","Repair In Progress","Ready For Pickup","In Warranty","Service Non-Repair","","GSX6004","SN-C1004","","","Product Warranty"],
+ ["C1005","Old","Closed","919876543218","Pixel 7",daysAgoStr(55,"09"),daysAgoStr(54,"10"),55,"Delivered",daysAgoStr(50,"10"),"Repair Complete","Part Used","In Warranty","Carry-In Repair",daysAgoStr(50,"10"),"GSX6005","SN-C1005","","","Product Warranty"],
+ ["C1006","Age","Fallback","919876543219","Moto G",daysAgoStr(20,"09"),"","","Open","","Waiting for Part","","Out Of Warranty (No Coverage)","Walk-In Repair","","GSX6006","SN-C1006","","","Out Of Warranty (No Coverage)"],
+ ["C1007","Can","Cell","919876543220","Nokia",daysAgoStr(2,"09"),"",2,"Cancelled","","Aborted","","In Warranty","Carry-In Repair","","GSX6007","SN-C1007","","","Product Warranty"]];
 // ---- advance ----
 var av=[["MobileNo","AvailableBalance"],["919876543210",500],["919876543210",200],["919876543217",350],["919876543219",999]];
 
@@ -260,9 +261,9 @@ check("index tiles render",page.indexOf("glass-tile")>-1&&page.indexOf("Store Ta
   &&page.indexOf("Date-wise Sales Revenue Analysis")>-1);
 check("tile gotoPage hook",page.indexOf("gotoPage('gp'")>-1&&page.indexOf("gotoPage('date'")>-1);
 check("tab slider row",page.indexOf('class="tabs-row"')>-1);
-check("fonts bumped globally",page.indexOf("font-size:18px")>-1);
+check("fonts bumped globally",page.indexOf("html { font-size:20.7px")>-1);
 check("DISC/AMC notes hidden",page.indexOf("starts with DISC")===-1&&page.indexOf("SubCategory contains AMC")===-1);
-check("date-wise GP column",page.indexOf('class="grp grp-0">Gross Profit</th>')>-1);
+check("date-wise GP column",page.indexOf('class="grp grp-0 sp-a">Gross Profit</th>')>-1);
 check("legend shows GP daily target",page.indexOf("Gross Profit "+"₹"+subha.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
 check("GP daily target in legend for Dinesh",page.indexOf("Gross Profit "+"₹"+dinesh.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
 check("job table 11-col owner order (Task 38: CRM Status column removed)",page.indexOf(
@@ -406,7 +407,8 @@ check("incentive split categories", page.indexOf("Category 1 · AMC")>-1
   &&page.indexOf("Category 2 · Bundle (DISC scheme)")>-1);
 check("incentive totals rows", (page.match(/All salespersons/g)||[]).length===2);
 check("deep header applied", (page.match(/hdr-deep/g)||[]).length>=3&&page.indexOf('class="hdr-deep"')>-1);
-check("csat flex", page.indexOf("csat-flex")>-1&&page.indexOf("csat-right")>-1);
+check("csat chips below table, no side lane (Task 40)", page.indexOf("csat-brow")>-1
+  &&page.indexOf("csat-flex")===-1&&page.indexOf("csat-right")===-1);
 check("liquid glass css", page.indexOf("backdrop-filter:blur(14px)")>-1&&page.indexOf("tile-sparkle")>-1);
 check("glitter animation", page.indexOf("tileTwinkle")>-1);
 check("bar graph per group", (page.match(/class="gbar-row"/g)||[]).length>=12,
@@ -448,8 +450,8 @@ check("repair type renders N-repair", page.indexOf("<td>N-repair</td>")>-1);
 check("repairTypeShort_ mappings", repairTypeShort_("Service Non-Repair")==="N-repair"
   &&repairTypeShort_("Whole Unit Mail-In Return to Service Location")==="mail-in"
   &&repairTypeShort_("Walk-In Repair")==="Walk-In Repair");
-check("case badges stacked under the case id", page.indexOf('class="casebadges"')>-1
-  &&page.indexOf(".casebadges { display:flex; flex-direction:column")>-1);
+check("case badge subtitles under the case id removed (Task 40)", page.indexOf("casebadges")===-1
+  &&page.indexOf("⚠ Unclaimed</span>")===-1&&page.indexOf("OOW · no advance")===-1);
 check("deck: 8 tables as 4 side-by-side pairs",
   (page.match(/class="deck-pair"/g)||[]).length===4
   &&page.indexOf(".deck-pair { display:grid")>-1);
@@ -459,24 +461,23 @@ check("person band colours removed: one table color set (Task 31)",
   &&page.indexOf("#7a3fd4")===-1&&page.indexOf("#c04a68")===-1
   &&page.indexOf("td.cell-0")===-1&&page.indexOf("th.grp-3")===-1);
 check("liquid glass material on tables", page.indexOf("backdrop-filter:blur(12px) saturate(1.2)")>-1);
-check("csat table-left / chips-right (Task 35)", page.indexOf(".csat-flex { flex-direction:column")===-1
-  &&page.indexOf(".csat-flex { flex-direction:row")>-1
-  &&page.indexOf(".csat-flex table.csat-table { width:auto; min-width:0")>-1
-  &&page.indexOf(".csat-flex .csat-right { flex:0 0 240px")>-1);
+check("csat chips horizontal under table (Task 40)", page.indexOf(".csat-brow { display:flex; flex-wrap:wrap")>-1
+  &&page.indexOf('</table></div><div class="csat-brow">')>-1
+  &&page.indexOf(".csat-brow .csat-chip { flex:1 1 170px")>-1);
 check("next-slab balance lines", (page.match(/class="next-slab"/g)||[]).length>=1||page.indexOf("top slab reached")>-1);
 check("subha next svc slab ₹1,22,800 (71% tier, Task 33)", subha.nextSvcSlab && subha.nextSvcSlab.need===122800, subha.nextSvcSlab && subha.nextSvcSlab.need);
 check("subha next acc slab 51% tier (Task 33)", subha.nextAccSlab && subha.nextAccSlab.pct===51
   &&subha.nextAccSlab.need===Math.ceil(0.51*90000)-900, subha.nextAccSlab);
 
 console.log("== TASK 22 batch ==");
-check("tile glass flat navy + fonts brighter", page.indexOf("background:rgba(28,43,82,.98)")>-1
+check("tile glass flat navy + fonts brighter", page.indexOf("background:rgba(28,43,82,.60)")>-1
   &&page.indexOf(".tile-title { color:#ffffff")>-1);
 check("glitter video fits tile outline", page.indexOf(".tile-glitter-vid { inset:0; border-radius:18px")>-1);
 check("token creation locked side-by-side", page.indexOf(".walkin-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr)")>-1);
 check("job table left aligned", page.indexOf(".jobtable th, .jobtable td { text-align:left")>-1);
 check("advance paid tile removed", page.indexOf('class="label">Advance Paid</div>')===-1);
 check("advance totals still computed", j.totals.advanceTotal===2049);
-check("section shells use the one navy surface (Task 31)", page.indexOf(".sec { background:rgba(28,43,82,.98)")>-1);
+check("section shells use the one navy surface (Task 31)", page.indexOf(".sec { background:rgba(28,43,82,.60)")>-1);
 check("dark topbar", page.indexOf(".topbar { background:rgba(8,12,32,.78)")>-1);
 
 console.log("== TASK 23 batch ==");
@@ -504,16 +505,16 @@ check("source pivot numbers",
 check("source total row", page.indexOf("Total walk-ins</b></td><td class=\"num\"><b>7</b></td><td class=\"num\"><b>100%</b></td>")>-1);
 check("walkin pair is three panes now", page.indexOf(".walkin-pair { grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr); }")>-1);
 check("jobs table single-line, nothing hidden (Task 38)", page.indexOf(".jobtable th, .jobtable td { white-space:nowrap; overflow:visible; text-overflow:clip; }")>-1);
-check("csat table fills its lane", page.indexOf(".csat-flex .csat-left table.csat-table { width:100%; table-layout:fixed; }")>-1);
-check("csat chips flat navy + light text", page.indexOf(".csat-chip { background:rgba(28,43,82,.98)")
+check("csat table fills its width", page.indexOf(".csat-left table.csat-table { width:100%; table-layout:fixed; }")>-1);
+check("csat chips flat navy + light text", page.indexOf(".csat-chip { background:rgba(28,43,82,.60)")
   >-1&&page.indexOf(".csat-chip .cc-value { font-size:1.5rem; font-weight:800; color:#f4f8ff")>-1);
 check("jobtable forced left", page.indexOf(".jobtable th, .jobtable td { text-align:left !important")>-1);
 check("grphead dark-blue default header (Task 35)", page.indexOf(".grphead td { background:#1c2b52")>-1
   &&page.indexOf("linear-gradient(180deg,#5b7bff 0%,#4360e0 55%,#3350c2 100%)")===-1
   &&page.indexOf("linear-gradient(90deg,#4fb3f5")===-1);
 check("datewise definition removed", page.indexOf("Definition: every invoice date")===-1);
-check("one surface everywhere (Task 31)", page.indexOf("card-unclaimed { background:rgba(28,43,82,.98)")>-1
-  &&page.indexOf(".rtile.done { background:rgba(28,43,82,.98)")>-1
+check("one surface everywhere (Task 31)", page.indexOf("card-unclaimed { background:rgba(28,43,82,.60)")>-1
+  &&page.indexOf(".rtile.done { background:rgba(28,43,82,.60)")>-1
   &&page.indexOf("#57f2bd")===-1
   &&page.indexOf("linear-gradient(145deg,rgba(11,93,71")===-1
   &&page.indexOf("linear-gradient(145deg,rgba(90,62,8")===-1);
@@ -678,9 +679,9 @@ var waVals=dk.walkinAnalysis.map(function(r){return r.value;});
 check("walkin analysis 7,3,3,2,0,1,43%,4",
   waVals[0]===7&&waVals[1]===3&&waVals[2]===3&&waVals[3]===2&&waVals[4]===0&&waVals[5]===1
   &&waVals[6]==="43%"&&waVals[7]===4, waVals);
-check("coverage iPhone Battery W1 (part=Batt), Others W2/NW3",
+check("coverage iPhone Battery W1 (issue=Batt), Others W2/NW3",
   dk.coverage.rows[1].label==="iPhone Battery"&&dk.coverage.rows[1].count===1&&dk.coverage.rows[1].w===1
-  &&dk.coverage.rows[4].count===5&&dk.coverage.rows[4].w===2&&dk.coverage.rows[4].nw===3
+  &&dk.coverage.rows[7].count===5&&dk.coverage.rows[7].w===2&&dk.coverage.rows[7].nw===3
   &&dk.coverage.total.count===6&&dk.coverage.total.w===3&&dk.coverage.total.nw===3, dk.coverage);
 check("deck renders key numbers", page.indexOf("Walkin to Bills %")>-1&&page.indexOf("iPhone Battery")>-1
   &&page.indexOf("(blank item code)")>-1);
@@ -688,14 +689,13 @@ check("index tiles: decline 2 + winback 2 live",
   page.indexOf("Declined repairs</span><b>2</b>")>-1&&page.indexOf("Win-backs</span><b>2</b>")>-1);
 check("comm contrast lifted vs bucket tints (Task 36-C)",
   page.indexOf(".jobtable tbody tr td.comm-neg")>-1&&page.indexOf("#ffd3d7")>-1&&page.indexOf("#bbf0d0")>-1);
-check("csat right chips compact (Task 36-B)",
-  page.indexOf(".csat-right .csat-chip { flex:1 1 0; padding:6px 10px")>-1
-  &&page.indexOf(".csat-right .cc-value { font-size:1.05rem")>-1);
+check("csat side-lane css gone (Task 40)",
+  page.indexOf(".csat-right")===-1&&page.indexOf(".csat-flex")===-1);
 var gsSrc=fs.readFileSync(__dirname+"/../../SalesDashboard.gs","utf8");
 check("refresh includes deck", page.indexOf("deck:'pageDeck'")>-1&&gsSrc.indexOf("deck: renderDeckHtml_(")>-1);
 
 console.log("== TASK 25 batch ==");
-var NAVY="rgba(28,43,82,.98)";
+var NAVY="rgba(28,43,82,.60)";
 check("clock: frameless, no card bg (Task 35)", page.indexOf(".topbar-clock")>-1
   &&page.indexOf("background:rgba(8,14,36,.92)")===-1
   &&page.indexOf(".topbar-clock { position:relative")>-1
@@ -718,11 +718,11 @@ check("no background image assets left", page.indexOf("2c7ccfba")===-1
 check("all tiles share one flat navy (Task 30)", (page.match(/rgba\(23,49,84/g)||[]).length===0
   &&(page.match(/rgba\(28,53,99/g)||[]).length===0
   &&(page.match(/linear-gradient\(145deg,rgba\(28/g)||[]).length===0
-  &&(page.match(/rgba\(28,43,82,.98\)/g)||[]).length>=8);
+  &&(page.match(/rgba\(28,43,82,.60\)/g)||[]).length>=8);
 check("glowing golden-yellow clock digits (Task 35)", page.indexOf("color:#ffd34d")>-1
   &&page.indexOf("rgba(255,196,46,.95)")>-1
   &&page.indexOf("color:#b7dcff")===-1&&page.indexOf("#ff5c66")===-1);
-check("wp-right panel same flat navy", page.indexOf(".wp-right { background:rgba(28,43,82,.98)")>-1);
+check("wp-right panel same flat navy", page.indexOf(".wp-right { background:rgba(28,43,82,.60)")>-1);
 
 console.log("== TASK 27 batch ==");
 check("background is flat lighter-ash everywhere (Task 31)", page.indexOf("body { background:#3f444d; color:#dbe4f6; }")>-1
@@ -771,7 +771,7 @@ check("stale service sheet: repair table still valued via fallback",
   &&dkStale.repairRev.rows[0].value===5000&&dkStale.repairRev.rows[3].count===5,dkStale.repairRev);
 check("stale service sheet: coverage still valued via fallback",
   dkStale.coverage.total.count===7&&dkStale.coverage.rows[1].count===1
-  &&dkStale.coverage.rows[4].w===3)
+  &&dkStale.coverage.rows[7].w===3)
 check("server-side scan/date/part/fuzzy dead code removed",
   gsSrc2.indexOf("function chatAllSheetsScan_")===-1
   &&gsSrc2.indexOf("function chatSalesQuery")===-1
@@ -823,5 +823,30 @@ check("case fast-path still first", uniCase.title.indexOf("C1001")>-1, uniCase.t
 var uni2=chatQuery("Subha");
 check("universal chat multi-token/name search works", uni2.title.indexOf("🔍")>-1, uni2.title);
 check("universal chat note pinned 'Exact matches only'", JSON.stringify(uni2).indexOf("Exact matches")>-1);
+console.log("== TASK 40 batch ==");
+check("navy background softened to 60%, modal stays solid (Task 40)",
+  page.indexOf("background:rgba(28,43,82,.60)")>-1
+  &&page.indexOf(".sec { background:rgba(28,43,82,.60)")>-1
+  &&page.indexOf(".casemodal { background:rgba(28,43,82,.98)")>-1);
+check("deck explanatory captions removed (Task 40)", page.indexOf("subnote2")===-1);
+check("acc-amc cell asks for next slab gap (Task 40)",
+  page.indexOf("Need To Close Next Slab")>-1&&page.indexOf("Acc-AMC Count")===-1);
+check("bundle shows gap to next slab (Task 40)", page.indexOf("Bundle To Next")>-1);
+var slabGaps=(page.match(/more \(slab \d+\)/g)||[]).length;
+check("slab-gap cells rendered for amc & bundle", slabGaps>=2, slabGaps);
+check("coverage has the 8 owner families in order (Task 40)",
+  dk.coverage.rows.map(function(r){return r.label;}).join("|")
+  ==="iPhone|iPhone Battery|iPhone Display|Mac|Watch|iPad|AirPods|Others");
+check("coverage sources: IssueDescription + ProductWarrantyDesc in SERVICE_SPEC (Task 40)",
+  gsSrc.indexOf("issue: [/^issuedescription$/i")>-1
+  &&gsSrc.indexOf("productWarranty: [/^productwarrantydescription$/i")>-1);
+check("repair value never floats beside a zero count (Task 40)",
+  dk.repairRev.rows.every(function(r){return r.value===0||r.count>0;}), dk.repairRev.rows);
+check("date-wise person shades alternate light/dark (Task 40)",
+  page.indexOf('class="grp grp-0 sp-a">')>-1&&page.indexOf('class="grp grp-1 sp-b">')>-1
+  &&page.indexOf("#dwTable th.grp.sp-a { background:rgba(72,103,205,.62)")>-1
+  &&page.indexOf("#dwTable th.grp.sp-b { background:rgba(16,26,70,.85)")>-1);
+check("date-wise table bumped bigger (Task 40)",
+  page.indexOf("#dwTable { font-size:.95rem; }")>-1&&page.indexOf("#dwTable .apill { font-size:1rem")>-1);
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);
