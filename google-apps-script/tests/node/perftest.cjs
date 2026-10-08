@@ -96,10 +96,10 @@ T[4][11]="TOTAL";        T[4][12]=12; T[4][14]=2; T[4][18]=14; T[4][19]="85.71%"
 
 // ---- crm ----
 var crm=[["InvoiceCode","InvoiceDate","SalesPersonName","RevenueType","ItemDescription",
- "SubCategory","SchemeCode","TaxableAmount","GrossProfit","TranType","ItemCode","PartType","OrderCode"],
- ["INV1","23-09-2026 10:15","Subha","Service","Svc","","",5000,1500,"SALES","","","C1001"],
- ["INV2","23-09-2026 11:00","Dinesh","Accessories","Case","","",1200,300,"SALES","","",""],
- ["INV3","23-09-2026 12:00","Subha","Accessories","Care+ plan","","",900,250,"SALES","CPLUS","",""]];
+ "SubCategory","SchemeCode","TaxableAmount","GrossProfit","TranType","ItemCode","PartType","OrderCode","DiscountAmount"],
+ ["INV1","23-09-2026 10:15","Subha","Service","Svc","","",5000,1500,"SALES","","","C1001",0],
+ ["INV2","23-09-2026 11:00","Dinesh","Accessories","Case","","",1200,300,"SALES","","","",400],
+ ["INV3","23-09-2026 12:00","Subha","Accessories","Care+ plan","","",900,250,"SALES","CPLUS","","",0]];
 
 // ---- walkin ----
 var wl=[["MobileNo","TokenDate","VisitPurposeDesc","CaseId","InvoiceCode","Remark","TokenCreatedBy","CustomerVisitSource"],
@@ -444,7 +444,9 @@ check("jobs subtitle removed", page.indexOf("segregated &amp; highlighted by rep
 check("live clock card, no gif + tick js (Task 30)", page.indexOf('class="topbar-clock"')>-1
   &&page.indexOf("AC40")===-1&&page.indexOf("clock-gif")===-1&&page.indexOf("tickClock")>-1);
 check("amc & bundle side-by-side", page.indexOf('class="inc-pair"')>-1);
-check("repair matrix removed so no duo", page.indexOf('class="duo-pair"')===-1);
+check("repair matrix gone; duo-pair only hosts GP extras (Task 42)",
+  page.indexOf('id="sec-gpmargin"')>-1&&page.indexOf('id="sec-discount"')>-1
+  &&page.indexOf("Repair Validation")===-1);
 check("job table auto layout (Task 38)", page.indexOf(".jobtable { table-layout:auto")>-1&&page.indexOf("<colgroup>")>-1);
 
 console.log("== TASK 39 ==");
@@ -873,5 +875,23 @@ check("jobs map-line renamed to CRM Status (Task 41)",
 check("AR attachment panel darkened & text lifted (Task 41)",
   page.indexOf("#sec-ar .subpanel { background:rgba(8,14,40,.94)")>-1
   &&page.indexOf("#sec-ar .card .value { color:#ffffff")>-1);
+console.log("== TASK 42 batch ==");
+check("crm parse reads DiscountAmount", biz.crmRows[1].discountAmount===400, biz.crmRows[1].discountAmount);
+check("margin leaders across revenue types (INV1 30% high, INV2 25% low)",
+  biz.gpExtras.marginHigh[0].invoice==="INV1"&&biz.gpExtras.marginHigh[0].margin===30
+  &&biz.gpExtras.marginLow[0].invoice==="INV2"&&biz.gpExtras.marginLow[0].margin===25,
+  JSON.stringify([biz.gpExtras.marginHigh[0],biz.gpExtras.marginLow[0]]));
+check("margin tables render top-5 panes", page.indexOf('id="sec-gpmargin"')>-1
+  &&page.indexOf("Top 5 — High Margin")>-1&&page.indexOf("Top 5 — Low Margin")>-1);
+check("discount tile: 1 case, ₹400, 133.3% of GP, accessory bucket",
+  biz.gpExtras.discount.count===1&&biz.gpExtras.discount.value===400&&biz.gpExtras.discount.pct===133.3
+  &&biz.gpExtras.discount.byType.accessory===1&&biz.gpExtras.discount.byType.repair===0
+  &&biz.gpExtras.discount.byTypeValue.accessory===400, JSON.stringify(biz.gpExtras.discount));
+check("discount section renders cards + per-type table",
+  page.indexOf('id="sec-discount"')>-1&&page.indexOf("Discounted Invoices")>-1
+  &&page.indexOf("Discount ÷ Gross Profit")>-1);
+check("gp extras placed between invoice valuation and weekly analysis",
+  page.indexOf('id="sec-gpmargin"')>page.indexOf("sec-invoice")
+  &&page.indexOf('id="sec-gpmargin"')<page.indexOf('id="sec-weekly"'));
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);

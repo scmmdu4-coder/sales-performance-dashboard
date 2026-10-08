@@ -550,6 +550,8 @@ function parseCrmRows(values) {
     itemCode: findColumn_(header, [/item.*code/i]),
     orderCode: findColumn_(header, [/^ordercode$/i, /^order\s*code$/i, /order.*(code|no|num)/i]),
     partType: findColumn_(header, [/part.*type/i]),
+    // Task 42 — optional discount column feeding the GP "Discounted Cases" tile.
+    discountAmount: findColumn_(header, [/^discount\s*(amount|amt|value)?$/i, /disc.*(amount|amt|value)/i, /^discount/i]),
   };
 
   var missing = [];
@@ -592,6 +594,7 @@ function parseCrmRows(values) {
       itemCode: col.itemCode !== -1 ? str_(row[col.itemCode]) : "",
       orderCode: col.orderCode !== -1 ? str_(row[col.orderCode]) : "",
       partType: col.partType !== -1 ? str_(row[col.partType]) : "",
+      discountAmount: col.discountAmount !== -1 ? Math.abs(num_(row[col.discountAmount])) : 0,
     });
   }
   return out;
@@ -1427,12 +1430,77 @@ function computeDashboard(allRows, target) {
   });
 
   var kpi = computeKpis(rows, target, remainingWorkingToday);
+  var gpExtras = computeGpExtras_(rows);
 
   return {
     crmRows: rows, target: target, days: days, activeDays: activeDays, store: store,
     revenueTypes: revenueTypes, invoiceValuation: invoiceValuation, salespeople: salespeople,
-    amc: amc, bundle: bundle, kpi: kpi, generatedAt: new Date(),
+    amc: amc, bundle: bundle, kpi: kpi, gpExtras: gpExtras, generatedAt: new Date(),
   };
+}
+
+/**
+ * Task 42 — GP-page extras.
+ *  • High / Low margin leaders: margin % = Σ crm!GrossProfit ÷ Σ crm!TaxableAmount
+ *    computed per unique invoice code (SALES rows only; invoices with a zero
+ *    or negative taxable base are skipped — their % is meaningless). The top
+ *    5 at each end of the scale are reported, across ALL revenue types.
+ *  • Discounted cases: rows with crm!DiscountAmount > 0 — unique invoice
+ *    count overall and per revenue type, total discounted value, and the
+ *    discounted value as % of the gross profit of those lines.
+ */
+function computeGpExtras_(rows) {
+  var sale = (rows || []).filter(isSaleRow_);
+
+  // ---- margin leaders ----
+  var byInv = {};
+  sale.forEach(function (r) {
+    var k = r.invoiceCode;
+    if (!k) return;
+    if (!byInv[k]) byInv[k] = { invoice: k, person: r.salesPerson || "—", types: {}, taxable: 0, gp: 0 };
+    var b = byInv[k];
+    b.taxable += r.taxableAmount;
+    b.gp += r.grossProfit;
+    var tk = revenueTypeKey_(r.revenueType);
+    if (tk) b.types[tk] = true;
+  });
+  var margins = [];
+  Object.keys(byInv).forEach(function (k) {
+    var b = byInv[k];
+    if (!(b.taxable > 0)) return;
+    b.margin = (100 * b.gp) / b.taxable;
+    b.typeLabel = ["repair", "accessory", "service"].filter(function (t) { return b.types[t]; })
+      .map(function (t) { return t === "repair" ? "Repair" : t === "accessory" ? "Accessory" : "Service"; })
+      .join(" + ") || "—";
+    margins.push(b);
+  });
+  var high = margins.slice().sort(function (a, b) { return b.margin - a.margin; }).slice(0, 5);
+  var low = margins.slice().sort(function (a, b) { return a.margin - b.margin; }).slice(0, 5);
+
+  // ---- discounted cases ----
+  var disc = {
+    count: 0, value: 0, gp: 0, pct: 0,
+    byType: { repair: 0, accessory: 0, service: 0 },
+    byTypeValue: { repair: 0, accessory: 0, service: 0 },
+  };
+  var seenInv = {}, seenTypeInv = { repair: {}, accessory: {}, service: {} };
+  sale.forEach(function (r) {
+    var d = r.discountAmount || 0;
+    if (d <= 0) return;
+    disc.value += d;
+    disc.gp += r.grossProfit;
+    var tk = revenueTypeKey_(r.revenueType);
+    var cid = r.invoiceCode;
+    if (cid) {
+      if (!seenInv[cid]) { seenInv[cid] = true; disc.count++; }
+      if (tk && !seenTypeInv[tk][cid]) { seenTypeInv[tk][cid] = true; disc.byType[tk]++; }
+    }
+    if (tk) disc.byTypeValue[tk] += d;
+  });
+  disc.value = Math.round(disc.value);
+  disc.pct = disc.gp > 0 ? Math.round((1000 * disc.value) / disc.gp) / 10 : 0;
+
+  return { marginHigh: high, marginLow: low, discount: disc };
 }
 
 /* ============================================================================
@@ -2654,8 +2722,65 @@ function renderGpHtml_(data) {
   body += renderStoreTable_(data);
   body += renderWorkingDaysCard_(data);
   body += renderInvoiceValuation_(data);
+  body += renderGpExtras_(data.gpExtras);
   body += renderWeeklyAnalysis_(data);
   return body;
+}
+
+/** Task 42 — the two GP tiles: high/low margin + discounted cases. */
+function renderGpExtras_(x) {
+  x = x || {};
+  var discount = x.discount || { count: 0, value: 0, gp: 0, pct: 0, byType: {}, byTypeValue: {} };
+  var hi = x.marginHigh || [], lo = x.marginLow || [];
+  function money0(v) { return money_(v || 0); }
+
+  function marginTable(rows) {
+    var body = rows.map(function (m) {
+      return "<tr><td>" + esc_(m.invoice) + "</td><td>" + esc_(m.typeLabel) + "</td>" +
+        '<td class="num">' + money0(m.taxable) + "</td>" +
+        '<td class="num"><span class="' + (m.gp >= 0 ? "pos" : "neg") + '">' + money0(m.gp) + "</span></td>" +
+        '<td class="num"><span class="' + (m.margin >= 0 ? "pos" : "neg") + '">' + m.margin.toFixed(1) + "%</span></td></tr>";
+    }).join("");
+    if (!rows.length) body = '<tr><td colspan="5"><span class="muted">no invoice valuation rows</span></td></tr>';
+    return '<table class="ptable"><thead><tr><th>Invoice</th><th>Revenue Type</th>' +
+      '<th class="num">Taxable</th><th class="num">Gross Profit</th><th class="num">Margin %</th></tr></thead>' +
+      "<tbody>" + body + "</tbody></table>";
+  }
+
+  var TYPE_LBL = [["repair", "Repair Revenue"], ["accessory", "Accessory Revenue"], ["service", "Service Revenue"]];
+  var dRows = TYPE_LBL.map(function (t) {
+    return "<tr><td>" + t[1] + '</td><td class="num">' + (discount.byType[t[0]] || 0) +
+      '</td><td class="num">' + money0(discount.byTypeValue[t[0]]) + "</td></tr>";
+  }).join("");
+  var dTotal = '<tr class="totrow"><td><b>Total</b></td><td class="num"><b>' + discount.count +
+    '</b></td><td class="num"><b>' + money0(discount.value) + "</b></td></tr>";
+
+  var marginPanel =
+    '<section class="section" id="sec-gpmargin"><h2>📈 High / Low Margin</h2><div class="body">' +
+    '<div class="sec-desc">margin % = crm!GrossProfit ÷ crm!TaxableAmount per unique invoice (SALES only; ' +
+    "zero-base invoices skipped). Top 5 at each end, across all revenue types.</div>" +
+    '<div class="hl-pair">' +
+    '<div class="hl-half"><div class="subpanel-head">Top 5 — High Margin</div><div class="scroll-x">' + marginTable(hi) + "</div></div>" +
+    '<div class="hl-half"><div class="subpanel-head">Top 5 — Low Margin</div><div class="scroll-x">' + marginTable(lo) + "</div></div>" +
+    "</div></div></section>";
+
+  var discPanel =
+    '<section class="section" id="sec-discount"><h2>🏷 Discounted Cases</h2><div class="body">' +
+    '<div class="sec-desc">crm!DiscountAmount &gt; 0 rows (SALES only); cases counted once per unique invoice code.</div>' +
+    '<div class="cards" style="margin-bottom:12px">' +
+    '<div class="card"><div class="label">Discounted Invoices</div><div class="value">' + discount.count +
+    '</div><div class="sub">unique invoice codes</div></div>' +
+    '<div class="card"><div class="label">Total Discount Value</div><div class="value neg">' + money0(discount.value) +
+    '</div><div class="sub">Σ crm!DiscountAmount</div></div>' +
+    '<div class="card"><div class="label">Discount ÷ Gross Profit</div><div class="value">' + discount.pct +
+    '%</div><div class="sub">vs GP of the discounted lines</div></div>' +
+    "</div>" +
+    '<div class="scroll-x"><table class="ptable"><thead><tr><th>Revenue Type</th><th class="num">Cases</th>' +
+    '<th class="num">Discount Value</th></tr></thead><tbody>' +
+    dRows + dTotal + "</tbody></table></div>" +
+    "</div></section>";
+
+  return '<div class="duo-pair">' + marginPanel + discPanel + "</div>";
 }
 
 /** KPI page: KPI target · Incentive · Salesperson performance · AR attachment. */
@@ -5204,6 +5329,9 @@ function getDashboardCss_() {
     ".jobtable thead tr.bucket-sub-row th { text-align:left !important; font-size:.74rem; letter-spacing:.10em; text-transform:uppercase; color:#ffe08a; background:rgba(20,30,74,.65); border-bottom:1px solid rgba(170,190,255,.35); }" +
     ".bucket-sub-note { font-weight:600; letter-spacing:.02em; color:#9fadde; text-transform:none; font-size:.66rem; }" +
     ".grphead-sub { display:inline-block; margin-right:8px; font-weight:800; color:#ffe08a; font-size:.66rem; letter-spacing:.10em; text-transform:uppercase; }" +
+    // Task 42 — high/low margin tables share a tight two-pane grid.
+    ".hl-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:14px; margin-top:12px; }" +
+    "@media (max-width:900px) { .hl-pair { grid-template-columns:minmax(0,1fr); } }" +
     "#sec-datewise .legend-card.sp-a { border-left:4px solid rgba(126,156,255,.85); }" +
     "#sec-datewise .legend-card.sp-b { border-left:4px solid rgba(52,74,170,.95); }" +
     "#sec-datewise .card .value { font-size:1.55rem; color:#ffffff; }" +
