@@ -295,7 +295,10 @@ function mobileKey_(v) {
 
 /** Shared pipeline: read crm + target sheets, parse, and compute the dashboard data object. */
 function loadDashboardData_() {
-  var ss = getSpreadsheet_();
+  // Deployment hardening: if this helper ever goes missing from the project
+  // (stale/partial paste), fall back to the bound spreadsheet directly.
+  var ss = (typeof getSpreadsheet_ === "function") ? getSpreadsheet_()
+    : SpreadsheetApp.getActiveSpreadsheet();
   var crmSheet = ss.getSheetByName(CONFIG.CRM_SHEET_NAME);
   var targetSheet = ss.getSheetByName(CONFIG.TARGET_SHEET_NAME);
 
@@ -2477,7 +2480,10 @@ function renderTargetBlock_(tb, ra) {
 
 /** Loads everything the Performance & Process pages need. */
 function loadPerformanceData_() {
-  var ss = getSpreadsheet_();
+  // Deployment hardening: if this helper ever goes missing from the project
+  // (stale/partial paste), fall back to the bound spreadsheet directly.
+  var ss = (typeof getSpreadsheet_ === "function") ? getSpreadsheet_()
+    : SpreadsheetApp.getActiveSpreadsheet();
   var jm = computeJobManagement_(ss);
   var ra = computeRepairAnalytics_(jm.serviceRows || []);
   // Task 35: stamp EVERY tab with the refresh timestamp — whenever the
@@ -3381,7 +3387,10 @@ function chatUniversalQuery_(q) {
   if (query.length < 2) return null;
   var tokens = query.toLowerCase().split(/\s+/).filter(function (t) { return t.length >= 2; });
   if (!tokens.length) return null;
-  var ss = getSpreadsheet_();
+  // Deployment hardening: if this helper ever goes missing from the project
+  // (stale/partial paste), fall back to the bound spreadsheet directly.
+  var ss = (typeof getSpreadsheet_ === "function") ? getSpreadsheet_()
+    : SpreadsheetApp.getActiveSpreadsheet();
   var rows = [];
   var totalHits = 0, hitSheets = 0;
   var MAX_PER_SHEET = 4, MAX_ROWS = 18;
@@ -3447,7 +3456,10 @@ function chatPairsInline_(pairs) {
 
 /** Chat answer for a mobile number — the 360 customer profile. */
 function chatMobileQuery(mobile, origQ) {
-  var ss = getSpreadsheet_();
+  // Deployment hardening: if this helper ever goes missing from the project
+  // (stale/partial paste), fall back to the bound spreadsheet directly.
+  var ss = (typeof getSpreadsheet_ === "function") ? getSpreadsheet_()
+    : SpreadsheetApp.getActiveSpreadsheet();
   var last4 = mobile.slice(-4);
 
   // crm — invoice rows billed to this mobile (via walkin InvoiceCode links)
@@ -3651,7 +3663,10 @@ function chatCommDateForCase_(ss, caseId) {
  * the ID isn't on the sheet so the router can fall back to the guidance text.
  */
 function chatCaseQuery(caseId) {
-  var ss = getSpreadsheet_();
+  // Deployment hardening: if this helper ever goes missing from the project
+  // (stale/partial paste), fall back to the bound spreadsheet directly.
+  var ss = (typeof getSpreadsheet_ === "function") ? getSpreadsheet_()
+    : SpreadsheetApp.getActiveSpreadsheet();
   var sh = getSheetByNames_(ss, CONFIG.SERVICE_SHEET_NAMES);
   if (!sh) return null;
   var values = chatSheetData(sh);
