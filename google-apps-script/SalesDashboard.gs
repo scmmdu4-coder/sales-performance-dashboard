@@ -1443,6 +1443,28 @@ function computeDashboard(allRows, target) {
 }
 
 /**
+ * Task 44 — compact part description for the GP tiles. Owner examples:
+ *   "Battery, iPhone 14 Plus, India" → "battery"
+ *   "Protect+withAppleCareServicesforiPhone17ProMax" → "protect+"
+ *   "MCL TG 2.5D 2ND GEN-APPL-IPH 17PRMAX-BLK" → "temper"
+ * Unknown descriptions fall back to their first word (max 12 chars).
+ */
+function shortPart_(desc) {
+  var t = str_(desc).toLowerCase();
+  if (!t) return "—";
+  if (/protect\s*\+|protect\s*plus/.test(t)) return "protect+";
+  if (/temper|temeper|tamper|\btg\b/.test(t)) return "temper";
+  if (/batt/.test(t)) return "battery";
+  if (/display|screen|lcd/.test(t)) return "display";
+  if (/apple\s*care|care\s*\+|\bac\s*\+/.test(t)) return "ac+";
+  if (/\bcase\b|\bcover\b|\bhousing\b/.test(t)) return "case";
+  if (/adapter|cable|charg/.test(t)) return "cable";
+  if (/\bamc\b/.test(t)) return "amc";
+  var w = t.replace(/[^a-z0-9+\s]/g, " ").trim().split(/\s+/)[0];
+  return w ? w.slice(0, 12) : "—";
+}
+
+/**
  * Task 42 — GP-page extras.
  *  • High / Low margin leaders: margin % = Σ crm!GrossProfit ÷ Σ crm!TaxableAmount
  *    computed per unique invoice code (SALES rows only; invoices with a zero
@@ -1460,10 +1482,13 @@ function computeGpExtras_(rows) {
   sale.forEach(function (r) {
     var k = r.invoiceCode;
     if (!k) return;
-    if (!byInv[k]) byInv[k] = { invoice: k, person: r.salesPerson || "—", types: {}, taxable: 0, gp: 0 };
+    if (!byInv[k]) byInv[k] = { invoice: k, person: r.salesPerson || "—", types: {}, parts: {}, taxable: 0, gp: 0 };
     var b = byInv[k];
     b.taxable += r.taxableAmount;
     b.gp += r.grossProfit;
+    // Task 44: short part label(s) of this invoice's lines (no invoice number
+    // is shown on the GP tiles anymore).
+    b.parts[shortPart_(r.itemDescription)] = true;
     var tk = revenueTypeKey_(r.revenueType);
     if (tk) b.types[tk] = true;
   });
@@ -1475,6 +1500,8 @@ function computeGpExtras_(rows) {
     b.typeLabel = ["repair", "accessory", "service"].filter(function (t) { return b.types[t]; })
       .map(function (t) { return t === "repair" ? "Repair" : t === "accessory" ? "Accessory" : "Service"; })
       .join(" + ") || "—";
+    var pset = Object.keys(b.parts);
+    b.partLabel = pset.slice(0, 3).join(" + ") + (pset.length > 3 ? " …" : "");
     margins.push(b);
   });
   var high = margins.slice().sort(function (a, b) { return b.margin - a.margin; }).slice(0, 5);
@@ -1485,7 +1512,9 @@ function computeGpExtras_(rows) {
     count: 0, value: 0, gp: 0, pct: 0,
     byType: { repair: 0, accessory: 0, service: 0 },
     byTypeValue: { repair: 0, accessory: 0, service: 0 },
+    byTypeTop: { repair: null, accessory: null, service: null },
   };
+  var partFreq = { repair: {}, accessory: {}, service: {} };
   var seenInv = {}, seenTypeInv = { repair: {}, accessory: {}, service: {} };
   sale.forEach(function (r) {
     var d = r.discountAmount || 0;
@@ -1498,7 +1527,19 @@ function computeGpExtras_(rows) {
       if (!seenInv[cid]) { seenInv[cid] = true; disc.count++; }
       if (tk && !seenTypeInv[tk][cid]) { seenTypeInv[tk][cid] = true; disc.byType[tk]++; }
     }
-    if (tk) disc.byTypeValue[tk] += d;
+    if (tk) {
+      disc.byTypeValue[tk] += d;
+      var sp = shortPart_(r.itemDescription);
+      partFreq[tk][sp] = (partFreq[tk][sp] || 0) + 1;
+    }
+  });
+  // Top discounted part per revenue type (short label + how many lines).
+  ["repair", "accessory", "service"].forEach(function (tk) {
+    var bestK = "", bestN = 0;
+    Object.keys(partFreq[tk]).forEach(function (sp) {
+      if (partFreq[tk][sp] > bestN) { bestN = partFreq[tk][sp]; bestK = sp; }
+    });
+    if (bestK) disc.byTypeTop[tk] = { label: bestK, n: bestN };
   });
   disc.value = Math.round(disc.value);
   disc.pct = disc.gp > 0 ? Math.round((1000 * disc.value) / disc.gp) / 10 : 0;
@@ -2742,24 +2783,28 @@ function renderGpExtras_(x) {
 
   function marginTable(rows) {
     var body = rows.map(function (m) {
-      return "<tr><td>" + esc_(m.invoice) + "</td><td>" + esc_(m.typeLabel) + "</td>" +
+      // Task 44: no invoice numbers on the tile — the short part description
+      // is the row identity.
+      return "<tr><td>" + esc_(m.partLabel) + "</td><td>" + esc_(m.typeLabel) + "</td>" +
         '<td class="num">' + money0(m.taxable) + "</td>" +
         '<td class="num"><span class="' + (m.gp >= 0 ? "pos" : "neg") + '">' + money0(m.gp) + "</span></td>" +
         '<td class="num"><span class="' + (m.margin >= 0 ? "pos" : "neg") + '">' + m.margin.toFixed(1) + "%</span></td></tr>";
     }).join("");
     if (!rows.length) body = '<tr><td colspan="5"><span class="muted">no invoice valuation rows</span></td></tr>';
-    return '<table class="ptable"><thead><tr><th>Invoice</th><th>Revenue Type</th>' +
+    return '<table class="ptable"><thead><tr><th>Part</th><th>Revenue Type</th>' +
       '<th class="num">Taxable</th><th class="num">Gross Profit</th><th class="num">Margin %</th></tr></thead>' +
       "<tbody>" + body + "</tbody></table>";
   }
 
   var TYPE_LBL = [["repair", "Repair Revenue"], ["accessory", "Accessory Revenue"], ["service", "Service Revenue"]];
   var dRows = TYPE_LBL.map(function (t) {
+    var top = discount.byTypeTop && discount.byTypeTop[t[0]];
     return "<tr><td>" + t[1] + '</td><td class="num">' + (discount.byType[t[0]] || 0) +
-      '</td><td class="num">' + money0(discount.byTypeValue[t[0]]) + "</td></tr>";
+      '</td><td class="num">' + money0(discount.byTypeValue[t[0]]) +
+      "</td><td>" + (top ? esc_(top.label) + (top.n > 1 ? " ×" + top.n : "") : '<span class="muted">—</span>') + "</td></tr>";
   }).join("");
   var dTotal = '<tr class="totrow"><td><b>Total</b></td><td class="num"><b>' + discount.count +
-    '</b></td><td class="num"><b>' + money0(discount.value) + "</b></td></tr>";
+    '</b></td><td class="num"><b>' + money0(discount.value) + "</b></td><td></td></tr>";
 
   var marginPanel =
     '<section class="section" id="sec-gpmargin"><h2>📈 High / Low Margin</h2><div class="body">' +
@@ -2782,7 +2827,7 @@ function renderGpExtras_(x) {
     '%</div><div class="sub">vs GP of the discounted lines</div></div>' +
     "</div>" +
     '<div class="scroll-x"><table class="ptable"><thead><tr><th>Revenue Type</th><th class="num">Cases</th>' +
-    '<th class="num">Discount Value</th></tr></thead><tbody>' +
+    '<th class="num">Discount Value</th><th>Top Part</th></tr></thead><tbody>' +
     dRows + dTotal + "</tbody></table></div>" +
     "</div></section>";
 

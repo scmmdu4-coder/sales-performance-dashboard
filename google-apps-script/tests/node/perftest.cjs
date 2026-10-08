@@ -894,5 +894,22 @@ check("discount section renders cards + per-type table",
 check("gp extras placed between invoice valuation and weekly analysis",
   page.indexOf('id="sec-gpmargin"')>page.indexOf("sec-invoice")
   &&page.indexOf('id="sec-gpmargin"')<page.indexOf('id="sec-weekly"'));
+console.log("== TASK 44 batch ==");
+check("shortPart_ owner examples (battery / protect+ / temper)",
+  shortPart_("Battery, iPhone 14 Plus, India")==="battery"
+  &&shortPart_("Protect+withAppleCareServicesforiPhone17ProMax")==="protect+"
+  &&shortPart_("MCL TG 2.5D 2ND GEN-APPL-IPH 17PRMAX-BLK")==="temper"
+  &&shortPart_("Care+ plan")==="ac+"&&shortPart_("Case")==="case");
+check("margin rows expose short part labels, not invoice text",
+  biz.gpExtras.marginHigh[0].partLabel==="svc"&&biz.gpExtras.marginLow[0].partLabel==="case");
+check("margin tables show Part column, never the invoice id", (function(){
+  var seg=page.slice(page.indexOf('id="sec-gpmargin"'),page.indexOf('id="sec-discount"'));
+  return seg.indexOf("<th>Part</th>")>-1&&seg.indexOf("INV1")===-1&&seg.indexOf("INV2")===-1&&seg.indexOf("INV3")===-1;
+})());
+check("discount tile lists top part per type", (function(){
+  var seg=page.slice(page.indexOf('id="sec-discount"'));
+  return biz.gpExtras.discount.byTypeTop.accessory&&biz.gpExtras.discount.byTypeTop.accessory.label==="case"
+    &&seg.indexOf("<th>Top Part</th>")>-1&&seg.indexOf("case")>-1;
+})(), JSON.stringify(biz.gpExtras.discount.byTypeTop));
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);
