@@ -2506,8 +2506,12 @@ function stampSheetsRefreshed_(ss) {
  * TASK 35 — Operation-page extra modules.
  * Decline Repair: unique decline!CaseId where decline!GSXRepairStatusDescription
  *   == "Declined - Rejected by Local Approver".
- * Requote & Win-back: quote rows whose RevenueType == "Repair Revenue" AND
- *   lastAction == "approved" (counted once per unique CaseID).
+ * Requote & Win-back (Task 41 rule): a serial number (service!SerialNo1) whose
+ *   service case is a parts repair — carry-in / mail-in (service!RepairDocType,
+ *   Service Non-Repair excluded) AND out of warranty (service!ProductWarranty
+ *   Desc) — must have a "Repair Revenue" quote (quote!RevenueType) that was
+ *   first REJECTED and later APPROVED (quote!lastAction) for the same serial.
+ *   Count = number of such serials (unique per case ID linkage).
  */
 function computeOperationExtras_(ss) {
   var out = {
@@ -2536,26 +2540,50 @@ function computeOperationExtras_(ss) {
       });
     }
   } catch (e) { /* module is best-effort */ }
-  // ---- win-back ----
+  // ---- win-back (Task 41) ----
   try {
     var qs = getSheetByNames_(ss, CONFIG.QUOTE_SHEET_NAMES);
-    if (qs) {
+    var svs = getSheetByNames_(ss, CONFIG.SERVICE_SHEET_NAMES);
+    if (qs && svs) {
       out.winback.sheetName = qs.getName();
+      // Eligible cases: carry-in / mail-in parts repair (Service Non-Repair
+      // excluded) AND out of warranty via service!ProductWarrantyDesc
+      // (CoverageCodeDescription as fallback). CaseId → serial number.
+      var rdS = readSheetRows_(svs, SERVICE_SPEC, ["caseDate"]);
+      var eligibleSerial = {};             // caseId → serialNo1 (eligible only)
+      rdS.rows.forEach(function (r) {
+        var cid = str_(r.caseId);
+        if (!cid) return;
+        if (isSNRType_(str_(r.repairDocType))) return;
+        var t = str_(r.repairDocType);
+        if (!/carry|mail/i.test(t)) return;
+        var pw = (str_(r.productWarranty) || str_(r.warranty)).toLowerCase();
+        if (!/\bout\b|\bow\b|\bno\b|\bnon\b|\bnot\b|expired|void/.test(pw)) return;
+        eligibleSerial[cid] = str_(r.serialNo1) || cid;
+      });
+      // Quote side: Repair-Revenue rows only; for every eligible serial,
+      // need one REJECTED row and one APPROVED row (same serial won back).
       var rq = readSheetRows_(qs, {
         caseId: [/^caseid$/i, /case.*id/i],
         revenueType: [/^revenuetype$/i, /revenue.*type/i],
         lastAction: [/^lastaction$/i, /last.*action/i],
       }, []);
-      var seen2 = {};
+      var rejected = {}, approved = {};
       rq.rows.forEach(function (r) {
-        out.winback.matched += (/^\s*repair\s*revenue\s*$/i.test(str_(r.revenueType))) ? 1 : 0;
-        if (/^\s*repair\s*revenue\s*$/i.test(str_(r.revenueType)) &&
-            /^\s*approved\s*$/i.test(str_(r.lastAction))) {
-          var cid = str_(r.caseId);
-          if (cid && !seen2[cid]) { seen2[cid] = true; out.winback.count++; }
-          else if (!cid) out.winback.count++;
-        }
+        if (!/^\s*repair\s*revenue\s*$/i.test(str_(r.revenueType))) return;
+        out.winback.matched++;
+        var cid = str_(r.caseId);
+        var sn = eligibleSerial[cid];
+        if (!sn) return;
+        var la = str_(r.lastAction).toLowerCase();
+        if (/reject/.test(la)) rejected[sn] = true;
+        else if (/approved/.test(la)) approved[sn] = true;
       });
+      Object.keys(rejected).forEach(function (sn) {
+        if (approved[sn]) out.winback.count++;
+      });
+    } else if (qs) {
+      out.winback.sheetName = qs.getName();
     }
   } catch (e) { /* module is best-effort */ }
   return out;
@@ -2692,15 +2720,16 @@ function renderOperationHtml_(pd) {
       (ex.decline.count || 0) + '</div>' +
       '<div class="sub">' + (ex.decline.sheetName ? "unique CaseIDs · from " + esc_(ex.decline.sheetName) : "no decline sheet found") + '</div></div>' +
     "</div></section>" +
-  // Task 35 — Requote & Win-back: quote rows with RevenueType "Repair Revenue"
-  // AND lastAction "approved" (counted once per unique CaseID).
+  // Task 41 — Requote & Win-back: eligible cases are carry-in / mail-in
+  // parts repairs, OUT of warranty (service!ProductWarrantyDesc); a win-back
+  // is a serial whose Repair-Revenue quote was rejected and later approved.
     '<section class="sec"><div class="sec-head"><h2>🔁 Requote &amp; Win-back</h2>' +
-    '<p class="sec-sub">Unique CaseIDs in <b>quote</b> where RevenueType is "Repair Revenue" ' +
-    'and lastAction is "approved".</p></div>' +
+    '<p class="sec-sub">Serials (service!SerialNo1) of out-of-warranty carry-in / mail-in cases whose ' +
+    '<b>quote</b> rows (RevenueType "Repair Revenue") show lastAction rejected and later approved for the same serial.</p></div>' +
     '<div class="cards">' +
     '<div class="card"><div class="label">Win-backs</div><div class="value">' +
       (ex.winback.count || 0) + '</div>' +
-      '<div class="sub">' + (ex.winback.sheetName ? "unique CaseIDs · from " + esc_(ex.winback.sheetName) : "no quote sheet found") + '</div></div>' +
+      '<div class="sub">' + (ex.winback.sheetName ? "rejected → approved · unique serials · from " + esc_(ex.winback.sheetName) : "no quote sheet found") + '</div></div>' +
     "</div></section></div>");
   return out.join("");
 }
@@ -2900,13 +2929,15 @@ function computeDeckAnalysis_(ss, crmRows) {
     { label: "Enquiry", value: walkins - uniqBills },
   ];
 
-  // 8) Coverage Analysis | LOB (Task 40 spec) — family from
+  // 8) Coverage Analysis | LOB (Task 40 spec, Task-41 W/NW fix) — family from
   //    service!ProductDescription (iPhone / Mac / Watch / iPad / AirPods /
   //    Others). Battery & display are split off the iPhone row via text in
   //    service!IssueDescription (was PartDescription). The W/NW split reads
-  //    service!ProductWarrantyDesc (was CoverageCodeDescription): words like
-  //    "Product Warranty" / "In Warranty" → W; "out of", "no ...", expired
-  //    or blank → NW.
+  //    service!ProductWarrantyDesc first and falls back to
+  //    service!CoverageCodeDescription when that cell is blank:
+  //    "in / product / consumer / limited warranty", applecare or coverage
+  //    wording (and no out/no/not/non/expired/void marker) → W; anything
+  //    else, including blank, → NW.
   function covBucket_(prod, issue) {
     var t = str_(prod).toLowerCase();
     var p = str_(issue).toLowerCase();
@@ -2926,8 +2957,12 @@ function computeDeckAnalysis_(ss, crmRows) {
   covCases.forEach(function (r) {
     var c = cov[covBucket_(r.product, r.issue)];
     c.count++;
-    var wtxt = str_(r.productWarranty).toLowerCase();
-    if (/warrant|coverage/.test(wtxt) && !/out|no\s|non|expired|void/.test(wtxt)) c.w++;
+    // Task 41: product-warranty text first, legacy coverage-code text as the
+    // fallback when the product column is empty — mixed exports under-counted
+    // the W side before.
+    var wtxt = (str_(r.productWarranty) || str_(r.warranty)).toLowerCase();
+    var outMark = /\bout\b|\bow\b|\bno\b|\bnon\b|\bnot\b|expired|void/.test(wtxt);
+    if (!outMark && (/warrant|coverage|applecare|\biw\b/.test(wtxt))) c.w++;
     else c.nw++;
   });
   out.coverage = { rows: COV_ORDER.map(function (n) { return cov[n]; }) };
@@ -4356,7 +4391,8 @@ function renderJobManagement_(jm) {
         return (x.crmRepairStatus || "—") === grp;
       }).length;
       grpAccent = bucketAccent_(grp);
-      rowParts.push('<tr class="grphead' + (grpAccent ? " " + grpAccent : "") + '"><td colspan="' + NCOLS + '">' + esc_(grp) +
+      rowParts.push('<tr class="grphead' + (grpAccent ? " " + grpAccent : "") + '"><td colspan="' + NCOLS + '">' +
+        '<span class="grphead-sub">Repair Bucket</span>' + esc_(grp) +
         '<span class="grphead-count">' + bucketCount + " open case" + (bucketCount === 1 ? "" : "s") +
         "</span></td></tr>");
     }
@@ -4382,6 +4418,8 @@ function renderJobManagement_(jm) {
     // "Unclaimed Device" badge kept loud. The <td> is pre-built by
     // repairStatusCell — the grphead band above each block carries the
     // highlight, so the cell itself stays a plain status.
+    // Task 41: first column is titled "CRM Status" now — value unchanged:
+    // service!CRM_JobStatusDesc (the same field the bucket bands group by).
     var bucketCell = j.isUnclaimed
       ? '<td class="bucket-cell' + (bk ? " " + bk : "") + '"><span class="badge-unclaimed">' + esc_(j.crmRepairStatus || "—") + "</span></td>"
       : '<td class="bucket-cell' + (bk ? " " + bk : "") + '">' + esc_(j.crmRepairStatus || "—") + "</td>";
@@ -4421,8 +4459,13 @@ function renderJobManagement_(jm) {
     '<col style="width:9%"><col style="width:9%"><col style="width:9%">' +
     '<col style="width:10%"><col style="width:12%">' +
     '</colgroup>' +
-    '<thead><tr>' +
-    "<th>Repair Bucket</th><th>Aging</th><th>GSX Repair Status</th>" +
+    // Task 41: the per-row bucket text was redundant (rows already sit under
+    // bucket bands) — "Repair Bucket" becomes the subtitle header row and the
+    // first column is titled CRM Status (service!CRM_JobStatusDesc).
+    '<thead><tr class="bucket-sub-row"><th colspan="' + NCOLS + '">Repair Bucket' +
+    ' <span class="bucket-sub-note">grouped view · per-case status in the CRM Status column</span></th></tr>' +
+    "<tr>" +
+    "<th>CRM Status</th><th>Aging</th><th>GSX Repair Status</th>" +
     "<th>Repair Type</th>" +
     "<th>Case ID</th><th>Name</th><th>Number</th>" +
     "<th>GSX ID</th><th>S.No</th><th>Model</th>" +
@@ -4436,7 +4479,7 @@ function renderJobManagement_(jm) {
     return esc_(pair[0]) + " ← " + (h ? "<b>" + esc_(h) + "</b>" : '<span class="map-missing">not found</span>');
   }
   var mapLine = '<div class="map-line">' + [
-    ["Repair Bucket","crmRepairStatus"],["Aging","jobAge"],
+    ["CRM Status","crmRepairStatus"],["Aging","jobAge"],
     ["GSX Repair Status","gsxStatus"],["Repair Type","repairDocType"],["Case ID","caseId"],["Number","mobile"],
     ["GSX ID","gsxCode"],["Device S.No","serialNo1"],
     ["Model","product"],["Open filter","status"]]
@@ -5146,6 +5189,21 @@ function getDashboardCss_() {
     "#dwTable th.grp.sp-b { background:rgba(16,26,70,.85); color:#e5ecff; }" +
     "#dwTable td.sp-a { background:rgba(96,128,235,.16); }" +
     "#dwTable td.sp-b { background:rgba(10,16,44,.34); }" +
+    // Task 41 — AR Attachment panel: owner found it washed out after the 60%
+    // background softening; darken the panel/cards and lift the text.
+    "#sec-ar .subpanel { background:rgba(8,14,40,.94); border-color:rgba(140,165,255,.45); }" +
+    "#sec-ar .card { background:rgba(15,23,58,.90); border-color:rgba(140,165,255,.38); color:#ffffff; }" +
+    "#sec-ar .card .label { color:#c9d6ff; }" +
+    "#sec-ar .card .value { color:#ffffff; text-shadow:0 1px 4px rgba(3,6,20,.65); }" +
+    "#sec-ar .card .sub { color:#aebcf0; }" +
+    "#sec-ar .sec-desc { color:#cdd8fb; }" +
+    "#sec-ar .subpanel .muted { color:#9fadde; }" +
+    "#sec-ar .subpanel-head { color:#e8eeff; }" +
+    "#sec-ar p.muted { color:#aebcf0; }" +
+    // Task 41 — jobs table subtitle header row + group-band subtitle chip.
+    ".jobtable thead tr.bucket-sub-row th { text-align:left !important; font-size:.74rem; letter-spacing:.10em; text-transform:uppercase; color:#ffe08a; background:rgba(20,30,74,.65); border-bottom:1px solid rgba(170,190,255,.35); }" +
+    ".bucket-sub-note { font-weight:600; letter-spacing:.02em; color:#9fadde; text-transform:none; font-size:.66rem; }" +
+    ".grphead-sub { display:inline-block; margin-right:8px; font-weight:800; color:#ffe08a; font-size:.66rem; letter-spacing:.10em; text-transform:uppercase; }" +
     "#sec-datewise .legend-card.sp-a { border-left:4px solid rgba(126,156,255,.85); }" +
     "#sec-datewise .legend-card.sp-b { border-left:4px solid rgba(52,74,170,.95); }" +
     "#sec-datewise .card .value { font-size:1.55rem; color:#ffffff; }" +

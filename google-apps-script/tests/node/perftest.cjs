@@ -134,7 +134,7 @@ var sv=[["CaseId","FirstName","LastName","MobileNo","ProductDescription","CaseDa
  ["C1004","Peela","Dass","919876543217","Realme 12",daysAgoStr(1,"08"),"",1,"Open","","Repair In Progress","Ready For Pickup","In Warranty","Service Non-Repair","","GSX6004","SN-C1004","","","Product Warranty"],
  ["C1005","Old","Closed","919876543218","Pixel 7",daysAgoStr(55,"09"),daysAgoStr(54,"10"),55,"Delivered",daysAgoStr(50,"10"),"Repair Complete","Part Used","In Warranty","Carry-In Repair",daysAgoStr(50,"10"),"GSX6005","SN-C1005","","","Product Warranty"],
  ["C1006","Age","Fallback","919876543219","Moto G",daysAgoStr(20,"09"),"","","Open","","Waiting for Part","","Out Of Warranty (No Coverage)","Walk-In Repair","","GSX6006","SN-C1006","","","Out Of Warranty (No Coverage)"],
- ["C1007","Can","Cell","919876543220","Nokia",daysAgoStr(2,"09"),"",2,"Cancelled","","Aborted","","In Warranty","Carry-In Repair","","GSX6007","SN-C1007","","","Product Warranty"]];
+ ["C1007","Can","Cell","919876543220","Nokia",daysAgoStr(2,"09"),"",2,"Cancelled","","Aborted","","In Warranty","Carry-In Repair","","GSX6007","SN-C1007","","","",""]];
 // ---- advance ----
 var av=[["MobileNo","AvailableBalance"],["919876543210",500],["919876543210",200],["919876543217",350],["919876543219",999]];
 
@@ -146,12 +146,23 @@ var dl=[["CaseId","GSXRepairStatusDescription","Product"],
  ["D1003","Cancelled","Pixel 7"],
  ["D1001","Declined - Rejected by Local Approver","iPhone 13"]];
 var qt=[["CaseID","RevenueType","lastAction"],
- ["Q2001","Repair Revenue","approved"],
- ["Q2002","Repair Revenue","approved"],
- ["Q2002","Repair Revenue","approved"],
- ["Q2003","Repair Revenue","cancelled"],
- ["Q2001","Repair Revenue","approved"],
- ["Q2004","Accessory Revenue","approved"]];
+ // C1002: Carry-In Repair, OOW → the one true win-back.
+ ["C1002","Repair Revenue","rejected"],
+ ["C1002","Repair Revenue","approved"],
+ // C1003: Walk-In type (not carry/mail) → excluded.
+ ["C1003","Repair Revenue","rejected"],
+ ["C1003","Repair Revenue","approved"],
+ // C1005: Carry-In but IN warranty → excluded.
+ ["C1005","Repair Revenue","rejected"],
+ ["C1005","Repair Revenue","approved"],
+ // C1004: Service Non-Repair → excluded.
+ ["C1004","Repair Revenue","rejected"],
+ ["C1004","Repair Revenue","approved"],
+ // Unknown case id → excluded.
+ ["Q9001","Repair Revenue","rejected"],
+ ["Q9001","Repair Revenue","approved"],
+ // Wrong revenue type → not a win-back row at all.
+ ["C1002","Accessory Revenue","approved"]];
 ALL_SHEETS=[mockSheet("target",T),mockSheet("crm",crm),mockSheet("walkin",wl),
   mockSheet("service",sv),mockSheet("advance",av),mockSheet("comm",cm),
   mockSheet("decline",dl),mockSheet("quote",qt)];
@@ -266,12 +277,13 @@ check("DISC/AMC notes hidden",page.indexOf("starts with DISC")===-1&&page.indexO
 check("date-wise GP column",page.indexOf('class="grp grp-0 sp-a">Gross Profit</th>')>-1);
 check("legend shows GP daily target",page.indexOf("Gross Profit "+"₹"+subha.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
 check("GP daily target in legend for Dinesh",page.indexOf("Gross Profit "+"₹"+dinesh.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
-check("job table 11-col owner order (Task 38: CRM Status column removed)",page.indexOf(
-  "<th>Repair Bucket</th><th>Aging</th><th>GSX Repair Status</th>"+
+check("job table 11-col owner order (Task 41: CRM Status first, bucket subtitle)",page.indexOf(
+  "<th>CRM Status</th><th>Aging</th><th>GSX Repair Status</th>"+
   "<th>Repair Type</th>"+
   "<th>Case ID</th><th>Name</th><th>Number</th>"+
   "<th>GSX ID</th><th>S.No</th><th>Model</th>"+
-  "<th>Comm. Updated</th>")>-1&&page.indexOf("<th>CRM Status</th>")===-1);
+  "<th>Comm. Updated</th>")>-1&&page.indexOf("<th>Repair Bucket</th>")===-1
+  &&page.indexOf('class="bucket-sub-row"')>-1&&page.indexOf("grphead-sub")>-1);
 check("old job columns dropped",page.indexOf("<th>Warranty Type</th>")===-1
   &&page.indexOf("<th>Job created</th>")===-1&&page.indexOf("<th>Advance paid</th>")===-1
   &&page.indexOf("<th>Communicated</th>")===-1);
@@ -331,7 +343,7 @@ check("comm cells soft palette (Task 35)", page.indexOf(".comm-pos { color:#0f5a
   &&page.indexOf(".comm-neg { color:#8a1d28 !important; background:#ffd6da")>-1
   &&page.indexOf("background:#0f9d59")===-1&&page.indexOf("background:#c62a33")===-1);
 check("mapping line owner columns",page.indexOf('class="map-line"')>-1
-  &&page.indexOf("Number ← <b>MobileNo</b>")>-1&&page.indexOf("Repair Bucket ←")>-1
+  &&page.indexOf("Number ← <b>MobileNo</b>")>-1&&page.indexOf("CRM Status ←")>-1
   &&page.indexOf("Open filter")>-1);
 check("business sections intact",page.indexOf("Invoice Valuation")>-1&&page.indexOf("Date-wise")>-1);
 // ---- section headings re-named per the new page structure ----
@@ -380,7 +392,7 @@ check("job buckets grouped", page.indexOf('class="grphead"')>-1);
 check("decline/requote live cards (Task 35)",
   page.indexOf("🚫 Decline Repair")>-1&&page.indexOf("🔁 Requote &amp; Win-back")>-1
   &&page.indexOf('<div class="label">Declined repairs</div><div class="value">2</div>')>-1
-  &&page.indexOf('<div class="label">Win-backs</div><div class="value">2</div>')>-1
+  &&page.indexOf('<div class="label">Win-backs</div><div class="value">1</div>')>-1
   &&page.indexOf('ph-tile')===-1);
 check("vmatrix cells one navy (Task 31)", page.indexOf("table.vmatrix td { background:rgba(34,43,90,.92); color:#e9edff")>-1);
 check("dark-blue header skin throughout (Task 35)", page.indexOf("#5b7bff 0%,#4360e0")===-1
@@ -686,7 +698,7 @@ check("coverage iPhone Battery W1 (issue=Batt), Others W2/NW3",
 check("deck renders key numbers", page.indexOf("Walkin to Bills %")>-1&&page.indexOf("iPhone Battery")>-1
   &&page.indexOf("(blank item code)")>-1);
 check("index tiles: decline 2 + winback 2 live",
-  page.indexOf("Declined repairs</span><b>2</b>")>-1&&page.indexOf("Win-backs</span><b>2</b>")>-1);
+  page.indexOf("Declined repairs</span><b>2</b>")>-1&&page.indexOf("Win-backs</span><b>1</b>")>-1);
 check("comm contrast lifted vs bucket tints (Task 36-C)",
   page.indexOf(".jobtable tbody tr td.comm-neg")>-1&&page.indexOf("#ffd3d7")>-1&&page.indexOf("#bbf0d0")>-1);
 check("csat side-lane css gone (Task 40)",
@@ -739,9 +751,9 @@ check("WhatsApp integration removed", page.indexOf("waSendLast")===-1
   &&page.indexOf("#25d366")===-1&&page.indexOf("wa_chatid")===-1);
 
 console.log("== TASK 30 batch ==");
-check("jobs table: CRM Status dropped, Repair Type still after GSX (Task 38)",
-  page.indexOf("<th>GSX Repair Status</th><th>Repair Type</th><th>Case ID</th>")>-1);
-check("repair bucket still carries the crm status", page.indexOf(">Original Display Used</td>")>-1);
+check("jobs table: CRM Status now the first column, rest unchanged (Task 41)",
+  page.indexOf("<th>CRM Status</th><th>Aging</th><th>GSX Repair Status</th><th>Repair Type</th><th>Case ID</th>")>-1);
+check("first column carries the crm status", page.indexOf(">Original Display Used</td>")>-1);
 
 console.log("== TASK 38: case popup + single-line rows + deck fallback ==");
 check("case ids clickable (caselink)", page.indexOf('class="caselink"')>-1
@@ -802,8 +814,9 @@ var pdChk=loadPerformanceData_();
 // --- items 8/9: decline + quote counts from the mock sheets ---
 check("opsExtras decline count = unique 2 (dedupe)", pdChk.opsExtras.decline.count===2,
   pdChk.opsExtras.decline.count);
-check("opsExtras winback count = unique 2 (dedupe)", pdChk.opsExtras.winback.count===2,
-  pdChk.opsExtras.winback.count);
+check("opsExtras winback: rejected→approved serial, carry/mail-in, OOW (Task 41)",
+  pdChk.opsExtras.winback.count===1&&pdChk.opsExtras.winback.matched===10,
+  JSON.stringify(pdChk.opsExtras.winback));
 check("opsExtras decline sheetName surfaced", pdChk.opsExtras.decline.sheetName==="decline");
 // --- item 12: universal chat search ---
 var uni1=chatQuery("iPhone 13");
@@ -848,5 +861,17 @@ check("date-wise person shades alternate light/dark (Task 40)",
   &&page.indexOf("#dwTable th.grp.sp-b { background:rgba(16,26,70,.85)")>-1);
 check("date-wise table bumped bigger (Task 40)",
   page.indexOf("#dwTable { font-size:.95rem; }")>-1&&page.indexOf("#dwTable .apill { font-size:1rem")>-1);
+console.log("== TASK 41 batch ==");
+check("win-back excluding walk-in / in-warranty / SNR / unknown cases (Task 41)",
+  pdChk.opsExtras.winback.count===1);
+check("coverage hybrid: C1007 W counted via CoverageCodeDescription fallback (Task 41)",
+  dk.coverage.rows[7].w===2&&dk.coverage.total.w===3, dk.coverage.rows[7]);
+check("jobs 'Repair Bucket' subtitle row above column headers (Task 41)",
+  page.indexOf('<tr class="bucket-sub-row"><th colspan="11">Repair Bucket')>-1);
+check("jobs map-line renamed to CRM Status (Task 41)",
+  page.indexOf("CRM Status ←")>-1&&page.indexOf("Repair Bucket ←")===-1);
+check("AR attachment panel darkened & text lifted (Task 41)",
+  page.indexOf("#sec-ar .subpanel { background:rgba(8,14,40,.94)")>-1
+  &&page.indexOf("#sec-ar .card .value { color:#ffffff")>-1);
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);
