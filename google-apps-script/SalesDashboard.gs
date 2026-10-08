@@ -2276,13 +2276,7 @@ function renderRepairAnalyticsInner_(ra) {
   }
   var out = [];
 
-  function deltaPill(c) {
-    if (c.deltaPct == null) return '<span class="pill pill-benchmark" title="No repairs logged in the previous 3 months">no 3-month baseline</span>';
-    var cls = c.deltaPct > 0 ? "pill-positive" : (c.deltaPct < 0 ? "pill-negative" : "pill-benchmark");
-    var sign = c.deltaPct > 0 ? "+" : "";
-    return '<span class="pill ' + cls + '" title="This month (to date) vs the 3-month monthly average">' +
-      sign + c.deltaPct + "% vs 3-mo avg</span>";
-  }
+  // Task 45: no 3-month average pills anywhere — current month only.
   function daysCell(avg) { return avg == null ? "—" : avg + " d"; }
 
   function bucketSection(icon, title, labelCol, comp, note) {
@@ -2293,29 +2287,23 @@ function renderRepairAnalyticsInner_(ra) {
       '<div class="tile-grid">'];
     comp.forEach(function (c) {
       o.push('<div class="tile"><div class="label">' + esc_(c.name) + "</div>" +
-        '<div class="value">' + c.cur + "</div>" +
-        '<div class="sub">avg ' + c.perMonth + "/month · prev 3 months</div>" +
-        deltaPill(c) + "</div>");
+        '<div class="value">' + c.cur + "</div></div>");
     });
     o.push('</div><div class="table-wrap"><table aria-label="' + esc_(title) + '"><thead><tr>' +
       "<th>" + esc_(labelCol) + "</th>" +
-      '<th class="num">This Month</th><th class="num">Avg / Month · Prev 3M</th><th class="num">Change</th>' +
-      '<th class="num">Avg Days · Now</th><th class="num">Avg Days · Prev 3M</th>' +
+      '<th class="num">This Month</th><th class="num">Avg Days · Now</th>' +
       "</tr></thead><tbody>");
     comp.forEach(function (c) {
       o.push("<tr><td><strong>" + esc_(c.name) + "</strong></td>" +
         '<td class="num">' + c.cur + "</td>" +
-        '<td class="num">' + c.perMonth + "</td>" +
-        '<td class="num">' + deltaPill(c) + "</td>" +
-        '<td class="num">' + daysCell(c.curDaysAvg) + "</td>" +
-        '<td class="num">' + daysCell(c.prevDaysAvg) + "</td></tr>");
+        '<td class="num">' + daysCell(c.curDaysAvg) + "</td></tr>");
     });
     o.push("</tbody></table></div></div>");
     return o.join("");
   }
 
   var typeSec = bucketSection("📈", "Repair Type Performance", "Repair Type", ra.typeComp,
-    "Cases logged in " + ra.curLabel + " vs the monthly average of the previous 3 months (" + ra.prev3Labels + ").");
+    "Case counts in " + ra.curLabel + " (month to date).");
 
   out.push(typeSec);
 
@@ -2491,32 +2479,15 @@ function renderTargetBlock_(tb, ra) {
   var table = '<div class="scroll-x csat-left"><table class="ptable csat-table">' + thead + body +
     '</table></div><div class="csat-brow">' + chips.join("") + "</div>";
 
-  // Repairs comparison strip — Service Non-Repair excluded (kept from before).
-  var strip = "";
-  if (ra && ra.available) {
-    var cur = ra.monthRepairsTotal, avg = ra.prevRepairAvgTotal;
-    var pill;
-    if (avg > 0) {
-      var delta = Math.round(((cur - avg) / avg) * 100);
-      pill = '<span class="pill ' + (delta >= 0 ? "pill-positive" : "pill-negative") + '">' +
-        (delta >= 0 ? "+" : "") + delta + "% vs 3-mo avg</span>";
-    } else {
-      pill = '<span class="pill pill-benchmark">no 3-month baseline</span>';
-    }
-    strip = '<div class="repair-strip">' +
-      '<div class="rs-item"><span class="rs-label">Total Repairs (excl. Service Non-Repair) — this month</span>' +
-        '<span class="rs-value">' + cur + "</span></div>" +
-      '<div class="rs-item"><span class="rs-label">3-month monthly average</span>' +
-        '<span class="rs-value">' + avg + "</span></div>" +
-      '<div class="rs-item">' + pill + "</div></div>";
-  }
+  // Task 45: the repairs 3-month comparison strip was removed (owner: no
+  // last-3-month average comparisons anywhere on the dashboards).
 
   return '<section class="sec"><div class="sec-head">' +
     "<h2>🎯 " + esc_(title) + "</h2>" +
     '<p class="sec-sub">Every feedback response lands in a satisfaction bucket. Period name from ' +
     '<span class="src-hint">target!K1</span>, table from <span class="src-hint">target!L1:U5</span> — ' +
     "cleaned and re-presented (junk columns dropped, totals verified).</p></div>" +
-    table + strip + "</section>";
+    table + "</section>";
 }
 
 /** Loads everything the Performance & Process pages need. */
@@ -2783,9 +2754,11 @@ function renderGpExtras_(x) {
 
   function marginTable(rows) {
     var body = rows.map(function (m) {
-      // Task 44: no invoice numbers on the tile — the short part description
-      // is the row identity.
-      return "<tr><td>" + esc_(m.partLabel) + "</td><td>" + esc_(m.typeLabel) + "</td>" +
+      // Task 45: invoice number back under the short part (owner wants both);
+      // the cell carries a tooltip since the column is width-capped.
+      return '<td title="' + esc_(m.partLabel + " · " + m.invoice) + '"><b>' + esc_(m.partLabel) +
+        '</b><span class="cell-sub">' + esc_(m.invoice) + "</span></td>" +
+        "<td>" + esc_(m.typeLabel) + "</td>" +
         '<td class="num">' + money0(m.taxable) + "</td>" +
         '<td class="num"><span class="' + (m.gp >= 0 ? "pos" : "neg") + '">' + money0(m.gp) + "</span></td>" +
         '<td class="num"><span class="' + (m.margin >= 0 ? "pos" : "neg") + '">' + m.margin.toFixed(1) + "%</span></td></tr>";
@@ -4347,23 +4320,29 @@ function renderWalkinAnalysis_(wl) {
   }
   var t = wl.totals;
   // Summary rendered as ONE table (was a row of tiles) — one row per metric.
+  // Task 45: the free-text "Reading" column becomes the metric's % share of
+  // the total walk-in tokens (one decimal).
+  function contrib(n) {
+    return '<td class="num">' + (t.walkins > 0 ? Math.round((1000 * n) / t.walkins) / 10 : 0) + "%</td>";
+  }
   var head =
     '<div class="scroll-x" style="margin-bottom:14px"><table class="ptable walksum">' +
     "<thead><tr><th>Metric</th>" + '<th class="num">Value</th>' +
-    "<th>Reading</th></tr></thead><tbody>" +
+    '<th class="num">% Contribution</th></tr></thead><tbody>' +
     "<tr><td><b>Total Walk-ins</b></td>" + '<td class="num"><b>' + t.walkins + "</b></td>" +
-      "<td>" + esc_(t.activeDays + " active days") + "</td></tr>" +
+      contrib(t.walkins) + "</tr>" +
     "<tr><td><b>Unique Walk-ins</b></td>" + '<td class="num"><b>' + t.unique + "</b></td>" +
-      "<td>distinct mobile numbers — repeat visitors counted once</td></tr>" +
+      contrib(t.unique) + "</tr>" +
     "<tr><td><b>Cases Created</b></td>" + '<td class="num"><b>' + t.cases + "</b></td>" +
-      "<td>walk-ins that turned into a service case</td></tr>" +
+      contrib(t.cases) + "</tr>" +
     "<tr><td><b>Invoices Created</b></td>" + '<td class="num"><b>' + t.invoices + "</b></td>" +
-      "<td>walk-ins that closed a sale</td></tr>" +
+      contrib(t.invoices) + "</tr>" +
     "<tr><td><b>Remarks Updated</b></td>" + '<td class="num"><b>' + t.remarks + "</b></td>" +
-      "<td>rows carrying a remark</td></tr>" +
+      contrib(t.remarks) + "</tr>" +
     '<tr class="deadsum"><td><b>Dead Leads</b></td>' + '<td class="num dead"><b>' + t.deadLeads + "</b></td>" +
-      "<td>no case, no invoice, no remark</td></tr>" +
-    "</tbody></table></div>";
+      contrib(t.deadLeads) + "</tr>" +
+    '</tbody></table></div>' +
+    '<p class="muted" style="font-size:11.5px;margin:-8px 0 10px 2px">% Contribution = metric value ÷ total walk-in tokens of the month.</p>';
 
   return head;
 }
@@ -4565,6 +4544,12 @@ function renderJobManagement_(jm) {
   // Case ID · Name · Number · GSX ID · Device S.No · Model · Comm updated.
   // Rows stay grouped under a colour-coded band per repair bucket.
   var NCOLS = 11;
+  // Task 45: column header line repeated under every bucket band — CRM Status
+  // (service!CRM_JobStatusDesc) sits between GSX Repair Status and Repair Type.
+  var BUCKET_COLS =
+    "<th>Aging</th><th>GSX Repair Status</th><th>CRM Status</th><th>Repair Type</th>" +
+    "<th>Case ID</th><th>Name</th><th>Number</th>" +
+    "<th>GSX ID</th><th>S.No</th><th>Model</th><th>Comm. Updated</th>";
   var prevGroup = null;
   var grpAccent = "";
   var rowParts = [];
@@ -4577,10 +4562,13 @@ function renderJobManagement_(jm) {
         return (x.crmRepairStatus || "—") === grp;
       }).length;
       grpAccent = bucketAccent_(grp);
-      rowParts.push('<tr class="grphead' + (grpAccent ? " " + grpAccent : "") + '"><td colspan="' + NCOLS + '">' +
-        '<span class="grphead-sub">Repair Bucket</span>' + esc_(grp) +
+      // Task 45 owner's layout: Repair Bucket → bucket name → column headers,
+      // then the rows of that bucket.
+      rowParts.push('<tr class="bucket-sub-row"><th colspan="' + NCOLS + '"><span class="grphead-sub">Repair Bucket</span></th></tr>');
+      rowParts.push('<tr class="grphead' + (grpAccent ? " " + grpAccent : "") + '"><td colspan="' + NCOLS + '">' + esc_(grp) +
         '<span class="grphead-count">' + bucketCount + " open case" + (bucketCount === 1 ? "" : "s") +
         "</span></td></tr>");
+      rowParts.push('<tr class="bucket-cols">' + BUCKET_COLS + "</tr>");
     }
     rowParts.push(buildRow_(j, grpAccent));
   }
@@ -4617,12 +4605,11 @@ function renderJobManagement_(jm) {
     // Rule (c): Out Of Warranty (No Coverage) with no advance anywhere.
     if (j.oowNoAdvance) rowClses.push("oow-nopay-row");
     return "<tr" + (rowClses.length ? ' class="' + rowClses.join(" ") + '"' : "") + ">" +
-      bucketCell +
       ageCell(j.jobAge) +
       gsxDisplay +
-      // Task 33: Repair Type right after GSX Repair Status.
-      // Task 38: the duplicate "CRM Status" column is gone — Repair Bucket
-      // (first column) already carries the CRM status.
+      // Task 45: CRM Status (service!CRM_JobStatusDesc) between GSX Repair
+      // Status and Repair Type — the row order matches BUCKET_COLS.
+      bucketCell +
       "<td>" + esc_(repairTypeShort_(j.repairType)) + "</td>" +
       '<td class="sticky-col"><button type="button" class="caselink" data-case="' + esc_(j.caseId) +
         '" onclick="openCaseDetails(this.dataset.case)"><b>' + esc_(j.caseId) + "</b></button>" +
@@ -4645,18 +4632,9 @@ function renderJobManagement_(jm) {
     '<col style="width:9%"><col style="width:9%"><col style="width:9%">' +
     '<col style="width:10%"><col style="width:12%">' +
     '</colgroup>' +
-    // Task 41: the per-row bucket text was redundant (rows already sit under
-    // bucket bands) — "Repair Bucket" becomes the subtitle header row and the
-    // first column is titled CRM Status (service!CRM_JobStatusDesc).
-    '<thead><tr class="bucket-sub-row"><th colspan="' + NCOLS + '">Repair Bucket' +
-    ' <span class="bucket-sub-note">grouped view · per-case status in the CRM Status column</span></th></tr>' +
-    "<tr>" +
-    "<th>CRM Status</th><th>Aging</th><th>GSX Repair Status</th>" +
-    "<th>Repair Type</th>" +
-    "<th>Case ID</th><th>Name</th><th>Number</th>" +
-    "<th>GSX ID</th><th>S.No</th><th>Model</th>" +
-    "<th>Comm. Updated</th>" +
-    "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+    // Task 45: every bucket block carries its own "Repair Bucket" subtitle,
+    // the bucket band and a fresh column header row — no global thead.
+    "<tbody>" + rows + "</tbody></table></div>";
 
   // Resolved column mapping — printed under the section so the user can
   // verify each displayed column against their sheet headers at a glance.
@@ -5387,7 +5365,13 @@ function getDashboardCss_() {
     "#sec-ar .subpanel-head { color:#e8eeff; }" +
     "#sec-ar p.muted { color:#aebcf0; }" +
     // Task 41 — jobs table subtitle header row + group-band subtitle chip.
-    ".jobtable thead tr.bucket-sub-row th { text-align:left !important; font-size:.74rem; letter-spacing:.10em; text-transform:uppercase; color:#ffe08a; background:rgba(20,30,74,.65); border-bottom:1px solid rgba(170,190,255,.35); }" +
+    ".jobtable tr.bucket-sub-row th { text-align:left !important; font-size:.74rem; letter-spacing:.10em; text-transform:uppercase; color:#ffe08a; background:rgba(20,30,74,.65); border-bottom:1px solid rgba(170,190,255,.35); }" +
+    ".jobtable tr.bucket-cols th { background:#1c2b52; color:#cfe0ff; font-size:.62rem; font-weight:800; letter-spacing:.05em; text-transform:uppercase; white-space:nowrap; }" +
+    // Task 45 — margin tables never overflow their tile: ellipsis + col widths.
+    "#sec-gpmargin .hl-half table { table-layout:fixed; width:100%; }" +
+    "#sec-gpmargin .hl-half th, #sec-gpmargin .hl-half td { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }" +
+    "#sec-gpmargin .hl-half th:first-child, #sec-gpmargin .hl-half td:first-child { width:32%; }" +
+    "#sec-gpmargin .cell-sub { display:block; font-size:.62rem; color:#9fb4e8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }" +
     ".bucket-sub-note { font-weight:600; letter-spacing:.02em; color:#9fadde; text-transform:none; font-size:.66rem; }" +
     ".grphead-sub { display:inline-block; margin-right:8px; font-weight:800; color:#ffe08a; font-size:.66rem; letter-spacing:.10em; text-transform:uppercase; }" +
     // Task 42 — high/low margin tables share a tight two-pane grid.

@@ -278,12 +278,11 @@ check("DISC/AMC notes hidden",page.indexOf("starts with DISC")===-1&&page.indexO
 check("date-wise GP column",page.indexOf('class="grp grp-0 sp-a">Gross Profit</th>')>-1);
 check("legend shows GP daily target",page.indexOf("Gross Profit "+"₹"+subha.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
 check("GP daily target in legend for Dinesh",page.indexOf("Gross Profit "+"₹"+dinesh.dailyTargets.grossProfit.toLocaleString("en-IN"))>-1);
-check("job table 11-col owner order (Task 41: CRM Status first, bucket subtitle)",page.indexOf(
-  "<th>CRM Status</th><th>Aging</th><th>GSX Repair Status</th>"+
-  "<th>Repair Type</th>"+
+check("job table 11-col owner order (Task 45: CRM Status between GSX Repair Status & Repair Type)",page.indexOf(
+  "<th>Aging</th><th>GSX Repair Status</th><th>CRM Status</th><th>Repair Type</th>"+
   "<th>Case ID</th><th>Name</th><th>Number</th>"+
   "<th>GSX ID</th><th>S.No</th><th>Model</th>"+
-  "<th>Comm. Updated</th>")>-1&&page.indexOf("<th>Repair Bucket</th>")===-1
+  "<th>Comm. Updated</th>")>-1&&page.indexOf("<th>CRM Status</th><th>Aging")===-1
   &&page.indexOf('class="bucket-sub-row"')>-1&&page.indexOf("grphead-sub")>-1);
 check("old job columns dropped",page.indexOf("<th>Warranty Type</th>")===-1
   &&page.indexOf("<th>Job created</th>")===-1&&page.indexOf("<th>Advance paid</th>")===-1
@@ -315,15 +314,19 @@ check("mtd walk-in 3 / carry-in 2",page.indexOf('<strong>Walk-In Repair</strong>
 check("mtd grand-total row retired",page.indexOf("All repair types")===-1);
 var raObj=loadPerformanceData_().repair;
 check("mtd totals still computed per type",raObj.mtdRows.length===2&&raObj.mtdTotal===5);
-check("repair tile avg baseline",page.indexOf("avg 0/month")>-1);
-check("no-fraction averages",page.indexOf("avg 0.3/month")===-1);
+check("repair tiles carry no 3-month baseline (Task 45)",page.indexOf("avg 0/month")===-1
+  &&page.indexOf("avg 0.3/month")===-1&&page.indexOf("/month · prev 3 months")===-1);
 check("KPI names from row 14",biz.kpi.ar.some(function(k){return k.code==="CAREPLUS";}));
 check("KPI targets from row 15",careplus.target===25&&biz.kpi.ar.filter(function(k){return k.code==="AMC";})[0].target===40);
 
-check("no-baseline note",page.indexOf("no 3-month baseline")>-1);
+check("no 3-month comparison anywhere (Task 45)",page.indexOf("no 3-month baseline")===-1
+  &&page.indexOf("vs 3-mo avg")===-1&&page.indexOf("Prev 3M")===-1&&page.indexOf("prev 3 months")===-1
+  &&page.indexOf("Avg / Month")===-1&&page.indexOf('<div class="repair-strip">')===-1);
 check("repair meta",page.indexOf("5 repairs this month · 2 repair types")>-1);
 check("avg days col header",page.indexOf("Avg Days · Now")>-1);
-check("walk-in avg days 2 d",page.indexOf('<strong>Walk-In Repair</strong></td><td class="num">3</td><td class="num">0</td>')>-1);
+check("walk-in repair row: count + avg days only (Task 45)",
+  /<strong>Walk-In Repair<\/strong><\/td><td class="num">3<\/td><td class="num">2 d<\/td><\/tr>/.test(page)
+  &&page.indexOf('<strong>Walk-In Repair</strong></td><td class="num">3</td><td class="num">0</td>')===-1);
 // repair validation matrix: products vertical × coverage horizontal, one table
 // The products×coverage matrix was REMOVED from the page on the owner's
 // request; the COMPUTE object is still built (other consumers may need it).
@@ -366,8 +369,8 @@ check("CSAT people rows",page.indexOf("Subha K")>-1&&page.indexOf("Dinesh Kumar"
 check("CSAT total row + chips",page.indexOf("Feedback responses")>-1&&page.indexOf('cc-value">14</span>')>-1&&page.indexOf("Satisfied (VS + SS)")>-1);
 check("CSAT dissatisfied pct",page.indexOf("csat-neg")>-1&&page.indexOf("14%")>-1);
 check("CSAT CFI chip",page.indexOf("CFI")>-1&&page.indexOf("85.71%")>-1);
-check("repair comparison strip (excl SNR)", page.indexOf("Total Repairs (excl. Service Non-Repair) — this month")>-1
-  &&page.indexOf('rs-value">5</span>')>-1);
+check("repair comparison strip removed (Task 45)", page.indexOf("Total Repairs (excl. Service Non-Repair) — this month")===-1
+  &&page.indexOf("3-month monthly average")===-1);
 check("walk-in summary is a table", page.indexOf('ptable walksum')>-1 && page.indexOf("<b>Total Walk-ins</b></td>")>-1);
 
 check("weekly wd wk2=7 (no holiday)",page.indexOf("(8–14 Sep)</span></td><td style=\"text-align:center\">7</td>")>-1);
@@ -754,8 +757,9 @@ check("WhatsApp integration removed", page.indexOf("waSendLast")===-1
   &&page.indexOf("#25d366")===-1&&page.indexOf("wa_chatid")===-1);
 
 console.log("== TASK 30 batch ==");
-check("jobs table: CRM Status now the first column, rest unchanged (Task 41)",
-  page.indexOf("<th>CRM Status</th><th>Aging</th><th>GSX Repair Status</th><th>Repair Type</th><th>Case ID</th>")>-1);
+check("jobs table: CRM Status after GSX Repair Status, Aging first (Task 45)",
+  page.indexOf("<th>Aging</th><th>GSX Repair Status</th><th>CRM Status</th><th>Repair Type</th><th>Case ID</th>")>-1
+  &&page.indexOf("<th>CRM Status</th><th>Aging")===-1);
 check("first column carries the crm status", page.indexOf(">Original Display Used</td>")>-1);
 
 console.log("== TASK 38: case popup + single-line rows + deck fallback ==");
@@ -869,8 +873,12 @@ check("win-back excluding walk-in / in-warranty / SNR / unknown cases (Task 41)"
   pdChk.opsExtras.winback.count===1);
 check("coverage hybrid: C1007 W counted via CoverageCodeDescription fallback (Task 41)",
   dk.coverage.rows[7].w===2&&dk.coverage.total.w===3, dk.coverage.rows[7]);
-check("jobs 'Repair Bucket' subtitle row above column headers (Task 41)",
-  page.indexOf('<tr class="bucket-sub-row"><th colspan="11">Repair Bucket')>-1);
+check("jobs: Repair Bucket subtitle + band + repeated column header per bucket (Task 45)",(function(){
+  var subs=(page.match(/<tr class="bucket-sub-row"><th colspan="11"><span class="grphead-sub">Repair Bucket<\/span><\/th><\/tr>/g)||[]).length;
+  var cols=(page.match(/<tr class="bucket-cols">/g)||[]).length;
+  var bands=(page.match(/<tr class="grphead/g)||[]).length;
+  return subs>=2&&subs===cols&&cols===bands&&page.indexOf('<thead><tr class="bucket-sub-row"')===-1;
+})());
 check("jobs map-line renamed to CRM Status (Task 41)",
   page.indexOf("CRM Status ←")>-1&&page.indexOf("Repair Bucket ←")===-1);
 check("AR attachment panel darkened & text lifted (Task 41)",
@@ -902,14 +910,29 @@ check("shortPart_ owner examples (battery / protect+ / temper)",
   &&shortPart_("Care+ plan")==="ac+"&&shortPart_("Case")==="case");
 check("margin rows expose short part labels, not invoice text",
   biz.gpExtras.marginHigh[0].partLabel==="svc"&&biz.gpExtras.marginLow[0].partLabel==="case");
-check("margin tables show Part column, never the invoice id", (function(){
+check("margin tables show Part + invoice subline, clipped to tile (Task 45)", (function(){
   var seg=page.slice(page.indexOf('id="sec-gpmargin"'),page.indexOf('id="sec-discount"'));
-  return seg.indexOf("<th>Part</th>")>-1&&seg.indexOf("INV1")===-1&&seg.indexOf("INV2")===-1&&seg.indexOf("INV3")===-1;
+  return seg.indexOf("<th>Part</th>")>-1&&seg.indexOf("INV1")>-1&&seg.indexOf("INV2")>-1&&seg.indexOf("INV3")>-1
+    &&seg.indexOf('class="cell-sub"')>-1&&page.indexOf("#sec-gpmargin .hl-half td")>-1
+    &&page.indexOf("text-overflow:ellipsis")>-1;
 })());
 check("discount tile lists top part per type", (function(){
   var seg=page.slice(page.indexOf('id="sec-discount"'));
   return biz.gpExtras.discount.byTypeTop.accessory&&biz.gpExtras.discount.byTypeTop.accessory.label==="case"
     &&seg.indexOf("<th>Top Part</th>")>-1&&seg.indexOf("case")>-1;
 })(), JSON.stringify(biz.gpExtras.discount.byTypeTop));
+console.log("== TASK 45 batch ==");
+(function(){
+  var wlt=loadPerformanceData_().walkin.totals;
+  check("walk-in summary: % Contribution column replaces Reading (Task 45)",
+    page.indexOf('<th class="num">% Contribution</th>')>-1&&page.indexOf("<th>Reading</th>")===-1
+    &&page.indexOf('<b>Total Walk-ins</b></td><td class="num"><b>'+wlt.walkins+'</b></td><td class="num">100%</td>')>-1);
+  check("walk-in contribution footnote",page.indexOf("% Contribution = metric value ÷ total walk-in tokens of the month")>-1);
+  var seg=page.slice(page.indexOf("<strong>Walk-In Repair</strong>")-50,page.indexOf("<strong>Walk-In Repair</strong>")+400);
+  check("repair analytics render: no prev-month columns rendered (Task 45)",
+    seg.indexOf("perMonth")===-1&&page.indexOf("Change</th>")===-1&&page.indexOf("prev3month")===-1);
+  check("jobs: CRM Status cell between GSX status and repair type in rows (Task 45)",
+    page.indexOf('class="bucket-cols"')>-1);
+})();
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);
