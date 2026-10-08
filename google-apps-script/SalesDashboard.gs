@@ -2804,7 +2804,9 @@ function renderGpExtras_(x) {
     dRows + dTotal + "</tbody></table></div>" +
     "</div></section>";
 
-  return '<div class="duo-pair">' + marginPanel + discPanel + "</div>";
+  // Task 46: stacked vertically (each panel gets the full page width) with
+  // High / Low Margin ABOVE Discounted Cases — no more side-by-side pair.
+  return '<div class="gp-stack">' + marginPanel + discPanel + "</div>";
 }
 
 /** KPI page: KPI target · Incentive · Salesperson performance · AR attachment. */
@@ -5234,9 +5236,9 @@ function getDashboardCss_() {
     ".inc-pair { display:flex; gap:14px; align-items:stretch; flex-wrap:wrap; }" +
     ".inc-pair .inc-cat { flex:1 1 46%; min-width:340px; margin-bottom:0; }" +
     ".inc-pair table { width:100%; }" +
-    // ---- repair type performance + validation matrix: side by side ----
-    ".duo-pair { display:flex; gap:16px; align-items:stretch; flex-wrap:wrap; }" +
-    ".duo-pair > .section { flex:1 1 47%; min-width:460px; margin-bottom:0; border:1px solid #d5dde6;" +
+    // ---- GP margin / discount panels: stacked, each one full-page-width ----
+    ".gp-stack { display:flex; flex-direction:column; gap:16px; }" +
+    ".gp-stack > .section { width:100%; box-sizing:border-box; margin-bottom:0; border:1px solid #d5dde6;" +
     " border-radius:9px; background:#ffffff; padding:10px 12px 14px; }" +
     // ---- job table: fixed layout compressed to the page width ----
     ".jobwrap { overflow-x:auto; }" +
@@ -5277,7 +5279,7 @@ function getDashboardCss_() {
     ".sec { background:rgba(28,43,82,.60); border-color:rgba(170,190,255,.28);" +
     " backdrop-filter:blur(12px) saturate(1.15); -webkit-backdrop-filter:blur(12px) saturate(1.15);" +
     " box-shadow:0 14px 34px rgba(4,8,26,.5), inset 0 1px 0 rgba(255,255,255,.10); }" +
-    ".duo-pair > .section { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.28);" +
+    ".gp-stack > .section { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.28);" +
     " backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); }" +
     ".section h2, .sec h2, .section-title { color:#f2f6ff; }" +
     ".sec-sub, .section-sub, .sec-desc { color:#a9b6d8; }" +
@@ -5367,11 +5369,14 @@ function getDashboardCss_() {
     // Task 41 — jobs table subtitle header row + group-band subtitle chip.
     ".jobtable tr.bucket-sub-row th { text-align:left !important; font-size:.74rem; letter-spacing:.10em; text-transform:uppercase; color:#ffe08a; background:rgba(20,30,74,.65); border-bottom:1px solid rgba(170,190,255,.35); }" +
     ".jobtable tr.bucket-cols th { background:#1c2b52; color:#cfe0ff; font-size:.62rem; font-weight:800; letter-spacing:.05em; text-transform:uppercase; white-space:nowrap; }" +
-    // Task 45 — margin tables never overflow their tile: ellipsis + col widths.
+    // Task 45+46 — margin tables never overflow their tile (ellipsis safety
+    // net) but stay fully readable: the part column gets 38% of a now
+    // full-page-width panel and the invoice sub-line is .7rem, not shrunk.
     "#sec-gpmargin .hl-half table { table-layout:fixed; width:100%; }" +
     "#sec-gpmargin .hl-half th, #sec-gpmargin .hl-half td { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }" +
-    "#sec-gpmargin .hl-half th:first-child, #sec-gpmargin .hl-half td:first-child { width:32%; }" +
-    "#sec-gpmargin .cell-sub { display:block; font-size:.62rem; color:#9fb4e8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }" +
+    "#sec-gpmargin .hl-half th:first-child, #sec-gpmargin .hl-half td:first-child { width:38%; }" +
+    "#sec-gpmargin .cell-sub { display:block; font-size:.7rem; font-weight:700; color:#9fb4e8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }" +
+    "#sec-gpmargin .subpanel-head { font-size:.86rem; }" +
     ".bucket-sub-note { font-weight:600; letter-spacing:.02em; color:#9fadde; text-transform:none; font-size:.66rem; }" +
     ".grphead-sub { display:inline-block; margin-right:8px; font-weight:800; color:#ffe08a; font-size:.66rem; letter-spacing:.10em; text-transform:uppercase; }" +
     // Task 42 — high/low margin tables share a tight two-pane grid.

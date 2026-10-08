@@ -934,5 +934,16 @@ console.log("== TASK 45 batch ==");
   check("jobs: CRM Status cell between GSX status and repair type in rows (Task 45)",
     page.indexOf('class="bucket-cols"')>-1);
 })();
+console.log("== TASK 46 batch ==");
+(function(){
+  check("GP sections stacked, not side-by-side (Task 46)",
+    page.indexOf('class="gp-stack"')>-1&&page.indexOf("duo-pair")===-1);
+  check("High/Low Margin sits ABOVE Discounted Cases (Task 46)",
+    page.indexOf('id="sec-gpmargin"')>-1
+    &&page.indexOf('id="sec-gpmargin"')<page.indexOf('id="sec-discount"'));
+  check("margin tables readable: wider part column + bigger invoice sub-line (Task 46)",
+    page.indexOf('width:38%;')>-1&&page.indexOf(".cell-sub { display:block; font-size:.7rem")>-1
+    &&page.indexOf("#sec-gpmargin .subpanel-head { font-size:.86rem")>-1);
+})();
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);
