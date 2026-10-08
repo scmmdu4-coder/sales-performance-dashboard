@@ -61,6 +61,8 @@ var rev=["Service","Accessories","Repair"];
 var crm=[["InvoiceCode","InvoiceDate","SalesPersonName","RevenueType","ItemDescription","SubCategory","SchemeCode","TaxableAmount","GrossProfit","TranType","ItemCode","PartType","MobileNo","DiscountAmount"]];
 for(var day=1;day<=25;day++){if(day%7===0)continue;for(var x=0;x<18;x++){var sp=RND()<0.55?"Subha":"Dinesh";var rt=rev[Math.floor(RND()*3)];var amt=Math.round(500+RND()*4500);var k=RND()<0.2?CODES[Math.floor(RND()*kpiProb.length)]:"";
  crm.push(["IV"+day+x,("0"+day).slice(-2)+"-09-2026 "+("0"+(9+Math.floor(RND()*9))).slice(-2)+":30",sp,rt,k?"Device plan":"",k," ",amt,Math.round(amt*0.25),"SALES","PART",k,"850000"+day+x,(RND()<0.18?Math.round(amt*(0.04+0.10*RND())):0)]);}}
+// Task 43: crm!F2 carries the store name, shown verbatim as the page brand.
+crm[1][5]="iPlanet Care - Sulur";
 var wl=[["MobileNo","TokenDate","VisitPurposeDesc","CaseId","InvoiceCode","Remark","TokenCreatedBy","CustomerVisitSource"]];
 for(var i2=0;i2<180;i2++){var dd=(i2%25)+1;if(dd%7===0)dd=1;var m="91999"+String(100000+i2).slice(-6);var pur=["Repair Submission","Collection","General/Sales Enquiry"][i2%3];var hasCase=i2%4!==0;wl.push([m,"2026-09-"+("0"+dd).slice(-2)+" 10:00:00",pur,hasCase?"C100"+(i2%26):"",i2%2?"IV"+(i2%25)+"0":"",i2%6===0?"Follow up":"",i2%3?"Subha":"Dinesh",["Walk-by","Google","Reference","Repeat Customer","Instagram"][i2%5]]);}
 var cm=[["CaseId","CreatedDate","Remark"]];for(var i3=0;i3<26;i3++){if(i3%3!==0)cm.push(["C100"+i3,daysAgoStr(i3%6,"11"),"update"]);}

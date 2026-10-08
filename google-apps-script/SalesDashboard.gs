@@ -319,10 +319,10 @@ function loadDashboardData_() {
   // Task 36-D — the deck numbers ride on the same parse, current month only.
   result.data.deckAnalysis = computeDeckAnalysis_(ss, allRows);
 
-  // Store code for the page title — the owner keeps it in crm!D2 now
-  // (moved from crm!C2 with the new sheet layout).
+  // Store name for the page title — Task 43: taken verbatim from crm!F2;
+  // the "iPlanetcare" prefix is no longer glued on.
   result.data.store.storeCode =
-    (crmValues[1] && crmValues[1].length > 3) ? str_(crmValues[1][3]) : "";
+    (crmValues[1] && crmValues[1].length > 5) ? str_(crmValues[1][5]) : "";
 
   // Average revenue per unique walk-in — the walkin sheet is optional, so a
   // missing tab simply leaves this metric blank instead of failing the page.
@@ -4035,9 +4035,9 @@ function freshnessLineHtml_(data, perfData) {
 function buildDashboardPage_(data) {
   var css = getDashboardCss_();
   var storeCode = (data.store && data.store.storeCode) ? data.store.storeCode : "";
-  // Task 35: brand reads "iPlanetcare <CODE>" on line 1; the generic title
+  // Task 35/43: brand line 1 = the crm!F2 store name verbatim; generic title
   // moves to a second line but stays the page header.
-  var pageTitle = "iPlanetcare" + (storeCode ? " " + storeCode : "") + " — Store Performance Dashboard";
+  var pageTitle = (storeCode ? storeCode : "iPlanetcare") + " — Store Performance Dashboard";
 
   var perfData = loadPerformanceData_();
 
@@ -4227,7 +4227,8 @@ function buildDashboardPage_(data) {
     // Task 30: plain dark-ash backdrop for EVERY page — no image at all.
     '<header class="topbar"><div class="topbar-inner">' +
     "<div class=\"topbar-left\">" +
-    '<div class="brand">iPlanetcare' + (storeCode ? " " + esc_(storeCode) : "") + "</div>" +
+    // Task 43: brand shows the crm!F2 store name as-is (fallback when blank).
+    '<div class="brand">' + esc_(storeCode ? storeCode : "iPlanetcare") + "</div>" +
     '<div class="brand-sub">Store Performance Dashboard</div>' +
     '<div class="meta" id="meta">' + esc_(bizMeta) + "</div>" +
     '<div class="note" id="note"></div>' +

@@ -97,7 +97,7 @@ T[4][11]="TOTAL";        T[4][12]=12; T[4][14]=2; T[4][18]=14; T[4][19]="85.71%"
 // ---- crm ----
 var crm=[["InvoiceCode","InvoiceDate","SalesPersonName","RevenueType","ItemDescription",
  "SubCategory","SchemeCode","TaxableAmount","GrossProfit","TranType","ItemCode","PartType","OrderCode","DiscountAmount"],
- ["INV1","23-09-2026 10:15","Subha","Service","Svc","","",5000,1500,"SALES","","","C1001",0],
+ ["INV1","23-09-2026 10:15","Subha","Service","Svc","iPlanet Care - Sulur","",5000,1500,"SALES","","","C1001",0],
  ["INV2","23-09-2026 11:00","Dinesh","Accessories","Case","","",1200,300,"SALES","","","",400],
  ["INV3","23-09-2026 12:00","Subha","Accessories","Care+ plan","","",900,250,"SALES","CPLUS","","",0]];
 
@@ -258,9 +258,10 @@ check("status pill text",page.indexOf("In Progress")>-1||page.indexOf("Completed
 check("per-day requirement strip",page.indexOf("Per Day Requirement")>-1);
 check("metric grid",page.indexOf('class="metric a"')>-1&&page.indexOf('class="metric b"')>-1);
 // Title from crm!D2 (mock D2 = "Service" — the mock's 4th column carries it)
-check("title uses crm D2 (Task 39)",page.indexOf("iPlanetcare Service — Store Performance Dashboard")>-1);
-check("two-line brand: iPlanetcare + Store Performance Dashboard (Task 35)",
-  page.indexOf('<div class="brand">')>-1&&page.indexOf("iPlanetcare Service</div>")>-1
+check("title uses crm F2 store name, no prefix (Task 43)",page.indexOf("iPlanet Care - Sulur — Store Performance Dashboard")>-1);
+check("brand shows crm F2 store name verbatim (Task 43)",
+  page.indexOf('<div class="brand">')>-1&&page.indexOf("<div class=\"brand\">iPlanet Care - Sulur</div>")>-1
+  &&page.indexOf("iPlanetcare Service</div>")===-1&&page.indexOf('"iPlanetcare"')===-1
   &&page.indexOf('class="brand-sub"')>-1&&page.indexOf("Store Performance Dashboard</div>")>-1);
 check("seven tabs: Index/GP/KPI/WALK-IN/Operation/Jobs/DATE",
   page.indexOf("🏠 Index")>-1&&page.indexOf("🎯 GP")>-1&&page.indexOf("📊 KPI")>-1
