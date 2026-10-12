@@ -434,7 +434,7 @@ check("store gate is store-level (80% of 200000)", subha.repairGate.requiredValu
 check("kpi pair layout", page.indexOf('class="kpi-pair"')>-1&&page.indexOf('class="kp-right"')>-1);
 check("incentive split categories", page.indexOf("Category 1 · AMC")>-1
   &&page.indexOf("Category 2 · Bundle (DISC scheme)")>-1);
-check("incentive totals rows", (page.match(/All salespersons/g)||[]).length===2);
+check("incentive totals rows (SM + CRE pages, Task 49)", (page.match(/All salespersons/g)||[]).length===4);
 check("deep header applied", (page.match(/hdr-deep/g)||[]).length>=3&&page.indexOf('class="hdr-deep"')>-1);
 check("csat chips below table, no side lane (Task 40)", page.indexOf("csat-brow")>-1
   &&page.indexOf("csat-flex")===-1&&page.indexOf("csat-right")===-1);
@@ -916,9 +916,11 @@ check("discount tile: 1 case, ₹400, 133.3% of GP, accessory bucket",
 check("discount section renders cards + per-type table",
   page.indexOf('id="sec-discount"')>-1&&page.indexOf("Discounted Invoices")>-1
   &&page.indexOf("Discount ÷ Gross Profit")>-1);
-check("gp extras placed between invoice valuation and weekly analysis",
-  page.indexOf('id="sec-gpmargin"')>page.indexOf("sec-invoice")
-  &&page.indexOf('id="sec-gpmargin"')<page.indexOf('id="sec-weekly"'));
+check("gp extras placed between invoice valuation and weekly analysis (SM pane, Task 49)",(function(){
+  var seg=page.slice(page.indexOf('data-pane="sm"'));
+  return seg.indexOf('id="sec-gpmargin"')>seg.indexOf("sec-invoice")
+    &&seg.indexOf('id="sec-gpmargin"')<seg.indexOf('id="sec-weekly"');
+})());
 console.log("== TASK 44 batch ==");
 check("shortPart_ owner examples (battery / protect+ / temper)",
   shortPart_("Battery, iPhone 14 Plus, India")==="battery"
@@ -973,14 +975,23 @@ console.log("== TASK 47 batch ==");
   var wlt=pdX.walkin.totals, tb=pdX.targetBlock, rar=pdX.repair, jm=pdX.jobs;
   check("SM group banners A-G (Task 47)", (page.match(/gb-letter">/g)||[]).length===7,
     (page.match(/gb-letter">/g)||[]).length);
-  check("CRE day-wise reduced table (Task 47)",
-    page.indexOf('id="sec-cre-day"')>-1
-    &&page.indexOf('<th class="num">Total Tokens</th><th class="num">Jobs Created</th><th class="num">Invoices Created</th>')>-1
-    &&page.indexOf('<b>Month total</b></td><td class="num"><b>'+wlt.walkins+'</b></td><td class="num"><b>'+wlt.cases+'</b></td><td class="num"><b>'+wlt.invoices+'</b></td>')>-1);
-  var csatN=(tb&&tb.totalRow)?tb.totalRow.total:0, doneN=rar.completedThisMonth||0;
-  check("CRE C-SAT vs completed repairs cards (Task 47)",
-    page.indexOf('<div class="label">C-SAT responses</div><div class="value">'+csatN+'</div>')>-1
-    &&page.indexOf('<div class="label">Completed repairs</div><div class="value">'+doneN+'</div>')>-1);
+  check("CRE reduced day-wise table removed (Task 49)",page.indexOf('id="sec-cre-day"')===-1);
+  var csatN=(tb&&tb.totalRow)?tb.totalRow.total:0;
+  check("CRE manifest modules (Task 49)",(function(){
+    var seg=page.slice(page.indexOf('data-pane="cre"'),page.indexOf('data-pane="tech"'));
+    return seg.indexOf('id="sec-store"')>-1&&seg.indexOf('id="sec-workdays"')>-1
+      &&seg.indexOf('id="sec-weekly"')>-1&&seg.indexOf('id="sec-kpi"')>-1
+      &&seg.indexOf('id="sec-incentive"')>-1&&seg.indexOf('id="sec-person"')>-1
+      &&seg.indexOf('id="sec-ar"')>-1&&seg.indexOf('id="sec-cre-walkin"')>-1
+      &&seg.indexOf('C1. 🚶 Walk-in Analysis')>-1&&seg.indexOf("csat-table")>-1
+      &&seg.indexOf('id="sec-cre-day"')===-1&&seg.indexOf('id="sec-cre-csat"')===-1;
+  })());
+  check("TECH manifest modules (Task 49)",(function(){
+    var seg=page.slice(page.indexOf('data-pane="tech"'),page.indexOf('data-pane="sm"'));
+    return seg.indexOf("D2. Repair Type Performance")>-1&&seg.indexOf("D3. 🚫 Decline Repair")>-1
+      &&seg.indexOf("D4. 🔁 Requote")>-1&&seg.indexOf("Bucket Summary")>-1
+      &&seg.indexOf("E1. 🔧 Job Management — Open Jobs</h2>")>-1;
+  })());
   check("TECH bucket summary with aging bands (Task 47)",
     page.indexOf('id="sec-tech-jobs"')>-1&&page.indexOf('Bucket Summary')>-1
     &&page.indexOf('<th class="num">0–7 d</th><th class="num">8–15 d</th><th class="num">16–30 d</th><th class="num">31+ d</th>')>-1
@@ -1011,13 +1022,36 @@ console.log("== TASK 48 batch ==");
     segP.indexOf('<th class="num">Service %</th>')>-1&&segP.indexOf('<th class="num">Total %</th>')>-1
     &&segP.indexOf("%</td>")>-1&&segP.indexOf("₹")===-1);
   var bs=biz.store;
-  check("index working days cards (Task 48)",
-    segIdx.indexOf('<div class="label">Total Working Days</div><div class="value"><b>'+bs.totalWorkingDays+"</b></div>")>-1
-    &&segIdx.indexOf('<div class="label">Consumed</div><div class="value"><b>'+bs.consumedWorkingDays+"</b></div>")>-1
-    &&segIdx.indexOf('<div class="label">Balance Left</div><div class="value"><b>'+bs.balanceWorkingDays+"</b></div>")>-1);
+  check("index working days module directly under Store Performance (Task 49)",
+    segIdx.indexOf('id="idx-workdays"')>segIdx.indexOf('id="idx-store"')
+    &&segIdx.indexOf('id="idx-workdays"')<segIdx.indexOf('id="idx-walkin"')
+    &&segIdx.indexOf('<div class="label">Total Working Days</div><div class="value">'+bs.totalWorkingDays+"</div>")>-1
+    &&segIdx.indexOf('<div class="label">Consumed</div><div class="value">'+bs.consumedWorkingDays+"</div>")>-1
+    &&segIdx.indexOf('<div class="label">Balance</div><div class="value" style="color:')>-1);
   var jb=loadPerformanceData_().jobs.totals;
   check("index open jobs card (Task 48)",
     segIdx.indexOf('<div class="label">Open Jobs</div><div class="value"><b>'+jb.openJobs+"</b></div>")>-1);
+})();
+console.log("== TASK 49 batch ==");
+(function(){
+  var segIdx=page.slice(page.indexOf('id="pageIndex"'),page.indexOf('data-pane="cre"'));
+  var segW=segIdx.slice(segIdx.indexOf('id="idx-weekly"'),segIdx.indexOf('id="idx-kpi"'));
+  var wa=computeWeeklyAnalysis_(biz);
+  function r1(x){return Math.round(x*10)/10;}
+  var upN=wa.weeks.filter(function(w){return w.status==="Upcoming";}).length;
+  var t0=wa.types[0];
+  var cw=wa.weeks.filter(function(w){return w.status==="Completed";})[0];
+  var cwPct=(cw&&cw.tgt[t0.key])?r1(cw.achieved[t0.key]/cw.tgt[t0.key]*100):null;
+  var bal=Math.max(0,t0.monthTarget-(wa.monthTotals[t0.key]||0));
+  var upPct=upN?r1(bal/upN/Math.max(1,t0.monthTarget)*100):null;
+  check("index weekly summary: completed/in-progress % + upcoming balance % (Task 49)",
+    segW.indexOf('pill-benchmark">in progress')>-1
+    &&cwPct!=null&&segW.indexOf(cwPct+"%</td>")>-1
+    &&upN>=1&&upPct!=null&&segW.indexOf('<td class="num muted">'+upPct+"%</td>")>-1
+    &&segW.indexOf("balance split evenly")>-1,
+    cwPct,upPct,upN);
+  check("index weekly summary lists every week with status pill (Task 49)",
+    (segW.match(/<span class="pill/g)||[]).length===wa.weeks.length);
 })();
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);

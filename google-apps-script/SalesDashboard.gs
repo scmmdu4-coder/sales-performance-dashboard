@@ -2865,15 +2865,10 @@ function renderWalkinHtml_(pd) {
     renderWalkinDayTable_(wl) + "</div></div></section>";
 }
 
-/** OPERATION page: customer satisfaction + repair ops + sub-modules. */
-function renderOperationHtml_(pd) {
-  var out = [];
-  out.push(renderTargetBlock_(pd.targetBlock, pd.repair));
-  out.push(renderRepairAnalyticsInner_(pd.repair));
-  var ex = pd.opsExtras || { decline: {}, winback: {} };
-  // Task 35 — Decline Repair: unique decline!CaseId whose GSX status is
-  // "Declined - Rejected by Local Approver".
-  out.push(
+/** Task 49: decline / win-back card pair — shared by the OPERATION
+ * group (SM page) and the TECH page. */
+function renderOpsPairHtml_(ex) {
+  return (
     '<div class="ops-pair"><section class="sec"><div class="sec-head"><h2>D3. 🚫 Decline Repair</h2>' +
     '<p class="sec-sub">Unique CaseIDs in <b>decline</b> where GSXRepairStatusDescription is ' +
     '"Declined - Rejected by Local Approver".</p></div>' +
@@ -2893,6 +2888,18 @@ function renderOperationHtml_(pd) {
       (ex.winback.count || 0) + '</div>' +
       '<div class="sub">' + (ex.winback.sheetName ? "rejected → approved · unique serials · from " + esc_(ex.winback.sheetName) : "no quote sheet found") + '</div></div>' +
     "</div></section></div>");
+}
+
+/** OPERATION page: customer satisfaction + repair ops + sub-modules. */
+function renderOperationHtml_(pd) {
+  var out = [];
+  out.push(renderTargetBlock_(pd.targetBlock, pd.repair));
+  out.push(renderRepairAnalyticsInner_(pd.repair));
+  var ex = pd.opsExtras || { decline: {}, winback: {} };
+  // Task 35 — Decline Repair: unique decline!CaseId whose GSX status is
+  // "Declined - Rejected by Local Approver".
+  out.push(renderOpsPairHtml_(ex));
+
   return out.join("");
 }
 
@@ -3289,7 +3296,7 @@ function refreshDashboardSections() {
   return JSON.stringify({
     meta: renderMetaText_(data),
     index: renderIndexHtml_(data, perfData),
-    cre: renderCreHtml_(perfData),
+    cre: renderCreHtml_(data, perfData),
     tech: renderTechHtml_(perfData),
     sm: renderSmHtml_(data, perfData),
   });
@@ -3897,8 +3904,10 @@ function renderIndexHtml_(data, perfData) {
     '<th class="num">Revenue</th><th class="num">Gross Profit</th></tr></thead><tbody>' +
     typeRows + "</tbody></table></div>");
 
-  // ---- 4) Weekly Revenue Analysis (same module as the master A6 block) ------
-  var weeklySec = renderWeeklyAnalysis_(data).replace('id="sec-weekly"', 'id="idx-weekly"');
+  // ---- 4) Weekly Revenue Analysis — INDEX shows the % summary, not the
+  // detailed table (Task 49): completed/in-progress achieved %, upcoming weeks
+  // the balance % each must contribute to close the month.
+  var weeklySec = renderWeeklySummary_(data);
 
   // ---- 5) KPI Target — overall achieved % ------------------------------------
   var kAch = 0, kTgt = 0;
@@ -3948,18 +3957,13 @@ function renderIndexHtml_(data, perfData) {
         jbT ? ("communication updated " + jbT.communicated + " · pending " + jbT.notCommunicated) : "service sheet not found") +
     "</div>");
 
-  // ---- 11) Working Days (Current Month) ---------------------------------------
-  var wdSec = idxSection("idx-workdays", "📅 Working Days (Current Month)",
-    "working-day budget of the running month (holidays excluded) and how much of it is consumed / left.",
-    '<div class="cards">' +
-      statCard("Total Working Days", "<b>" + s.totalWorkingDays + "</b>", s.daysInMonth + " calendar days in the month") +
-      statCard("Consumed", "<b>" + s.consumedWorkingDays + "</b>", s.daysElapsed + " calendar days elapsed") +
-      statCard("Balance Left", "<b>" + s.balanceWorkingDays + "</b>", s.daysRemaining + " calendar days remaining") +
-    "</div>");
+  // ---- 11) Working Days (Current Month) — the master A2 module, moved to the
+  // top of the page directly below 🎯 Store Performance (Task 49).
+  var wdSec = renderWorkingDaysCard_(data).replace('id="sec-workdays"', 'id="idx-workdays"');
 
   return (
     '<section class="index-hero"><h2>Store Performance Dashboard</h2></section>' +
-    storeSec + walkinSec + weeklySec + kpiSec + arSec + personSec + opsSec + wdSec +
+    storeSec + wdSec + walkinSec + weeklySec + kpiSec + arSec + personSec + opsSec +
     freshnessLineHtml_(data, perfData)
   );
 }
@@ -4006,7 +4010,7 @@ function buildDashboardPage_(data) {
   var PAGES = [
     // [tab label, data-page id, main id, html, meta-subtitle]
     ["INDEX", "index", "pageIndex", renderIndexHtml_(data, perfData), "Overall store performance — every dashboard at a glance"],
-    ["CRE",   "cre",   "pageCre",   renderCreHtml_(perfData),         "CRE — walk-in tokens · jobs & invoices created · C-SAT summary"],
+    ["CRE",   "cre",   "pageCre",   renderCreHtml_(data, perfData),         "CRE — walk-in tokens · jobs & invoices created · C-SAT summary"],
     ["TECH",  "tech",  "pageTech",  renderTechHtml_(perfData),        "TECH — job buckets · bucket aging · communication status"],
     ["SM",    "sm",    "pageSm",    renderSmHtml_(data, perfData),    "SM — full & detailed master report (groups A-G)"],
   ];
@@ -4616,72 +4620,47 @@ function roleBanner_(letter, name) {
 }
 
 /**
- * Task 47 — CRE page: minimum basic details only.
- *   C4  day-wise walk-in & token details — total tokens, jobs created,
- *       invoices created per day (nothing else).
- *   D1  total C-SAT responses against the total completed repairs of the
- *       current month.
+ * Task 49 — CRE page manifest (owner's list, replaces the Task-47 minimal
+ * view): A1 Store Target, A2 Working Days, A6 Weekly, B / B1 / B2 / B3 KPI
+ * family, C with C1 walk-in analysis only, and D1 customer satisfaction —
+ * all rendered by the same master modules the SM page uses.
  */
-function renderCreHtml_(pd) {
+function renderCreHtml_(data, pd) {
   var wl = pd.walkin || { available: false };
-  var tb = pd.targetBlock || { available: false };
-  var ra = pd.repair || { available: false };
-
-  // ---- C4: day-wise walk-in — tokens / jobs / invoices only ----
-  var c4;
-  if (!wl.available) {
-    c4 = emptyPerf_(CONFIG.WALKIN_SHEET_NAMES[0],
-      "Add a walk-in sheet to see the day-wise token, job and invoice counts.");
-  } else {
-    var t = wl.totals;
-    function cnum(n) { return n ? ('<td class="num">' + n + "</td>") : '<td class="num muted">—</td>'; }
-    var rows = wl.days.map(function (d) {
-      return "<tr" + (d.undated ? ' class="undated-row"' : "") + ">" +
-        '<td class="daycell"><b>' + esc_(d.undated ? "No date" : d.dateKey) + "</b>" +
-        (d.weekday ? ' <span class="muted">' + d.weekday + "</span>" : "") + "</td>" +
-        '<td class="num"><b>' + d.walkins + "</b></td>" +
-        cnum(d.cases) + cnum(d.invoices) + "</tr>";
-    }).join("");
-    var tot = '<tr class="totrow"><td><b>Month total</b></td>' +
-      '<td class="num"><b>' + t.walkins + "</b></td>" +
-      '<td class="num"><b>' + t.cases + "</b></td>" +
-      '<td class="num"><b>' + t.invoices + "</b></td></tr>";
-    c4 = '<div class="scroll-x"><table class="ptable"><thead><tr><th>Date</th>' +
-      '<th class="num">Total Tokens</th><th class="num">Jobs Created</th><th class="num">Invoices Created</th>' +
-      "</tr></thead><tbody>" + rows + tot + "</tbody></table></div>";
-  }
-
-  // ---- D1: C-SAT responses vs completed repairs (current month) ----
-  var csatN = (tb.available && tb.totalRow) ? tb.totalRow.total : 0;
-  var doneN = ra.available ? (ra.completedThisMonth || 0) : 0;
-  var pct = doneN > 0 ? Math.round((csatN * 100) / doneN) : 0;
-  var d1 =
-    '<div class="cards">' +
-    '<div class="card"><div class="label">C-SAT responses</div><div class="value">' + csatN +
-    '</div><div class="sub">total feedback rows · target!L1:U5</div></div>' +
-    '<div class="card"><div class="label">Completed repairs</div><div class="value">' + doneN +
-    '</div><div class="sub">ready-for-pickup in ' + esc_(ra.available ? ra.curLabel : "this month") + '</div></div>' +
-    '<div class="card"><div class="label">C-SAT coverage</div><div class="value">' + pct +
-    '%</div><div class="sub">responses ÷ completed repairs</div></div>' +
-    "</div>";
-
-  return '<section class="section" id="sec-cre-day"><h2>C4. 📅 Day-wise Walk-in &amp; Token Details</h2><div class="body">' +
-    '<div class="sec-desc">CRE basic view — per day: total walk-in tokens and, against them, how many jobs and invoices were created.</div>' +
-    c4 + "</div></section>" +
-    '<section class="section" id="sec-cre-csat"><h2>D1. 🎯 Customer Satisfaction</h2><div class="body">' +
-    '<div class="sec-desc">total C-SAT responses against the total completed repairs of the current month.</div>' +
-    d1 + "</div></section>";
+  var c1 = !wl.available
+    ? emptyPerf_(CONFIG.WALKIN_SHEET_NAMES[0], "Add a walk-in sheet to see the C1 walk-in analysis.")
+    : '<section class="section" id="sec-cre-walkin"><h2>C. 🚶 Walk-in Analysis &amp; Token Creation</h2><div class="body">' +
+      '<div class="wp-left"><div class="wp-head">C1. 🚶 Walk-in Analysis</div>' +
+      '<p class="sec-desc" style="margin:-2px 0 10px">month-to-date walk-in summary — each metric&rsquo;s % of the month&rsquo;s walk-in tokens.</p>' +
+      renderWalkinAnalysis_(wl) + "</div></div></section>";
+  return (
+    // A1 · A2 · A6
+    renderStoreCards_(data) + renderStoreTable_(data) + renderWorkingDaysCard_(data) +
+      renderWeeklyAnalysis_(data) +
+    // B · B1 · B2 · B3
+    '<div class="kpi-pair"><div class="kp-left">' + renderKpiSection_(data) + "</div>" +
+      '<div class="kp-right">' + renderIncentiveTable_(data) + "</div></div>" +
+      renderSalespersonCards_(data) + renderArSection_(data) +
+    // C · C1
+    c1 +
+    // D1
+    renderTargetBlock_(pd.targetBlock, pd.repair)
+  );
 }
 
 /**
- * Task 47 — TECH page: job-management basics only.
- *   E1  open-job count per repair bucket, split by aging band inside each
- *       bucket, plus communication-updated vs not-updated totals.
+ * Task 49 — TECH page manifest (owner's list): D2 Repair Type Performance,
+ * D3 Decline Repair, D4 Requote & Win-back, then the E1 job-management zone —
+ * the Task-47 bucket summary (counts · aging bands · communication) followed
+ * by the full master open-jobs table.
  */
 function renderTechHtml_(pd) {
   var jm = pd.jobs || { available: false };
+  var d2 = renderRepairAnalyticsInner_(pd.repair || { available: false });
+  var d34 = renderOpsPairHtml_(pd.opsExtras || { decline: {}, winback: {} });
   if (!jm.available || !jm.jobs) {
-    return emptyPerf_("service", "Add a service sheet to see the bucket, aging and communication summary.");
+    return d2 + d34 +
+      emptyPerf_("service", "Add a service sheet to see the bucket, aging and communication summary.");
   }
   var t = jm.totals || {};
   var BANDS = [[0, 7, "0–7 d"], [8, 15, "8–15 d"], [16, 30, "16–30 d"], [31, 1e12, "31+ d"]];
@@ -4727,14 +4706,16 @@ function renderTechHtml_(pd) {
     '</div><div class="sub">no comm entry for the case</div></div>' +
     "</div>";
 
-  return '<section class="section" id="sec-tech-jobs"><h2>E1. 🔧 Job Management — Open Jobs · Bucket Summary</h2><div class="body">' +
+  return d2 + d34 +
+    '<section class="section" id="sec-tech-jobs"><h2>E1. 🔧 Job Management — Open Jobs · Bucket Summary</h2><div class="body">' +
     '<div class="sec-desc">open jobs per repair bucket with aging inside each bucket (Jobs without a readable age are ' +
     'listed in a separate column); then communication updated vs not updated for all open jobs.</div>' +
     commCards +
     '<div class="scroll-x"><table class="ptable"><thead><tr><th>Repair Bucket</th>' +
     '<th class="num">0–7 d</th><th class="num">8–15 d</th><th class="num">16–30 d</th><th class="num">31+ d</th>' +
     '<th class="num">Age —</th><th class="num">Total</th></tr></thead><tbody>' +
-    rows + tot + "</tbody></table></div></div></section>";
+    rows + tot + "</tbody></table></div></div></section>" +
+    renderJobsHtml_(pd);
 }
 
 /**
@@ -6010,6 +5991,45 @@ function computeWeeklyAnalysis_(data) {
 
   return { monthName: monthName, weeks: weeks, totalWorkingDays: totalWorkingDays,
     types: TYPES, monthTotals: monthTotals };
+}
+
+/** Task 49 — INDEX weekly summary: percentage view only.
+ *  Completed weeks → achieved % of that week's target per revenue type;
+ *  in-progress week → current % so far; upcoming weeks → the % of the MONTH
+ *  target each week must still contribute (remaining balance split evenly). */
+function renderWeeklySummary_(data) {
+  var wa = computeWeeklyAnalysis_(data);
+  function r1(x) { return Math.round(x * 10) / 10; }
+  var upcoming = wa.weeks.filter(function (w) { return w.status === "Upcoming"; });
+  var nUp = upcoming.length;
+  var upPct = {};
+  wa.types.forEach(function (t) {
+    if (!nUp) { upPct[t.key] = null; return; }
+    var bal = Math.max(0, t.monthTarget - (wa.monthTotals[t.key] || 0));
+    upPct[t.key] = r1(((bal / nUp) / Math.max(1, t.monthTarget)) * 100);
+  });
+  function typeCell(w, t) {
+    if (w.status === "Upcoming") {
+      return '<td class="num muted">' + (upPct[t.key] == null ? "—" : upPct[t.key] + "%") + "</td>";
+    }
+    if (!w.tgt[t.key]) return '<td class="num muted">—</td>';
+    var p = r1((w.achieved[t.key] / w.tgt[t.key]) * 100);
+    var cls = p >= 100 ? "pos" : (w.status === "Completed" ? "neg" : "");
+    return '<td class="num' + (cls ? " " + cls : "") + '">' + p + "%</td>";
+  }
+  var rows = wa.weeks.map(function (w) {
+    var tag = w.status === "Completed" ? '<span class="pill pill-positive">completed</span>'
+      : w.status === "In progress" ? '<span class="pill pill-benchmark">in progress</span>'
+      : '<span class="pill">upcoming</span>';
+    return "<tr><td><b>Week " + w.idx + '</b> <span class="muted">(' + w.start + "–" + w.end + ")</span></td>" +
+      "<td>" + tag + "</td>" + wa.types.map(function (t) { return typeCell(w, t); }).join("") + "</tr>";
+  }).join("");
+  return '<section class="section" id="idx-weekly"><h2>A6. 🗓 Weekly Revenue Analysis — ' + esc_(wa.monthName) + "</h2>" +
+    '<div class="body"><div class="sec-desc">completed weeks: achieved % of each week&rsquo;s target · in-progress week: current % so far · ' +
+    "upcoming weeks: % of the month target each week must still contribute (balance split evenly) to close the month at 100%.</div>" +
+    '<div class="scroll-x"><table class="ptable"><thead><tr><th>Week</th><th>Status</th>' +
+    wa.types.map(function (t) { return '<th class="num">' + esc_(t.label) + "</th>"; }).join("") +
+    "</tr></thead><tbody>" + rows + "</tbody></table></div></div></section>";
 }
 
 /** Renders section 7 — weekly achieved vs weekly target per revenue type. */
