@@ -3842,198 +3842,124 @@ function pieSvgHtml_(segments, cx, cy, radius, thick) {
 
 function renderIndexHtml_(data, perfData) {
   var s = data.store;
-  // Task 47: the legacy per-page tiles now land on the four role pages —
-  // job-management tiles open TECH, everything else opens the full SM report.
-  function rolePageOf(page) { return page === "jobs" ? "tech" : (page === "index" ? "index" : "sm"); }
-  function p1(x) { return (x || 0).toFixed(1) + "%"; }
-  var walkT = perfData && perfData.walkin && perfData.walkin.available ? perfData.walkin.totals : null;
-  var jobT = perfData && perfData.jobs && perfData.jobs.available ? perfData.jobs.totals : null;
-  var csatT = perfData && perfData.targetBlock && perfData.targetBlock.available ? perfData.targetBlock : null;
-  var ra = perfData && perfData.repair && perfData.repair.available ? perfData.repair : null;
-  var exDecl = perfData && perfData.opsExtras ? perfData.opsExtras.decline : null;
-  var exWin = perfData && perfData.opsExtras ? perfData.opsExtras.winback : null;
+  var inv = data.invoiceValuation || {};
+  var wlT = perfData && perfData.walkin && perfData.walkin.available ? perfData.walkin.totals : null;
+  var jbT = perfData && perfData.jobs && perfData.jobs.available ? perfData.jobs.totals : null;
+  var ex = perfData && perfData.opsExtras ? perfData.opsExtras : { decline: {}, winback: {} };
+  function m0(v) { return money_(v || 0); }
 
-  function tile(page, icon, title, blurb, stats) {
-    page = rolePageOf(page);
-    var statHtml = stats && stats.length
-      ? '<div class="tile-data">' + stats.map(function (st) {
-          return '<div class="tile-stat"><span>' + esc_(st[0]) + "</span><b>" + esc_(String(st[1])) + "</b></div>";
-        }).join("") + "</div>"
-      : '<div class="tile-data"><div class="tile-soon">⏳ Content coming soon</div>' +
-        "<div class=\"tile-soon-sub\">reserved by the owner for this module</div></div>";
-    return (
-      '<button type="button" class="glass-tile" data-page="' + esc_(page) +
-      '" onclick="gotoPage(\'' + esc_(page) + "', this)\" aria-label=\"" + esc_(title) + "\">" +
-      '<span class="tile-sparkle" aria-hidden="true"></span>' +
-      '<video class="tile-glitter-vid" autoplay muted loop playsinline preload="metadata" ' +
-        'poster="https://www.shutterstock.com/shutterstock/videos/1064124616/thumb/8.jpg?ip=x480" aria-hidden="true">' +
-        '<source src="https://www.shutterstock.com/shutterstock/videos/1064124616/preview/stock-footage-shining-gold-dust-particles-golden-frame-golden-glitter-sparkling-magic-light-with-bokeh-effect.webm" type="video/webm">' +
-        '<source src="https://www.shutterstock.com/shutterstock/videos/1064124616/preview/stock-footage-shining-gold-dust-particles-golden-frame-golden-glitter-sparkling-magic-light-with-bokeh-effect.mp4" type="video/mp4">' +
-        '</video>' +
-      '<span class="tile-icon">' + icon + "</span>" +
-      '<span class="tile-title">' + esc_(title) + "</span>" +
-      '<span class="tile-blurb">' + esc_(blurb) + "</span>" +
-      statHtml +
-      '<span class="tile-go">Open page &rarr;</span>' +
-      "</button>"
-    );
+  function statCard(label, value, sub, cls) {
+    return '<div class="card"><div class="label">' + esc_(label) + "</div>" +
+      '<div class="value' + (cls ? " " + cls : "") + '">' + value + "</div>" +
+      (sub ? '<div class="sub">' + sub + "</div>" : "") + "</div>";
+  }
+  function idxSection(id, h2, desc, body) {
+    return '<section class="section" id="' + id + '"><h2>' + h2 + "</h2><div class=\"body\">" +
+      (desc ? '<div class="sec-desc">' + desc + "</div>" : "") + body + "</div></section>";
   }
 
-  function group(title, page, tilesHtml, pieHtml) {
-    return '<div class="tile-group"><h3 class="tile-group-head">' +
-      '<button type="button" class="tile-group-link" onclick="gotoPage(\'' + esc_(rolePageOf(page)) +
-      "')\" title=\"Open the " + esc_(title) + ' page">' + esc_(title) + " &rarr;</button></h3>" +
-      pieHtml + '<div class="tile-col">' + tilesHtml + "</div></div>";
+  // ---- 1) Store performance -------------------------------------------------
+  function storeCard(label, b) {
+    return statCard(label, "<b>" + m0(b.achieved) + "</b>",
+      "target " + m0(b.target) + " · <b>" + b.pct + "%</b> achieved");
   }
+  var storeSec = idxSection("idx-store", "🎯 Store Performance",
+    "month-to-date achievement against the store revenue targets (crm vs target!store).",
+    '<div class="cards">' +
+      storeCard("Total Revenue", s.total) + storeCard("Service Revenue", s.service) +
+      storeCard("Accessories Revenue", s.accessory) + storeCard("Repair Revenue", s.repair) +
+    "</div>");
 
-  var C = PIE_PALETTE;
+  // ---- 2) Total walk-ins  +  3) invoices in each revenue type ---------------
+  var types = inv.byType || [];
+  var typeRows = types.map(function (t) {
+    return "<tr><td><b>" + esc_(t.label) + "</b></td>" +
+      '<td class="num"><b>' + t.uniqueInvoices + "</b></td>" +
+      '<td class="num">' + t.invoiceLines + "</td>" +
+      '<td class="num">' + m0(t.revenue) + "</td>" +
+      '<td class="num">' + m0(t.gp) + "</td></tr>";
+  }).join("");
+  var totLines = 0, totRev = 0, totGp = 0;
+  types.forEach(function (t) { totLines += t.invoiceLines; totRev += t.revenue; totGp += t.gp; });
+  typeRows += '<tr class="totrow"><td><b>Total</b></td>' +
+    '<td class="num"><b>' + s.uniqueInvoices + "</b></td>" +
+    '<td class="num"><b>' + totLines + "</b></td>" +
+    '<td class="num"><b>' + m0(s.total.achieved) + "</b></td>" +
+    '<td class="num"><b>' + m0(s.grossProfit.achieved) + "</b></td></tr>";
+  var walkinSec = idxSection("idx-walkin", "🚶 Total Walk-ins · 🧾 Invoices — each Revenue Type",
+    "walk-in tokens from the walkin sheet; invoice counts are unique crm!InvoiceCode per crm!RevenueType (TranType = SALESRETURN excluded).",
+    '<div class="cards" style="margin-bottom:12px">' +
+      statCard("Total Walk-ins", "<b>" + (wlT ? wlT.walkins : 0) + "</b>",
+        wlT ? (wlT.unique + " unique visitors · " + wlT.cases + " jobs · " + wlT.invoices + " invoices") : "walkin sheet not found") +
+    "</div>" +
+    '<div class="scroll-x"><table class="ptable"><thead><tr><th>Revenue Type</th>' +
+    '<th class="num">Total Invoices</th><th class="num">Invoice Lines</th>' +
+    '<th class="num">Revenue</th><th class="num">Gross Profit</th></tr></thead><tbody>' +
+    typeRows + "</tbody></table></div>");
 
-  // ---------- pies: one per group, combining its sub-title numbers ----------
-  var gpPie = barBlockHtml_("Revenue won so far, by type", [
-    ["Service", Math.round(s.service.achieved), C[0]],
-    ["Accessory", Math.round(s.accessory.achieved), C[1]],
-    ["Repair", Math.round(s.repair.achieved), C[2]],
-  ]);
+  // ---- 4) Weekly Revenue Analysis (same module as the master A6 block) ------
+  var weeklySec = renderWeeklyAnalysis_(data).replace('id="sec-weekly"', 'id="idx-weekly"');
 
-  var kpis = data.kpi;
-  function kpiDone(rows) { var t = 0; rows.forEach(function (k) { t += k.achieved; }); return t; }
-  var kpiPie = barBlockHtml_("KPIs hit so far, by category", [
-    ["AR", kpiDone(kpis.ar), C[0]],
-    ["RR", kpiDone(kpis.rr), C[1]],
-    ["SR", kpiDone(kpis.sr), C[2]],
-  ]);
+  // ---- 5) KPI Target — overall achieved % ------------------------------------
+  var kAch = 0, kTgt = 0;
+  var catChips = [["AR", data.kpi.ar], ["RR", data.kpi.rr], ["SR", data.kpi.sr]].map(function (c) {
+    var a = 0, t = 0;
+    c[1].forEach(function (k) { a += k.achieved || 0; t += k.target || 0; });
+    kAch += a; kTgt += t;
+    return statCard(c[0] + " KPIs", "<b>" + pct_(a, t) + "%</b>", a + " of " + t + " achieved");
+  }).join("");
+  var kpiSec = idxSection("idx-kpi", "📊 KPI Target — Store KPI Parameters",
+    "overall achievement across every KPI parameter (AR + RR + SR · Σ achieved ÷ Σ target).",
+    '<div class="cards">' +
+      statCard("Overall KPI Achievement", "<b>" + pct_(kAch, kTgt) + "%</b>", kAch + " of " + kTgt + " parameters achieved", "headline") +
+      catChips +
+    "</div>");
 
-  var wlT = walkT || { walkins: 0, unique: 0, cases: 0, invoices: 0, deadLeads: 0 };
-  var wlLive = Math.max(0, wlT.walkins - wlT.cases - wlT.deadLeads);
-  var walkinPie = barBlockHtml_("This month's walk-ins, split", [
-    ["Cases", wlT.cases, C[0]],
-    ["Invoices", wlT.invoices, C[1]],
-    ["Live leads", wlLive, C[4]],
-    ["Dead leads", wlT.deadLeads, C[3]],
-  ]);
+  // ---- 6) AR Attachment — total count ----------------------------------------
+  var aa = inv.arAttachment || {};
+  var arSec = idxSection("idx-ar", "🔗 AR Attachment",
+    "invoices that carried an accessory together with a service / repair.",
+    '<div class="cards">' +
+      statCard("AR Attachments", "<b>" + (aa.attachedInvoices || 0) + "</b>",
+        "of " + (aa.attachableInvoices || 0) + " service / repair invoices · " + (aa.attachRate || 0) + "% attach rate") +
+    "</div>");
 
-  var csatNeutral = 0;
-  if (csatT) csatNeutral = Math.max(0, csatT.totalRow.total - csatT.satTotal - csatT.disTotal);
-  var opPie = barBlockHtml_("Feedback balance", [
-    ["Satisfied", csatT ? csatT.satTotal : 0, C[1]],
-    ["Neutral", csatT ? csatNeutral : 0, C[4]],
-    ["Dissatisfied", csatT ? csatT.disTotal : 0, C[3]],
-  ]);
+  // ---- 7) Sales Person Performance — % of achievement only --------------------
+  var spRows = (data.salespeople || []).map(function (p) {
+    function pc(seg) { return '<td class="num">' + seg.pct + "%</td>"; }
+    return "<tr><td><b>" + esc_(p.name) + "</b></td>" +
+      pc(p.service) + pc(p.accessory) + pc(p.repair) + pc(p.grossProfit) +
+      '<td class="num"><b>' + p.total.pct + "%</b></td></tr>";
+  }).join("");
+  var personSec = idxSection("idx-person", "👤 Sales Person Performance",
+    "% of achievement in each segment — percentages only, no values (repair % is judged on the store repair target).",
+    '<div class="scroll-x"><table class="ptable"><thead><tr><th>Salesperson</th>' +
+    '<th class="num">Service %</th><th class="num">Accessory %</th><th class="num">Repair %</th>' +
+    '<th class="num">Gross Profit %</th><th class="num">Total %</th></tr></thead><tbody>' +
+    spRows + "</tbody></table></div>");
 
-  var jobsList = (perfData && perfData.jobs && perfData.jobs.jobs) || [];
-  var commOk = 0, commNo = 0;
-  jobsList.forEach(function (jb) { if (jb.communicated) commOk++; else commNo++; });
-  var jobsPie = barBlockHtml_("Open jobs, communication cover", [
-    ["Communicated", commOk, C[1]],
-    ["Not communicated", commNo, C[3]],
-  ]);
+  // ---- 8/9/10) decline repairs · win-backs · open jobs ------------------------
+  var opsSec = idxSection("idx-ops", "📉 Repairs & Jobs — counts",
+    "headline counts from the service / decline / quote / job sources (details on the SM and TECH pages).",
+    '<div class="cards">' +
+      statCard("Declined Repairs", "<b>" + (ex.decline.count || 0) + "</b>", "unique decline!CaseId · local approver rejected", "neg") +
+      statCard("Requote Win-backs", "<b>" + (ex.winback.count || 0) + "</b>", "rejected → approved · unique serials", "pos") +
+      statCard("Open Jobs", "<b>" + (jbT ? jbT.openJobs : 0) + "</b>",
+        jbT ? ("communication updated " + jbT.communicated + " · pending " + jbT.notCommunicated) : "service sheet not found") +
+    "</div>");
 
-  var days = data.days || [];
-  var dated = days.filter(function (d) { return !d.undated; }).length;
-  var datePie = barBlockHtml_("Month coverage", [
-    ["Days with sales", dated, C[0]],
-    ["Working days used", s.consumedWorkingDays, C[1]],
-    ["Working days left", s.balanceWorkingDays, C[4]],
-  ]);
-
-  // ---------- tiles (unchanged content, now stacked vertically in-column) ----------
-  var kpiRows = kpis.ar.concat(kpis.rr, kpis.sr);
-  var kpiMet = kpiRows.filter(function (k) { return k.target > 0 && k.achieved >= k.target; }).length;
-  var payable = data.salespeople.reduce(function (a, p) { return a + (p.payableIncentive || 0); }, 0);
-  var a = data.invoiceValuation.arAttachment;
-
-  var gpTiles =
-    tile("gp", "🎯", "Store Target", "Performance vs the month plan", [
-      ["Total", money_(s.total.achieved) + " / " + money_(s.total.target)],
-      ["Achieved", p1(s.total.pct)],
-      ["Balance", money_(s.total.balance)],
-    ]) +
-    tile("gp", "🗓", "Weekly Revenue Analysis", "Current month, week by week", [
-      ["This week's plan", "target/working-days × week wd"],
-      ["Working days", s.totalWorkingDays + " in " + s.daysInMonth + " days"],
-      ["Consumed", s.consumedWorkingDays + " · bal " + s.balanceWorkingDays],
-    ]) +
-    tile("gp", "🧾", "Invoice Valuation", "What each invoice is worth", [
-      ["Invoices", s.uniqueInvoices],
-      ["Avg value", money_(s.avgInvoiceValue)],
-      ["Total revenue", money_(s.total.achieved)],
-    ]);
-
-  var kpiTiles =
-    tile("kpi", "📊", "KPI Target", "AR / RR / SR scorecard", [
-      ["KPIs tracked", kpiRows.length],
-      ["Targets met", kpiMet + " / " + kpiRows.length],
-      ["Reviews", "+ " + kpis.googleReview.difference + " this month"],
-    ]) +
-    tile("kpi", "💰", "Sales Person Incentive", "Slab-wise incentive valuation", [
-      ["Payable", money_(payable)],
-      ["People", data.salespeople.length + " on roster"],
-      ["Unlock gate", CONFIG.REPAIR_INCENTIVE_GATE_PCT + "% of store repair"],
-    ]) +
-    tile("kpi", "👤", "Sales Person Performance", "Per-person target vs achieved", [
-      ["Top biller", data.salespeople.length ? data.salespeople[0].name : "—"],
-      ["Repair shown", "each person's own win"],
-      ["Gate calc", CONFIG.REPAIR_INCENTIVE_GATE_PCT + "% of store repair"],
-    ]) +
-    tile("kpi", "🔗", "AR Attachment", "Accessory sold with service / repair", [
-      ["Attach rate", a.attachRate.toFixed(1) + "%"],
-      ["Attached", a.attachedInvoices + " of " + a.attachableInvoices],
-      ["AR value", money_(a.value)],
-    ]);
-
-  var walkinTiles =
-    tile("walkin", "🚶", "Walk-in Analysis", "Visitors, cases & invoices per day", walkT ? [
-      ["Walk-ins", wlT.walkins],
-      ["Unique", wlT.unique + " visitors"],
-      ["Dead leads", wlT.deadLeads],
-    ] : [["Status", "walkin sheet not found"], ["", "add the sheet to enable"]]) +
-    tile("walkin", "🎟", "Token Creation", "Which user raised each token", walkT && perfData.walkin.creators.length ? [
-      ["Top creator", perfData.walkin.creators[0].name],
-      ["Tokens", perfData.walkin.creators[0].count + " (" + perfData.walkin.creators[0].share + "%)"],
-      ["Creators", perfData.walkin.creators.length + " users"],
-    ] : [["Created-by col", "not detected"], ["", "add TokenCreatedBy"]]);
-
-  var operationTiles =
-    tile("operation", "😊", "Customer Satisfaction", csatT ? "C-SAT · " + csatT.periodName : "C-SAT feedback board", csatT ? [
-      ["Responses", csatT.totalRow.total],
-      ["Satisfied", csatT.totalRow.total > 0 ? Math.round((csatT.satTotal / csatT.totalRow.total) * 100) + "%" : "—"],
-      ["C-SAT", csatT.csat || "—"],
-    ] : [["Status", "target sheet block empty"], ["", "fill L1:U5"]]) +
-    tile("operation", "🚫", "Decline Repair", "Estimate declined by customer", exDecl ? [
-      ["Declined repairs", exDecl.count],
-      ["Reason", "Rejected by Local Approver"],
-      ["From sheet", exDecl.sheetName || "—"],
-    ] : [["Status", "decline sheet not found"], ["", "add decline sheet"]]) +
-    tile("operation", "🔁", "Requote - Winback", "Re-quoted & won back customers", exWin ? [
-      ["Win-backs", exWin.count],
-      ["Filter", "Repair Revenue · approved"],
-      ["From sheet", exWin.sheetName || "—"],
-    ] : [["Status", "quote sheet not found"], ["", "add quote sheet"]]);
-
-  var openJobTiles =
-    tile("jobs", "🔧", "Job Management", "Open jobs by repair bucket", jobT ? [
-      ["Open jobs", jobT.openJobs],
-      ["Communicated", jobT.communicated + " (" + jobT.commRate + "%)"],
-      ["Avg job age", jobT.avgAge + " d"],
-    ] : [["Status", "service sheet not found"], ["", "add the sheet to enable"]]);
-
-  var dateTiles =
-    tile("date", "📆", "Date-wise Sales Revenue Analysis", "Day × salesperson × type matrix", [
-      ["Today", s.daysElapsed + " of " + s.daysInMonth + " days"],
-      ["Daily target", money_(s.dailyTarget)],
-      ["Working days left", s.balanceWorkingDays],
-    ]);
+  // ---- 11) Working Days (Current Month) ---------------------------------------
+  var wdSec = idxSection("idx-workdays", "📅 Working Days (Current Month)",
+    "working-day budget of the running month (holidays excluded) and how much of it is consumed / left.",
+    '<div class="cards">' +
+      statCard("Total Working Days", "<b>" + s.totalWorkingDays + "</b>", s.daysInMonth + " calendar days in the month") +
+      statCard("Consumed", "<b>" + s.consumedWorkingDays + "</b>", s.daysElapsed + " calendar days elapsed") +
+      statCard("Balance Left", "<b>" + s.balanceWorkingDays + "</b>", s.daysRemaining + " calendar days remaining") +
+    "</div>");
 
   return (
     '<section class="index-hero"><h2>Store Performance Dashboard</h2></section>' +
-    '<div class="tile-board">' +
-    group("GP", "gp", gpTiles, gpPie) +
-    group("KPI", "kpi", kpiTiles, kpiPie) +
-    group("WALKIN", "walkin", walkinTiles, walkinPie) +
-    group("Operation", "operation", operationTiles, opPie) +
-    group("OPEN JOBS", "jobs", openJobTiles, jobsPie) +
-    group("DATE", "date", dateTiles, datePie) +
-    "</div>" +
+    storeSec + walkinSec + weeklySec + kpiSec + arSec + personSec + opsSec + wdSec +
     freshnessLineHtml_(data, perfData)
   );
 }
@@ -5408,6 +5334,8 @@ function getDashboardCss_() {
     ".group-banner .gb-letter { font-size:1.02rem; font-weight:900; background:#ffd477; color:#17263a;" +
     " border-radius:7px; padding:3px 9px; line-height:1.15; }" +
     ".group-banner .gb-name { font-size:.9rem; font-weight:800; letter-spacing:.04em; }" +
+    // Task 48 — INDEX overview: headline KPI card pops.
+    "#idx-kpi .value.headline b { font-size:1.06em; }" +
     " border-radius:9px; background:#ffffff; padding:10px 12px 14px; }" +
     // ---- job table: fixed layout compressed to the page width ----
     ".jobwrap { overflow-x:auto; }" +

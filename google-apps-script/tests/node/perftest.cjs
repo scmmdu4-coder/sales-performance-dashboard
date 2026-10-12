@@ -272,13 +272,14 @@ check("four role tabs: INDEX/CRE/TECH/SM (Task 47)",
   &&page.indexOf('data-page="deck"')===-1);
 check("_legacy tab labels gone", page.indexOf(">🎯 GP<")===-1&&page.indexOf(">📊 KPI<")===-1
   &&page.indexOf(">🧰 Open Jobs<")===-1&&page.indexOf(">🗂 Deck<")===-1);
-check("index tiles render",page.indexOf("glass-tile")>-1&&page.indexOf("Store Target")>-1
-  &&page.indexOf("AR Attachment")>-1&&page.indexOf("Decline Repair")>-1
-  &&page.indexOf("Requote - Winback")>-1&&page.indexOf("Job Management")>-1
-  &&page.indexOf("Date-wise Sales Revenue Analysis")>-1);
-check("tile gotoPage hook routes to role pages (Task 47)",
-  page.indexOf("gotoPage('sm'")>-1&&page.indexOf("gotoPage('tech'")>-1
-  &&page.indexOf("gotoPage('gp'")===-1&&page.indexOf("gotoPage('date'")===-1);
+check("index overview sections render (Task 48)",
+  page.indexOf('id="idx-store"')>-1&&page.indexOf('id="idx-walkin"')>-1
+  &&page.indexOf('id="idx-weekly"')>-1&&page.indexOf('id="idx-kpi"')>-1
+  &&page.indexOf('id="idx-ar"')>-1&&page.indexOf('id="idx-person"')>-1
+  &&page.indexOf('id="idx-ops"')>-1&&page.indexOf('id="idx-workdays"')>-1
+  &&page.indexOf("index-hero")>-1);
+check("tile board retired — no gotoPage tile calls (Task 48)",
+  page.indexOf("gotoPage('")===-1&&page.indexOf('data-page="index"')>-1);
 check("tab slider row",page.indexOf('class="tabs-row"')>-1);
 check("fonts bumped globally",page.indexOf("html { font-size:20.7px")>-1);
 check("DISC/AMC notes hidden",page.indexOf("starts with DISC")===-1&&page.indexOf("SubCategory contains AMC")===-1);
@@ -418,8 +419,10 @@ check("3d bar styling (single colour, Task 31)", page.indexOf("linear-gradient(9
   &&page.indexOf("--barc")===-1&&page.indexOf("barShine")>-1&&page.indexOf(".bar-fill::before")>-1
   &&page.indexOf(".bar-fill.good")===-1&&page.indexOf(".bar-fill.bad")===-1);
 check("index page pane", page.indexOf('data-pane="index"')>-1&&page.indexOf("index-hero")>-1);
-check("index tiles built (11 now, matrix tile removed)", (page.match(/class="glass-tile"/g)||[]).length>=11,
-  (page.match(/class="glass-tile"/g)||[]).length);
+check("index page: exactly the 8 owner-listed sections (Task 48)", (function(){
+  var seg=page.slice(page.indexOf('id="pageIndex"'),page.indexOf('data-pane="cre"'));
+  return (seg.match(/<section class="section" id="idx-/g)||[]).length===8;
+})());
 check("tile group heads", page.indexOf("tile-group-head")>-1);
 check("four panes: INDEX/CRE/TECH/SM (Task 47)", (page.match(/data-pane=/g)||[]).length===4,
   (page.match(/data-pane=/g)||[]).length);
@@ -437,19 +440,21 @@ check("csat chips below table, no side lane (Task 40)", page.indexOf("csat-brow"
   &&page.indexOf("csat-flex")===-1&&page.indexOf("csat-right")===-1);
 check("liquid glass css", page.indexOf("backdrop-filter:blur(14px)")>-1&&page.indexOf("tile-sparkle")>-1);
 check("glitter animation", page.indexOf("tileTwinkle")>-1);
-check("bar graph per group", (page.match(/class="gbar-row"/g)||[]).length>=12,
-  (page.match(/class="gbar-row"/g)||[]).length);
+check("weekly revenue analysis embedded on index (Task 48)",
+  page.indexOf('id="idx-weekly"')>-1&&page.indexOf('A6. 🗓 Weekly Revenue Analysis')>-1
+  &&page.indexOf('id="sec-weekly"')>-1);
 check("horizontal board", page.indexOf("tile-board")>-1&&page.indexOf("tile-col")>-1);
 check("freshness line", page.indexOf("Latest records per sheet")>-1&&page.indexOf("fresh-chip")>-1);
-check("tile count 14 (Repair Validation tile removed)", (page.match(/class="glass-tile"/g)||[]).length===14,
-  (page.match(/class="glass-tile"/g)||[]).length);
+check("invoice totals per revenue type on index (Task 48)",
+  page.indexOf('<th class="num">Total Invoices</th>')>-1&&page.indexOf("<b>Service Revenue</b></td>")>-1
+  &&page.indexOf("<b>Accessories Revenue</b></td>")>-1&&page.indexOf("<b>Repair Revenue</b></td>")>-1);
 
 console.log("== TASK 21 batch ==");
 check("lighter plain background for all pages (Task 31)", page.indexOf("body { background:#3f444d")>-1
   &&page.indexOf('id="globalBgGif"')===-1&&page.indexOf(".global-bg-gif {")===-1);
 check("static background (no keep-alive needed)", page.indexOf("bgGifKeepAlive")===-1);
-check("tile glitter video on hover", page.indexOf('class="tile-glitter-vid"')>-1&&page.indexOf("1064124616")>-1
-  &&page.indexOf(".glass-tile:hover .tile-glitter-vid")>-1&&page.indexOf("shining-gold-dust-particles")>-1);
+check("glitter tiles retired from markup (Task 48)",
+  page.indexOf('class="tile-glitter-vid"')===-1&&page.indexOf('class="tile-go"')===-1);
 check("index subtitle removed", page.indexOf('class="index-sub"')===-1);
 check("footer removed", page.indexOf('<footer class="foot">')===-1&&page.indexOf("Six pages, one data run")===-1);
 check("KPI def removed", page.indexOf("Definition: store-level KPI scorecard")===-1);
@@ -663,9 +668,8 @@ check("case query for C1002 comm = 4 days ago", chatQuery("C1002").rows.some(fun
     return JSON.stringify(r).indexOf(k)>-1; })===true);
 
 console.log("== TASK 24 batch ==");
-check("tile video golden-frame asset swap", page.indexOf("1064124616/thumb/8.jpg")>-1
-  &&page.indexOf("1063973464")===-1
-  &&page.indexOf("1064124616/preview/stock-footage-shining-gold-dust-particles")>-1);
+check("no external video assets referenced anywhere (Task 48)",
+  page.indexOf("1064124616")===-1&&page.indexOf("1063973464")===-1);
 check("chat bot renamed ask me anything", page.indexOf("ask me anything")>-1&&page.indexOf("Ask the sheets")===-1);
 check("clock has no gif asset", page.indexOf("AC40-01-10-02-R")===-1
   &&page.indexOf("tgsclc821blu_thumbnail.gif")===-1&&page.indexOf("animation.gif")===-1);
@@ -713,8 +717,9 @@ check("coverage iPhone Battery W1 (issue=Batt), Others W2/NW3",
   &&dk.coverage.total.count===6&&dk.coverage.total.w===3&&dk.coverage.total.nw===3, dk.coverage);
 check("deck renders key numbers", page.indexOf("Walkin to Bills %")>-1&&page.indexOf("iPhone Battery")>-1
   &&page.indexOf("(blank item code)")>-1);
-check("index tiles: decline 2 + winback 2 live",
-  page.indexOf("Declined repairs</span><b>2</b>")>-1&&page.indexOf("Win-backs</span><b>1</b>")>-1);
+check("index ops cards: decline 2 + winback 1 live (Task 48)",
+  page.indexOf('<div class="label">Declined Repairs</div><div class="value neg"><b>2</b></div>')>-1
+  &&page.indexOf('<div class="label">Requote Win-backs</div><div class="value pos"><b>1</b></div>')>-1);
 check("comm contrast lifted vs bucket tints (Task 36-C)",
   page.indexOf(".jobtable tbody tr td.comm-neg")>-1&&page.indexOf("#ffd3d7")>-1&&page.indexOf("#bbf0d0")>-1);
 check("csat side-lane css gone (Task 40)",
@@ -983,6 +988,36 @@ console.log("== TASK 47 batch ==");
   check("TECH communication cards (Task 47)",
     page.indexOf('<div class="label">Communication updated</div><div class="value pos">'+jm.totals.communicated+'</div>')>-1
     &&page.indexOf('<div class="label">Not updated</div><div class="value neg">'+jm.totals.notCommunicated+'</div>')>-1);
+})();
+console.log("== TASK 48 batch ==");
+(function(){
+  var segIdx=page.slice(page.indexOf('id="pageIndex"'),page.indexOf('data-pane="cre"'));
+  check("index store cards show achieved of target (Task 48)",
+    segIdx.indexOf("target ")>-1&&segIdx.indexOf("%</b> achieved")>-1);
+  var wlt=loadPerformanceData_().walkin.totals;
+  check("index walkins card"+""+" (Task 48)",
+    segIdx.indexOf('<div class="label">Total Walk-ins</div><div class="value"><b>'+wlt.walkins+"</b></div>")>-1);
+  var kAch=0,kTgt=0;
+  ["ar","rr","sr"].forEach(function(c){biz.kpi[c].forEach(function(k){kAch+=k.achieved||0;kTgt+=k.target||0;});});
+  var overallPct=kTgt>0?Math.round((kAch/kTgt)*1000)/10:0;
+  check("index KPI overall achieved % (Task 48)",
+    segIdx.indexOf('<div class="label">Overall KPI Achievement</div><div class="value headline"><b>'+overallPct+"%</b></div>")>-1,
+    overallPct,kAch,kTgt);
+  var aa=biz.invoiceValuation.arAttachment;
+  check("index AR attachment total count (Task 48)",
+    segIdx.indexOf('<div class="label">AR Attachments</div><div class="value"><b>'+aa.attachedInvoices+"</b></div>")>-1);
+  var segP=segIdx.slice(segIdx.indexOf('id="idx-person"'),segIdx.indexOf('id="idx-ops"'));
+  check("index salesperson table is %-only, no values (Task 48)",
+    segP.indexOf('<th class="num">Service %</th>')>-1&&segP.indexOf('<th class="num">Total %</th>')>-1
+    &&segP.indexOf("%</td>")>-1&&segP.indexOf("₹")===-1);
+  var bs=biz.store;
+  check("index working days cards (Task 48)",
+    segIdx.indexOf('<div class="label">Total Working Days</div><div class="value"><b>'+bs.totalWorkingDays+"</b></div>")>-1
+    &&segIdx.indexOf('<div class="label">Consumed</div><div class="value"><b>'+bs.consumedWorkingDays+"</b></div>")>-1
+    &&segIdx.indexOf('<div class="label">Balance Left</div><div class="value"><b>'+bs.balanceWorkingDays+"</b></div>")>-1);
+  var jb=loadPerformanceData_().jobs.totals;
+  check("index open jobs card (Task 48)",
+    segIdx.indexOf('<div class="label">Open Jobs</div><div class="value"><b>'+jb.openJobs+"</b></div>")>-1);
 })();
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);
