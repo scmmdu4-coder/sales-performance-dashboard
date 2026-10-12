@@ -350,10 +350,6 @@ function loadDashboardData_() {
  * the on-page Refresh button does) skips the cache and recomputes.
  */
 function doGet(e) {
-  // "?refresh=1" still works if someone opens the URL directly with it, but
-  // the on-page Refresh button no longer navigates — it calls
-  // refreshDashboardSections() over google.script.run and swaps the markup
-  // in place, which is both faster and safe inside the iframe sandbox.
   var wantsFresh = !!(e && e.parameter && e.parameter.refresh);
   // Task 51 — deep-linkable tabs: "?page=cre" serves the CRE pane already
   // visible, so navigation keeps working even where inline JS is stripped.
@@ -361,38 +357,52 @@ function doGet(e) {
   if (["index", "cre", "tech", "sm"].indexOf(page) === -1) page = "index";
   var cache = CacheService.getScriptCache();
 
-  // ---- FAST PATH (Task 51b) ---------------------------------------------------
-  // Each rendered PANE is cached separately — a pane stays under the 100 KB
-  // cache cap even though the whole page does not. With all four panes + the
-  // small frame record warm, the page is served with NO sheet reads at all.
-  // This is what makes switching INDEX ↔ CRE ↔ TECH ↔ SM instant after the
-  // first load, and the 15-minute background refresh keeps the caches warm.
+  // ---- Task 54: fast page loads, three tiers ---------------------------
+  // (a) whole-page cache, chunked per page — the old "renders fast"
+  //     behaviour from when pages were small enough to cache. Zero compute.
+  // (b) all four pane caches + frame record warm → cheap local rebuild.
+  // (c) cold → compute ONLY the requested pane; the other panes stream in
+  //     behind the scenes (lazy fetch / 15-minute auto-refresh) or on their
+  //     own first visit, then cache the same way.
   var html = null;
   if (!wantsFresh) {
-    try {
-      var metaJ = cache.get("dash_meta_v5");
-      if (metaJ) {
-        var panes = {}, cold = false;
-        ["index", "cre", "tech", "sm"].forEach(function (pg) {
-          var h = paneCacheGet_(cache, "dash_pane_v5_" + pg);
-          if (h == null) cold = true; else panes[pg] = h;
-        });
-        if (!cold) {
-          var meta = JSON.parse(metaJ);
-          html = buildDashboardPage_(null, page, {
-            storeCode: meta.storeCode, metaText: meta.metaText, paneJson: panes
+    try { html = paneCacheGet_(cache, "dash_pg_v6_" + page); } catch (e0) { html = null; }
+    if (!html) {
+      try {
+        var metaJ = cache.get("dash_meta_v5");
+        if (metaJ) {
+          var panes = {}, cold = false;
+          ["index", "cre", "tech", "sm"].forEach(function (pg) {
+            var h = paneCacheGet_(cache, "dash_pane_v5_" + pg);
+            if (h == null) cold = true; else panes[pg] = h;
           });
+          if (!cold) {
+            var meta = JSON.parse(metaJ);
+            html = buildDashboardPage_(null, page, {
+              storeCode: meta.storeCode, metaText: meta.metaText, paneJson: panes
+            });
+          }
         }
-      }
-    } catch (err) { html = null; }
+      } catch (err) { html = null; }
+    }
   }
 
   if (!html) {
     var loaded = loadDashboardData_();
-    html = buildDashboardPage_(loaded.data, page);
-    // Full renders refresh the pane caches (best-effort) from inside
-    // buildDashboardPage_ — nothing further to do here.
+    var perfData = loadPerformanceData_();
+    var data = loaded.data;
+    var active = page === "index" ? renderIndexHtml_(data, perfData)
+      : page === "cre" ? renderCreHtml_(data, perfData)
+      : page === "tech" ? renderTechHtml_(perfData)
+      : renderSmHtml_(data, perfData);
+    var panes2 = {}, single = {};
+    ["index", "cre", "tech", "sm"].forEach(function (pg) { panes2[pg] = paneLoadingHtml_(); });
+    panes2[page] = active;
+    single[page] = active;
+    cachePanes_(data, single);
+    html = buildDashboardPage_(data, page, { paneJson: panes2 });
   }
+  try { paneCachePut_(cache, "dash_pg_v6_" + page, html); } catch (err3) { /* skip */ }
 
   return HtmlService.createHtmlOutput(html)
     .setTitle("Sales Performance Dashboard")
@@ -2338,6 +2348,7 @@ function renderRepairAnalyticsInner_(ra) {
 
   var typeSec = bucketSection("📈", "D2. Repair Type Performance", "Repair Type", ra.typeComp,
     "Case counts in " + ra.curLabel + " (month to date).");
+  typeSec = insertExportBtn_(typeSec, "repairType");
 
   out.push(typeSec);
 
@@ -2818,7 +2829,7 @@ function renderGpExtras_(x) {
     '</b></td><td class="num"><b>' + money0(discount.value) + "</b></td><td></td></tr>";
 
   var marginPanel =
-    '<section class="section" id="sec-gpmargin"><h2>A4. 📈 High / Low Margin</h2><div class="body">' +
+    '<section class="section" id="sec-gpmargin"><h2>A4. 📈 High / Low Margin ' + exportSectionBtn_("margin") + '</h2><div class="body">' +
     '<div class="sec-desc">margin % = crm!GrossProfit ÷ crm!TaxableAmount per unique invoice (SALES only; ' +
     "zero-base invoices skipped). Top 5 at each end, across all revenue types.</div>" +
     '<div class="hl-pair">' +
@@ -2896,7 +2907,7 @@ function renderWalkinHtml_(pd) {
  * group (SM page) and the TECH page. */
 function renderOpsPairHtml_(ex) {
   return (
-    '<div class="ops-pair"><section class="sec"><div class="sec-head"><h2>D3. 🚫 Decline Repair</h2>' +
+    '<div class="ops-pair"><section class="sec"><div class="sec-head"><h2>D3. 🚫 Decline Repair ' + exportSectionBtn_("decline") + '</h2>' +
     '<p class="sec-sub">Unique CaseIDs in <b>decline</b> where GSXRepairStatusDescription is ' +
     '"Declined - Rejected by Local Approver".</p></div>' +
     '<div class="cards">' +
@@ -3296,46 +3307,29 @@ function renderMetaText_(data) {
 }
 
 /**
- * Task 52 — "Export to Sheets" button endpoint. Exports ONLY the seven
- * owner-listed tables (never the whole dashboard), each as its own sheet,
- * in the owner's order:
- *   Store Target — Performance · Repairs & Jobs — counts ·
- *   D2. Repair Type Performance · D3. Decline Repair ·
- *   E1. Job Management — Open Jobs · A4. High / Low Margin ·
- *   B. KPI Target — Store KPI Parameters
- * Returns { name, url } as JSON. Public fn (no trailing underscore).
+ * Task 54 — per-table export. The page-wide "Export to Sheets" is gone; a
+ * small "⬇ Export" button sits on each owner-listed table only:
+ *   A1 Store Target — Performance · Repairs & Jobs — counts ·
+ *   D2 Repair Type Performance · D3 Decline Repair ·
+ *   E1 Job Management — Open Jobs · A4 High / Low Margin ·
+ *   B KPI Target — Store KPI Parameters
+ * A click creates a NEW spreadsheet containing just that table, as shown.
  */
-function exportDashboardToSpreadsheet() {
+function exportSectionBtn_(key) {
+  return '<button class="mini-export" onclick="dashExportSection(\'' + key + '\',this)" ' +
+    'title="Export this table to a spreadsheet">⬇ Export</button>';
+}
+function insertExportBtn_(html, key) {
+  return html.replace(/<h2[^>]*>/, function (m) { return m + exportSectionBtn_(key); });
+}
+
+/** Table blocks for one export key (headers + rows, exactly as shown). */
+function exportBlocksFor_(key) {
+  key = String(key || "").toLowerCase();
   var loaded = loadDashboardData_();
   var data = loaded.data;
   var pd = loadPerformanceData_();
-  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd-MM-yyyy HH:mm");
-  var book = SpreadsheetApp.create("Dashboard Export — " + stamp);
-  var first = book.getSheets()[0];
 
-  function mkSheet(name) {
-    var sh;
-    if (first) { sh = first; first = null; }
-    else sh = book.insertSheet();
-    sh.setName(name);
-    return sh;
-  }
-  function table(sh, at, title, headers, rows) {
-    sh.getRange(at, 1).setValue(title).setFontWeight("bold");
-    sh.getRange(at + 1, 1, 1, headers.length).setValues([headers]).setFontWeight("bold");
-    if (rows.length) sh.getRange(at + 2, 1, rows.length, headers.length).setValues(rows);
-    return at + 2 + rows.length + 1;
-  }
-  function safe(sh, at, title, headers, maker) {
-    try { return table(sh, at, title, headers, maker() || []); }
-    catch (e) {
-      sh.getRange(at, 1).setValue(title).setFontWeight("bold");
-      sh.getRange(at + 1, 1).setValue("(not available: " + e + ")");
-      return at + 3;
-    }
-  }
-
-  // ---------- 1) Store Target — Performance (A1 tiles, as shown) --------------
   function storePerfRows_() {
     var st = data.store;
     function tile(title, b) {
@@ -3351,8 +3345,6 @@ function exportDashboardToSpreadsheet() {
       tile("Repair Revenue", st.repair), tile("Total Revenue", st.total),
       tile("Gross Profit", st.grossProfit)];
   }
-
-  // ---------- 2) Repairs & Jobs — counts (headline cards) ---------------------
   function opsCountRows_() {
     var ex = pd.opsExtras || {};
     var t = (pd.jobs && pd.jobs.totals) || {};
@@ -3365,16 +3357,12 @@ function exportDashboardToSpreadsheet() {
       ["Communication updated", t.communicated || 0],
       ["Update pending", t.notCommunicated || 0]];
   }
-
-  // ---------- 3) D2. Repair Type Performance ----------------------------------
   function repairTypeRows_() {
     var ra = pd.repair || {};
     return (ra.typeComp || []).map(function (c) {
       return [c.name, c.cur, c.curDaysAvg == null ? "—" : c.curDaysAvg + " d"];
     });
   }
-
-  // ---------- 4) D3. Decline Repair -------------------------------------------
   function declineRows_() {
     var ex = pd.opsExtras || {}, d = ex.decline || {};
     return [
@@ -3382,8 +3370,6 @@ function exportDashboardToSpreadsheet() {
         d.count || 0, d.sheetName || ""],
       ["Decline rows matched (all statuses)", d.matched || 0, d.sheetName || ""]];
   }
-
-  // ---------- 5) E1. Job Management — Open Jobs -------------------------------
   var JOB_HEADERS = ["Aging", "GSX Repair Status", "CRM Status", "Repair Type",
     "Case ID", "Name", "Number", "GSX ID", "S.No", "Model", "Comm. Updated"];
   function jobRows_() {
@@ -3424,19 +3410,15 @@ function exportDashboardToSpreadsheet() {
       return [b].concat(r.bands).concat([r.noAge, r.total]);
     });
   }
-
-  // ---------- 6) A4. High / Low Margin ----------------------------------------
-  function marginRows_(key) {
+  function marginRows_(mk) {
     var x = data.gpExtras || {};
-    return (x[key] || []).map(function (m) {
+    return (x[mk] || []).map(function (m) {
       return [m.partLabel || "—", m.invoice || "—", m.typeLabel || "—",
         Math.round(m.taxable || 0), Math.round(m.gp || 0),
         (Math.round((m.margin || 0) * 10) / 10) + "%"];
     });
   }
   var MARGIN_HEADERS = ["Part", "Invoice", "Revenue Type", "Taxable", "Gross Profit", "Margin %"];
-
-  // ---------- 7) B. KPI Target — Store KPI Parameters --------------------------
   function kpiTargetRows_() {
     var allKpis = data.kpi.ar.concat(data.kpi.rr, data.kpi.sr);
     return allKpis.map(function (k) {
@@ -3451,37 +3433,45 @@ function exportDashboardToSpreadsheet() {
     });
   }
 
-  // ---------- sheets, in the owner's order -------------------------------------
-  var sh, r;
+  if (key === "store") return { name: "Store Target — Performance", blocks: [
+    { title: "A1. Store Target — Performance",
+      headers: ["Revenue Type", "Status", "Target", "Achievement", "Achievement %", "Balance (Target − Achievement)", "Per Day Requirement / Excess"],
+      rows: storePerfRows_() }] };
+  if (key === "ops") return { name: "Repairs & Jobs — counts", blocks: [
+    { title: "Repairs & Jobs — counts", headers: ["Metric", "Count"], rows: opsCountRows_() }] };
+  if (key === "repairtype") return { name: "Repair Type Performance", blocks: [
+    { title: "D2. Repair Type Performance · " + ((pd.repair && pd.repair.curLabel) || "current month"),
+      headers: ["Repair Type", "This Month", "Avg Days · Now"], rows: repairTypeRows_() }] };
+  if (key === "decline") return { name: "Decline Repair", blocks: [
+    { title: "D3. Decline Repair", headers: ["Metric", "Count", "Source sheet"], rows: declineRows_() }] };
+  if (key === "jobs") return { name: "Job Management — Open Jobs", blocks: [
+    { title: "Bucket Summary — 9 aging bands", headers: bucketHeaders_(), rows: bucketRows_() },
+    { title: "E1. Job Management — Open Jobs", headers: JOB_HEADERS, rows: jobRows_() }] };
+  if (key === "margin") return { name: "High Low Margin", blocks: [
+    { title: "A4. High Margin — top 5", headers: MARGIN_HEADERS, rows: marginRows_("marginHigh") },
+    { title: "A4. Low Margin — top 5", headers: MARGIN_HEADERS, rows: marginRows_("marginLow") }] };
+  if (key === "kpi") return { name: "KPI Target — Store KPI Parameters", blocks: [
+    { title: "B. KPI Target — Store KPI Parameters",
+      headers: ["KPI", "Category", "Target", "Achieved", "%", "Balance", "Approx Balance Value", "Achieved Value", "Achieved GP"],
+      rows: kpiTargetRows_() }] };
+  return null;
+}
 
-  sh = mkSheet("Store Target Performance"); r = 1;
-  r = safe(sh, r, "Store Target — Performance",
-    ["Revenue Type", "Status", "Target", "Achievement", "Achievement %", "Balance (Target − Achievement)", "Per Day Requirement / Excess"],
-    storePerfRows_);
-
-  sh = mkSheet("Repairs & Jobs Counts"); r = 1;
-  r = safe(sh, r, "Repairs & Jobs — counts", ["Metric", "Count"], opsCountRows_);
-
-  sh = mkSheet("Repair Type Performance"); r = 1;
-  r = safe(sh, r, "D2. Repair Type Performance · " + ((pd.repair && pd.repair.curLabel) || "current month"),
-    ["Repair Type", "This Month", "Avg Days · Now"], repairTypeRows_);
-
-  sh = mkSheet("Decline Repair"); r = 1;
-  r = safe(sh, r, "D3. Decline Repair", ["Metric", "Count", "Source sheet"], declineRows_);
-
-  sh = mkSheet("Open Jobs"); r = 1;
-  r = safe(sh, r, "Bucket Summary — 9 aging bands", bucketHeaders_(), bucketRows_);
-  r = safe(sh, r, "E1. Job Management — Open Jobs", JOB_HEADERS, jobRows_);
-
-  sh = mkSheet("High Low Margin"); r = 1;
-  r = safe(sh, r, "A4. High Margin — top 5", MARGIN_HEADERS, function () { return marginRows_("marginHigh"); });
-  r = safe(sh, r, "A4. Low Margin — top 5", MARGIN_HEADERS, function () { return marginRows_("marginLow"); });
-
-  sh = mkSheet("KPI Target Parameters"); r = 1;
-  r = safe(sh, r, "B. KPI Target — Store KPI Parameters",
-    ["KPI", "Category", "Target", "Achieved", "%", "Balance", "Approx Balance Value", "Achieved Value", "Achieved GP"],
-    kpiTargetRows_);
-
+/** Public endpoint called by the per-table "⬇ Export" buttons. */
+function exportDashboardSectionToSpreadsheet(key) {
+  var spec = exportBlocksFor_(key);
+  if (!spec) throw new Error("Unknown export table: " + key);
+  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd-MM-yyyy HH:mm");
+  var book = SpreadsheetApp.create(spec.name + " — " + stamp);
+  var sh = book.getSheets()[0];
+  sh.setName(spec.name.replace(/[\[\]:*?/\\]/g, " ").slice(0, 31));
+  var r = 1;
+  spec.blocks.forEach(function (b) {
+    sh.getRange(r, 1).setValue(b.title).setFontWeight("bold");
+    sh.getRange(r + 1, 1, 1, b.headers.length).setValues([b.headers]).setFontWeight("bold");
+    if (b.rows.length) sh.getRange(r + 2, 1, b.rows.length, b.headers.length).setValues(b.rows);
+    r += 2 + b.rows.length + 1;
+  });
   return JSON.stringify({ name: book.getName(), url: book.getUrl() });
 }
 
@@ -3530,7 +3520,42 @@ function cachePanes_(data, panes) {
       storeCode: (data && data.store && data.store.storeCode) ? data.store.storeCode : "",
       metaText: renderMetaText_(data)
     }), 900);
+    // Fresh panes ⇒ previously assembled pages are stale; drop them.
+    try {
+      cache.removeAll(["dash_pg_v6_index", "dash_pg_v6_cre", "dash_pg_v6_tech", "dash_pg_v6_sm"]);
+    } catch (e2) { /* non-fatal */ }
   } catch (err) { /* caching is best-effort only */ }
+}
+
+/** Placeholder shown in a pane that has not been rendered yet (Task 54). */
+function paneLoadingHtml_() {
+  return '<section class="section pane-loading"><div class="body">' +
+    '<p class="sec-desc">This page is loading…</p></div></section>';
+}
+
+/**
+ * Public endpoint (google.script.run): serves ONE pane, warm from the
+ * chunked pane cache when possible, otherwise computed on demand — that is
+ * what the client uses to lazily fill panes after the first paint.
+ */
+function getDashboardPane(page) {
+  page = String(page || "index").toLowerCase();
+  if (["index", "cre", "tech", "sm"].indexOf(page) === -1) page = "index";
+  var cache = CacheService.getScriptCache();
+  var h = paneCacheGet_(cache, "dash_pane_v5_" + page);
+  if (h == null) {
+    var loaded = loadDashboardData_();
+    var perfData = loadPerformanceData_();
+    var data = loaded.data;
+    h = page === "index" ? renderIndexHtml_(data, perfData)
+      : page === "cre" ? renderCreHtml_(data, perfData)
+      : page === "tech" ? renderTechHtml_(perfData)
+      : renderSmHtml_(data, perfData);
+    var single = {};
+    single[page] = h;
+    cachePanes_(data, single);
+  }
+  return JSON.stringify({ page: page, html: h });
 }
 
 /**
@@ -4222,6 +4247,7 @@ function renderIndexHtml_(data, perfData) {
       statCard("Open Jobs", "<b>" + (jbT ? jbT.openJobs : 0) + "</b>",
         jbT ? ("communication updated " + jbT.communicated + " · pending " + jbT.notCommunicated) : "service sheet not found") +
     "</div>");
+  opsSec = insertExportBtn_(opsSec, "ops");
 
   // ---- 11) Working Days (Current Month) — the master A2 module, moved to the
   // top of the page directly below 🎯 Store Performance (Task 49).
@@ -4347,6 +4373,8 @@ function buildDashboardPage_(data, initialPage, opts) {
     "  var tabs=document.querySelectorAll('.tab-btn');" +
     "  for(var i=0;i<tabs.length;i++){tabs[i].classList.toggle('active', tabs[i]===btn);}" +
     "  showPane(btn.dataset.page);" +
+    "  var el=paneEl(btn.dataset.page);" +
+    "  if(el && el.querySelector && el.querySelector('.pane-loading')) fetchPane(btn.dataset.page);" +
     "}" +
     // Tile click → flip to that page (tab highlight follows automatically).
     "function gotoPage(page, el){" +
@@ -4440,26 +4468,33 @@ function buildDashboardPage_(data, initialPage, opts) {
     "    .refreshDashboardSections();" +
     "}" +
     "" +
-    "// Task 50: export-as-is to a new Google Spreadsheet; the note line links to it." +
-    "function dashExport(btn){" +
+    "// Task 54: per-table export buttons call the single-table endpoint." +
+    "function dashExportSection(key,btn){" +
     "  if(btn.disabled) return;" +
-    "  var t=btn.querySelector('.txt'); var old=t.textContent;" +
-    "  var n=document.getElementById('note');" +
+    "  var old=btn.textContent; var n=document.getElementById('note');" +
     "  if(!(window.google && google.script && google.script.run)){" +
-    "    n.textContent='Export is available in the live add-on only.'; return; }" +
-    "  btn.classList.add('loading'); btn.disabled=true; t.textContent='Exporting…';" +
-    "  n.textContent='Building spreadsheet…';" +
-    "  var done=function(){ btn.classList.remove('loading'); btn.disabled=false; t.textContent=old; };" +
+    "    if(n) n.textContent='Export works in the live add-on only.'; return; }" +
+    "  btn.disabled=true; btn.textContent='…'; if(n) n.textContent='Exporting table…';" +
     "  google.script.run" +
     "    .withSuccessHandler(function(res){" +
     "      try{ var d=JSON.parse(res);" +
-    "        n.innerHTML='Exported · INDEX · CRE · TECH · SM sheets — <a target=\"_top\" href=\"'+d.url+'\" style=\"color:#63e6b7;font-weight:800\">open '+d.name+'</a>';" +
-    "      }catch(e){ n.textContent='Export finished.'; }" +
-    "      done(); })" +
+    "        if(n) n.innerHTML='Exported · <a target=\"_top\" href=\"'+d.url+'\" style=\"color:#63e6b7;font-weight:800\">open '+d.name+'</a>';" +
+    "      }catch(e){ if(n) n.textContent='Export finished.'; }" +
+    "      btn.disabled=false; btn.textContent=old; })" +
     "    .withFailureHandler(function(err){" +
-    "      n.textContent='Export failed: '+(err && err.message ? err.message : err);" +
-    "      done(); })" +
-    "    .exportDashboardToSpreadsheet();" +
+    "      if(n) n.textContent='Export failed: '+(err && err.message ? err.message : err);" +
+    "      btn.disabled=false; btn.textContent=old; })" +
+    "    .exportDashboardSectionToSpreadsheet(key);" +
+    "}" +
+    "" +
+    "// Task 54: lazily fetch a pane the user taps before prefetch finished." +
+    "function fetchPane(page){" +
+    "  var el=paneEl(page); if(!el) return;" +
+    "  if(!(window.google && google.script && google.script.run)) return;" +
+    "  google.script.run" +
+    "    .withSuccessHandler(function(res){try{var d=JSON.parse(res);if(d&&d.html) el.innerHTML=d.html;}catch(e){}})" +
+    "    .withFailureHandler(function(){})" +
+    "    .getDashboardPane(page);" +
     "}" +
     // ---- chat bot: toggle / send / answer ----
     "function chatToggle(){" +
@@ -4549,9 +4584,6 @@ function buildDashboardPage_(data, initialPage, opts) {
     // stripped, the click still forces a full fresh recompute server-side.
     '<a class="refresh-btn" href="' + (appUrl ? appUrl + "?refresh=1" : "#") + '" target="_top" onclick="dashRefresh(this);return false;">' +
     '<span class="spin"></span><span class="txt">↻ Refresh data</span></a>' +
-    // Task 50: export the dashboard data as-is into a new spreadsheet.
-    '<button class="refresh-btn" onclick="dashExport(this)" style="margin-left:8px">' +
-    '<span class="spin"></span><span class="txt">⬇ Export to Sheets</span></button>' +
     // ---- tabs: Index / GP / KPI / Walk-in / Operation / Open Jobs / Date ----
     '<div class="tabs-row"><div class="tabs tabs-wide" role="tablist">' + tabs + "</div></div>" +
     "</div></header>" +
@@ -5100,7 +5132,7 @@ function renderJobsSection_(pd) {
   var jm = pd.jobs;
   return (
     '<section class="sec"><div class="sec-head">' +
-    '<h2>E1. 🔧 Job Management — Open Jobs</h2>' +
+    '<h2>E1. 🔧 Job Management — Open Jobs ' + exportSectionBtn_("jobs") + '</h2>' +
     "</div>" + renderJobManagement_(jm) + "</section>"
   );
 }
@@ -5920,6 +5952,13 @@ function getDashboardCss_() {
     " background:linear-gradient(135deg,#4fb3f5,#0b3672); font-size:.85rem; font-weight:800; }" +
     "@media (max-width:640px){ .brand{font-size:1.1rem;} .card .value{font-size:1rem;} }" +
 
+    ".mini-export { float:right; border:1px solid rgba(170,190,255,.35); border-radius:8px;" +
+    " background:rgba(18,28,68,.8); color:#bcd0ff; font-size:.68rem; font-weight:800;" +
+    " padding:3px 9px; cursor:pointer; margin-left:10px; letter-spacing:.02em; }" +
+    ".mini-export:hover { background:#223b59; color:#e6eeff; }" +
+    ".mini-export:disabled { opacity:.6; cursor:wait; }" +
+    ".pane-loading { text-align:center; color:#8fa3d4; padding:40px 0; }" +
+    "" +
     // ============ TASK 50 — one house look everywhere =====================
     // Same background colour + the same table texture on every page and every
     // module; colour now lives ONLY in the text. These end-of-file overrides
@@ -6015,7 +6054,7 @@ function renderStoreTable_(data) {
       "</div>";
   }
   return (
-    '<section class="section" id="sec-store"><h2>A1. 🎯 Store Target — Performance</h2><div class="body">' +
+    '<section class="section" id="sec-store"><h2>A1. 🎯 Store Target — Performance ' + exportSectionBtn_("store") + '</h2><div class="body">' +
     '<div class="sec-desc">Target vs Achievement &middot; Run Rate</div>' +
     '<div class="rgrid">' +
     tile("Service Revenue", s.service) +
@@ -6202,7 +6241,7 @@ function renderKpiSection_(data) {
   }).join("");
 
   return (
-    '<section class="section" id="sec-kpi"><h2>B. 📊 KPI Target — Store KPI Parameters</h2><div class="body">' +
+    '<section class="section" id="sec-kpi"><h2>B. 📊 KPI Target — Store KPI Parameters ' + exportSectionBtn_("kpi") + '</h2><div class="body">' +
     '<div class="scroll-x">' +
     "<table><thead><tr><th>KPI</th><th>Type</th><th>Target</th><th>Achieved</th><th>Achieved %</th>" +
     "<th>Balance</th><th>Approx Achievable Value</th><th>Achieved Value</th><th>Achieved GP</th></tr></thead><tbody>" + rows +

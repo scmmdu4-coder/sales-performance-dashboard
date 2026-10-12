@@ -480,8 +480,8 @@ var opsPair=page.slice(page.indexOf('class="ops-pair"'),page.indexOf('class="ops
 check("decline & win-back side by side (ops-pair)",
   page.indexOf('class="ops-pair"')>-1
   &&page.indexOf(".ops-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr)")>-1
-  &&opsPair.indexOf("Decline Repair</h2>")>-1&&opsPair.indexOf("Win-back</h2>")>-1
-  &&opsPair.indexOf("Decline Repair</h2>")<opsPair.indexOf("Win-back</h2>"));
+  &&opsPair.indexOf("Decline Repair")>-1&&opsPair.indexOf("Win-back</h2>")>-1
+  &&opsPair.indexOf("Decline Repair")<opsPair.indexOf("Win-back</h2>"));
 check("repair type renders N-repair", page.indexOf("<td>N-repair</td>")>-1);
 check("repairTypeShort_ mappings", repairTypeShort_("Service Non-Repair")==="N-repair"
   &&repairTypeShort_("Whole Unit Mail-In Return to Service Location")==="mail-in"
@@ -993,7 +993,7 @@ console.log("== TASK 47 batch ==");
     var seg=page.slice(page.indexOf('data-pane="tech"'),page.indexOf('data-pane="sm"'));
     return seg.indexOf("D2. Repair Type Performance")>-1&&seg.indexOf("D3. 🚫 Decline Repair")>-1
       &&seg.indexOf("D4. 🔁 Requote")>-1&&seg.indexOf("Bucket Summary")>-1
-      &&seg.indexOf("E1. 🔧 Job Management — Open Jobs</h2>")>-1;
+      &&seg.indexOf("E1. 🔧 Job Management — Open Jobs ")>-1;
   })());
   check("TECH bucket summary with 9 aging bands (Task 50)",
     page.indexOf('id="sec-tech-jobs"')>-1&&page.indexOf('Bucket Summary')>-1
@@ -1065,10 +1065,24 @@ check("bucket summary 9-band headers (Task 50)",page.indexOf(
   '<th class="num">0–2 d</th><th class="num">3–5 d</th><th class="num">6–10 d</th>'
   +'<th class="num">11–15 d</th><th class="num">16–30 d</th><th class="num">31–45 d</th>'
   +'<th class="num">46–60 d</th><th class="num">61–100 d</th><th class="num">100+ d</th>')>-1);
-check("export-to-Sheets button + endpoint (Task 50)",
-  page.indexOf('onclick="dashExport(this)"')>-1&&page.indexOf("Export to Sheets")>-1
-  &&gsSrc.indexOf("function exportDashboardToSpreadsheet()")>-1
-  &&gsSrc.indexOf(".exportDashboardToSpreadsheet();")>-1);
+check("page-wide export removed; per-table buttons on the 7 sections (Task 54)",
+  page.indexOf('onclick="dashExport(this)"')===-1&&page.indexOf("Export to Sheets")===-1
+  &&gsSrc.indexOf("function exportDashboardToSpreadsheet")===-1
+  &&(page.match(/dashExportSection\('/g)||[]).length>=7
+  &&page.indexOf("dashExportSection('store'")>-1&&page.indexOf("dashExportSection('ops'")>-1
+  &&page.indexOf("dashExportSection('repairType'")>-1&&page.indexOf("dashExportSection('decline'")>-1
+  &&page.indexOf("dashExportSection('jobs'")>-1&&page.indexOf("dashExportSection('margin'")>-1
+  &&page.indexOf("dashExportSection('kpi'")>-1);
+check("per-section export endpoint with the owner titles (Task 54)",
+  gsSrc.indexOf("function exportDashboardSectionToSpreadsheet")>-1
+  &&gsSrc.indexOf("exportDashboardSectionToSpreadsheet(key)")>-1
+  &&gsSrc.indexOf('"A1. Store Target — Performance"')>-1
+  &&gsSrc.indexOf('"Repairs & Jobs — counts"')>-1
+  &&gsSrc.indexOf('"D2. Repair Type Performance')>-1
+  &&gsSrc.indexOf('"D3. Decline Repair"')>-1
+  &&gsSrc.indexOf('"E1. Job Management — Open Jobs"')>-1
+  &&gsSrc.indexOf('"A4. High Margin — top 5"')>-1
+  &&gsSrc.indexOf('"B. KPI Target — Store KPI Parameters"')>-1);
 
 console.log("== TASK 51 batch ==");
 check("deep-linkable pages via ?page= (Task 51)",
@@ -1096,21 +1110,14 @@ check("15-minute background update loop (Task 51b)",
   &&clientJS.indexOf("setTimeout(autoRefresh,5000)")>-1
   &&clientJS.indexOf("function autoRefresh(")>-1
   &&clientJS.indexOf("function applySections(")>-1);
-check("export limited to the seven owner-listed tables (Task 52)",
-  gsSrc.indexOf('mkSheet("Store Target Performance")')>-1
-  &&gsSrc.indexOf('mkSheet("Repairs & Jobs Counts")')>-1
-  &&gsSrc.indexOf('mkSheet("Repair Type Performance")')>-1
-  &&gsSrc.indexOf('mkSheet("Decline Repair")')>-1
-  &&gsSrc.indexOf('mkSheet("Open Jobs")')>-1
-  &&gsSrc.indexOf('mkSheet("High Low Margin")')>-1
-  &&gsSrc.indexOf('mkSheet("KPI Target Parameters")')>-1
-  &&gsSrc.indexOf('mkSheet("INDEX")')===-1&&gsSrc.indexOf('mkSheet("SM")')===-1);
-check("export table builders match the shown columns (Task 52)",
-  gsSrc.indexOf('"Balance (Target − Achievement)"')>-1
-  &&gsSrc.indexOf('"Per Day Requirement / Excess"')>-1
-  &&gsSrc.indexOf('"Approx Balance Value"')>-1
-  &&gsSrc.indexOf("'E1. Job Management — Open Jobs'")==-1
-  &&gsSrc.indexOf('"E1. Job Management — Open Jobs"')>-1);
+check("single-pane pages + chunked page cache restore fast loads (Task 54)",
+  gsSrc.indexOf("dash_pg_v6_")>-1&&gsSrc.indexOf("function getDashboardPane")>-1
+  &&gsSrc.indexOf("function paneLoadingHtml_")>-1&&gsSrc.indexOf("pane-loading")>-1
+  &&gsSrc.indexOf("panes2[page] = active")>-1);
+check("tab tap lazily fills an unloaded pane (Task 54)",
+  clientJS.indexOf("function fetchPane(")>-1
+  &&clientJS.indexOf("el.querySelector('.pane-loading')")>-1
+  &&clientJS.indexOf(".getDashboardPane(page);")>-1);
 check("refresh button is a real ?refresh=1 fallback link (Task 52)",
   page.indexOf('class="refresh-btn" href="')>-1&&page.indexOf('target="_top"')>-1
   &&gsSrc.indexOf('"(appUrl ? appUrl + "\u003frefresh=1\u0022 : \"#\u0022)"')>-1
