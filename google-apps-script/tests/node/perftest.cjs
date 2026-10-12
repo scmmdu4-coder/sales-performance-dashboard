@@ -1073,8 +1073,7 @@ check("export-to-Sheets button + endpoint (Task 50)",
 console.log("== TASK 51 batch ==");
 check("deep-linkable pages via ?page= (Task 51)",
   gsSrc.indexOf("e.parameter.page")>-1
-  &&gsSrc.indexOf("function buildDashboardPage_(data, initialPage)")>-1
-  &&gsSrc.indexOf("dashboard_html_v4_")>-1);
+  &&gsSrc.indexOf("function buildDashboardPage_(data, initialPage, opts)")>-1);
 check("tabs are real anchors with a no-JS fallback (Task 51)",
   page.indexOf('class="tab-btn active" href="')>-1
   &&page.indexOf('target="_top" data-page="cre"')>-1
@@ -1085,6 +1084,14 @@ check("event-bound tabs + guarded clock init (Task 51)",
 check("clock shows a server-stamped time immediately (Task 51)",
   /<span class="clock-text" id="liveClock">\d{2}-\d{2}-\d{4}/.test(page)
   &&page.indexOf('id="liveClock">—<')===-1);
+check("pane-level caches make repeat loads instant (Task 51b)",
+  gsSrc.indexOf("dash_pane_v5_")>-1&&gsSrc.indexOf("dash_meta_v5")>-1
+  &&gsSrc.indexOf("function cachePanes_")>-1&&gsSrc.indexOf("cachePanes_(data,")>-1);
+check("15-minute background update loop (Task 51b)",
+  clientJS.indexOf("setInterval(autoRefresh,15*60*1000)")>-1
+  &&clientJS.indexOf("setTimeout(autoRefresh,5000)")>-1
+  &&clientJS.indexOf("function autoRefresh(")>-1
+  &&clientJS.indexOf("function applySections(")>-1);
 check("export has one sheet per dashboard with its tables (Task 51)",
   gsSrc.indexOf('mkSheet("INDEX")')>-1&&gsSrc.indexOf('mkSheet("CRE")')>-1
   &&gsSrc.indexOf('mkSheet("TECH")')>-1&&gsSrc.indexOf('mkSheet("SM")')>-1

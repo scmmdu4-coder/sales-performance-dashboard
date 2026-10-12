@@ -360,20 +360,39 @@ function doGet(e) {
   var page = (e && e.parameter && e.parameter.page) ? String(e.parameter.page).toLowerCase() : "index";
   if (["index", "cre", "tech", "sm"].indexOf(page) === -1) page = "index";
   var cache = CacheService.getScriptCache();
-  var CACHE_KEY = "dashboard_html_v4_" + page;
 
+  // ---- FAST PATH (Task 51b) ---------------------------------------------------
+  // Each rendered PANE is cached separately — a pane stays under the 100 KB
+  // cache cap even though the whole page does not. With all four panes + the
+  // small frame record warm, the page is served with NO sheet reads at all.
+  // This is what makes switching INDEX ↔ CRE ↔ TECH ↔ SM instant after the
+  // first load, and the 15-minute background refresh keeps the caches warm.
   var html = null;
   if (!wantsFresh) {
-    try { html = cache.get(CACHE_KEY); } catch (err) { html = null; }
+    try {
+      var metaJ = cache.get("dash_meta_v5");
+      if (metaJ) {
+        var panes = {}, cold = false;
+        ["index", "cre", "tech", "sm"].forEach(function (pg) {
+          var h = null;
+          try { h = cache.get("dash_pane_v5_" + pg); } catch (e1) { h = null; }
+          if (h == null) cold = true; else panes[pg] = h;
+        });
+        if (!cold) {
+          var meta = JSON.parse(metaJ);
+          html = buildDashboardPage_(null, page, {
+            storeCode: meta.storeCode, metaText: meta.metaText, paneJson: panes
+          });
+        }
+      }
+    } catch (err) { html = null; }
   }
 
   if (!html) {
     var loaded = loadDashboardData_();
     html = buildDashboardPage_(loaded.data, page);
-    // Cache entries are capped at 100 KB; skip caching if the page is bigger.
-    if (html.length < 100000) {
-      try { cache.put(CACHE_KEY, html, CONFIG.CACHE_SECONDS); } catch (err2) { /* non-fatal */ }
-    }
+    // Full renders refresh the pane caches (best-effort) from inside
+    // buildDashboardPage_ — nothing further to do here.
   }
 
   return HtmlService.createHtmlOutput(html)
@@ -3562,6 +3581,28 @@ function exportDashboardToSpreadsheet() {
 }
 
 /**
+ * Task 51b — best-effort pane cache: stores each rendered dashboard pane
+ * (skipping any over the 100 KB CacheService cap) plus the small frame
+ * record (store code + meta line) so doGet can serve repeat loads without a
+ * single sheet read. TTL matches the 15-minute background refresh cadence.
+ */
+function cachePanes_(data, panes) {
+  try {
+    var cache = CacheService.getScriptCache();
+    ["index", "cre", "tech", "sm"].forEach(function (pg) {
+      var h = panes[pg] || "";
+      if (h && h.length < 100000) {
+        try { cache.put("dash_pane_v5_" + pg, h, 900); } catch (e1) { /* skip */ }
+      }
+    });
+    cache.put("dash_meta_v5", JSON.stringify({
+      storeCode: (data && data.store && data.store.storeCode) ? data.store.storeCode : "",
+      metaText: renderMetaText_(data)
+    }), 900);
+  } catch (err) { /* caching is best-effort only */ }
+}
+
+/**
  * Server endpoint for the Refresh button.
  *
  * Called from the page via google.script.run, which works inside the Apps
@@ -3577,21 +3618,22 @@ function refreshDashboardSections() {
   var data = loaded.data;
 
   var perfData = loadPerformanceData_();
-
-  // Keep the server-side page cache in step with what we just computed.
-  try {
-    var full = buildDashboardPage_(data);
-    if (full.length < 100000) {
-      CacheService.getScriptCache().put("dashboard_html_v3", full, CONFIG.CACHE_SECONDS);
-    }
-  } catch (err) { /* cache refresh is best-effort */ }
-
-  return JSON.stringify({
-    meta: renderMetaText_(data),
+  var panes = {
     index: renderIndexHtml_(data, perfData),
     cre: renderCreHtml_(data, perfData),
     tech: renderTechHtml_(perfData),
-    sm: renderSmHtml_(data, perfData),
+    sm: renderSmHtml_(data, perfData)
+  };
+  // Task 51b: refill the per-pane caches, so the next page load (or tab
+  // navigation via anchors) is served with zero sheet reads.
+  cachePanes_(data, panes);
+
+  return JSON.stringify({
+    meta: renderMetaText_(data),
+    index: panes.index,
+    cre: panes.cre,
+    tech: panes.tech,
+    sm: panes.sm
   });
 }
 
@@ -4286,14 +4328,16 @@ function freshnessLineHtml_(data, perfData) {
 }
 
 /** Assembles the complete HTML document. */
-function buildDashboardPage_(data, initialPage) {
+function buildDashboardPage_(data, initialPage, opts) {
+  opts = opts || {};
   var css = getDashboardCss_();
-  var storeCode = (data.store && data.store.storeCode) ? data.store.storeCode : "";
+  var storeCode = (opts.storeCode !== undefined) ? opts.storeCode :
+    ((data && data.store && data.store.storeCode) ? data.store.storeCode : "");
   // Task 35/43: brand line 1 = the crm!F2 store name verbatim; generic title
   // moves to a second line but stays the page header.
   var pageTitle = (storeCode ? storeCode : "iPlanetcare") + " — Store Performance Dashboard";
 
-  var perfData = loadPerformanceData_();
+  var perfData = opts.paneJson ? null : loadPerformanceData_();
 
   // Task 51: ?page=… deep links — resolve which tab shows first, build the
   // anchor-fallback URL (blank outside the live Apps Script env), and stamp
@@ -4312,13 +4356,19 @@ function buildDashboardPage_(data, initialPage) {
   // details; TECH - job management basics only; SM - the full master report
   // (groups A-G). Fine-grained per-role gating per target!X1:Y50 follows in
   // the next iteration.
+  var cached = opts.paneJson || null;
   var PAGES = [
     // [tab label, data-page id, main id, html, meta-subtitle]
-    ["INDEX", "index", "pageIndex", renderIndexHtml_(data, perfData), "Overall store performance — every dashboard at a glance"],
-    ["CRE",   "cre",   "pageCre",   renderCreHtml_(data, perfData),         "CRE — walk-in tokens · jobs & invoices created · C-SAT summary"],
-    ["TECH",  "tech",  "pageTech",  renderTechHtml_(perfData),        "TECH — job buckets · bucket aging · communication status"],
-    ["SM",    "sm",    "pageSm",    renderSmHtml_(data, perfData),    "SM — full & detailed master report (groups A-G)"],
+    ["INDEX", "index", "pageIndex", cached ? cached.index : renderIndexHtml_(data, perfData), "Overall store performance — every dashboard at a glance"],
+    ["CRE",   "cre",   "pageCre",   cached ? cached.cre : renderCreHtml_(data, perfData),     "CRE — walk-in tokens · jobs & invoices created · C-SAT summary"],
+    ["TECH",  "tech",  "pageTech",  cached ? cached.tech : renderTechHtml_(perfData),         "TECH — job buckets · bucket aging · communication status"],
+    ["SM",    "sm",    "pageSm",    cached ? cached.sm : renderSmHtml_(data, perfData),       "SM — full & detailed master report (groups A-G)"],
   ];
+  // Full renders also warm the pane caches (Task 51b) so repeat page loads
+  // and tab clicks skip all server compute.
+  if (!cached && data) {
+    cachePanes_(data, { index: PAGES[0][3], cre: PAGES[1][3], tech: PAGES[2][3], sm: PAGES[3][3] });
+  }
 
   // Tabs are REAL links (?page=<id>, target _top) so switching keeps working
   // even when the host strips inline handlers; when JS runs it intercepts the
@@ -4388,6 +4438,32 @@ function buildDashboardPage_(data, initialPage) {
     "}" +
     "try{bindTabs();}catch(e){}" +
     "try{tickClock(); setInterval(tickClock,1000);}catch(e){}" +
+    "" +
+    // Task 51b — silent background updater: right after the page paints it
+    // fills every pane (so tab switches become pure display flips), and from
+    // then on it re-checks for updates every 15 minutes without a reload.
+    "function applySections(res){" +
+    "  try{" +
+    "    var d=JSON.parse(res);" +
+    "    var map={index:'pageIndex',cre:'pageCre',tech:'pageTech',sm:'pageSm'};" +
+    "    Object.keys(map).forEach(function(pg){var el=document.getElementById(map[pg]);if(el&&d[pg]!==undefined){el.innerHTML=d[pg];}});" +
+    "    var active=paneEl(currentPage());" +
+    "    if(active){document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';}" +
+    "    var n=document.getElementById('note');" +
+    "    if(n){n.textContent='Up to date'; n.className='note ok';}" +
+    "  }catch(e){}" +
+    "}" +
+    "function autoRefresh(){" +
+    "  if(!(window.google&&google.script&&google.script.run)) return;" +
+    "  google.script.run" +
+    "    .withSuccessHandler(function(res){applySections(res);})" +
+    "    .withFailureHandler(function(){})" +
+    "    .refreshDashboardSections();" +
+    "}" +
+    "if(window.google&&google.script&&google.script.run){" +
+    "  setTimeout(autoRefresh,5000);" +
+    "  setInterval(autoRefresh,15*60*1000);" +
+    "}" +
     "function dashRefresh(btn){" +
     "  if(btn.disabled) return;" +
     "  btn.classList.add('loading'); btn.disabled=true;" +
@@ -4520,7 +4596,7 @@ function buildDashboardPage_(data, initialPage) {
     "document.addEventListener('keydown',function(e){if(e.key==='Escape')closeCaseDetails();});" +
     "</script>";
 
-  var bizMeta = renderMetaText_(data);
+  var bizMeta = (opts.metaText !== undefined) ? opts.metaText : renderMetaText_(data);
 
   return (
     "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
