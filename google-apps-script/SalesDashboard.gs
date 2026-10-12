@@ -355,8 +355,12 @@ function doGet(e) {
   // refreshDashboardSections() over google.script.run and swaps the markup
   // in place, which is both faster and safe inside the iframe sandbox.
   var wantsFresh = !!(e && e.parameter && e.parameter.refresh);
+  // Task 51 — deep-linkable tabs: "?page=cre" serves the CRE pane already
+  // visible, so navigation keeps working even where inline JS is stripped.
+  var page = (e && e.parameter && e.parameter.page) ? String(e.parameter.page).toLowerCase() : "index";
+  if (["index", "cre", "tech", "sm"].indexOf(page) === -1) page = "index";
   var cache = CacheService.getScriptCache();
-  var CACHE_KEY = "dashboard_html_v3";
+  var CACHE_KEY = "dashboard_html_v4_" + page;
 
   var html = null;
   if (!wantsFresh) {
@@ -365,7 +369,7 @@ function doGet(e) {
 
   if (!html) {
     var loaded = loadDashboardData_();
-    html = buildDashboardPage_(loaded.data);
+    html = buildDashboardPage_(loaded.data, page);
     // Cache entries are capped at 100 KB; skip caching if the page is bigger.
     if (html.length < 100000) {
       try { cache.put(CACHE_KEY, html, CONFIG.CACHE_SECONDS); } catch (err2) { /* non-fatal */ }
@@ -3274,11 +3278,10 @@ function renderMetaText_(data) {
 }
 
 /**
- * Task 50 — "Export to Sheets" button endpoint. Recomputes the dashboard data
- * exactly as shown on the pages and writes it into a brand-new Google
- * Spreadsheet the owner can keep or share. Sheets: Open Jobs (the E1 table),
- * Bucket Aging (the 9-band summary), Walk-in Analysis, Weekly %,
- * KPI Parameters and Store Target. Returns { name, url } as JSON.
+ * Task 51 — "Export to Sheets" button endpoint. Exports the dashboards
+ * AS SHOWN: one sheet per dashboard tab (INDEX / CRE / TECH / SM) and inside
+ * each sheet only the tables that dashboard actually displays, stacked with
+ * titles. Returns { name, url } as JSON.
  * NOTE: no trailing underscore — google.script.run can only call public fns.
  */
 function exportDashboardToSpreadsheet() {
@@ -3289,58 +3292,50 @@ function exportDashboardToSpreadsheet() {
   var book = SpreadsheetApp.create("Dashboard Export — " + stamp);
   var first = book.getSheets()[0];
 
-  function grid(name, headers, rows) {
-    var sh = first || book.insertSheet();
+  function mkSheet(name) {
+    var sh;
+    if (first) { sh = first; first = null; }
+    else sh = book.insertSheet();
     sh.setName(name);
-    sh.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight("bold");
-    if (rows.length) sh.getRange(2, 1, rows.length, headers.length).setValues(rows);
-    first = null;
     return sh;
   }
-
-  // 1) Open Jobs — exactly the columns of the E1 "Job Management" table.
-  var now = Date.now(), jobRows = [];
-  var jobs = (pd.jobs && pd.jobs.available && pd.jobs.jobs) ? pd.jobs.jobs : [];
-  jobs.forEach(function (j) {
-    var comm = "—";
-    if (j.commTs > 0) {
-      var dfc = Math.max(0, Math.floor((now - j.commTs) / 86400000));
-      comm = dfc === 0 ? "today" : dfc + "d";
+  function table(sh, at, title, headers, rows) {
+    sh.getRange(at, 1).setValue(title).setFontWeight("bold");
+    sh.getRange(at + 1, 1, 1, headers.length).setValues([headers]).setFontWeight("bold");
+    if (rows.length) sh.getRange(at + 2, 1, rows.length, headers.length).setValues(rows);
+    return at + 2 + rows.length + 1;
+  }
+  // Never let one missing source kill the whole export.
+  function safe(sh, at, title, headers, maker) {
+    try { return table(sh, at, title, headers, maker() || []); }
+    catch (e) {
+      sh.getRange(at, 1).setValue(title).setFontWeight("bold");
+      sh.getRange(at + 1, 1).setValue("(not available: " + e + ")");
+      return at + 3;
     }
-    jobRows.push([
-      j.jobAge == null ? "" : j.jobAge,
-      j.gsxStatus || "—", j.crmRepairStatus || "—", j.repairType || "—",
-      j.caseId || "—", j.name || "—", j.mobile || "—", j.gsxId || "—",
-      j.serialNo || "—", j.product || "—", comm]);
-  });
-  grid("Open Jobs",
-    ["Aging", "GSX Repair Status", "CRM Status", "Repair Type", "Case ID", "Name", "Number", "GSX ID", "S.No", "Model", "Comm. Updated"],
-    jobRows);
+  }
 
-  // 2) Bucket Aging — the same 9 aging bands as the dashboard summary table.
-  var BANDS = [[0, 2, "0–2 d"], [3, 5, "3–5 d"], [6, 10, "6–10 d"], [11, 15, "11–15 d"],
-    [16, 30, "16–30 d"], [31, 45, "31–45 d"], [46, 60, "46–60 d"], [61, 100, "61–100 d"], [101, 1e12, "100+ d"]];
-  var bMap = {}, bOrder = [];
-  jobs.forEach(function (j) {
-    var b = (j.crmRepairStatus || "—");
-    if (!bMap[b]) { bMap[b] = { bands: BANDS.map(function () { return 0; }), noAge: 0, total: 0 }; bOrder.push(b); }
-    var rec = bMap[b]; rec.total++;
-    var age = (typeof j.jobAge === "number" && isFinite(j.jobAge) && j.jobAge >= 0) ? j.jobAge : null;
-    if (age == null) rec.noAge++;
-    else BANDS.forEach(function (bd, i) { if (age >= bd[0] && age <= bd[1]) rec.bands[i]++; });
-  });
-  bOrder.sort();
-  grid("Bucket Aging",
-    ["Repair Bucket"].concat(BANDS.map(function (bd) { return bd[2]; })).concat(["Age —", "Total"]),
-    bOrder.map(function (b) {
-      var r = bMap[b];
-      return [b].concat(r.bands).concat([r.noAge, r.total]);
-    }));
+  // ---------- shared table builders (dashboard content as displayed) --------
+  function storeRows_() {
+    var st = data.store;
+    return [
+      ["Total", st.totalTarget, st.totalAchieved, fmt1_(st.totalPct) + "%", st.totalBalance],
+      ["Service", st.service.target, st.service.achieved, st.service.pct + "%", st.service.balance],
+      ["Accessories", st.accessories.target, st.accessories.achieved, st.accessories.pct + "%", st.accessories.balance],
+      ["Repair", st.repair.target, st.repair.achieved, st.repair.pct + "%", st.repair.balance],
+      ["Gross Profit", st.gp.target, st.gp.achieved, st.gp.pct + "%", st.gp.balance]];
+  }
+  var STORE_HEADERS = ["Revenue Type", "Target", "Achieved", "%", "Balance"];
 
-  // 3) Walk-in Analysis — counts with % of total walk-ins, as on the page.
-  var wl2 = pd.walkin && pd.walkin.totals ? pd.walkin.totals : {};
-  grid("Walk-in Analysis", ["Metric", "Count", "% of total walk-ins"],
-    [
+  function workdayRows_() {
+    var s = data.store;
+    return [["Total working days", s.totalWorkingDays],
+      ["Consumed", s.consumedWorkingDays], ["Balance left", s.balanceWorkingDays]];
+  }
+
+  function walkinRows_() {
+    var wl2 = pd.walkin && pd.walkin.totals ? pd.walkin.totals : {};
+    return [
       ["Total walk-ins", wl2.grandTotal || 0, ""],
       ["Submitted for repair", wl2.submitted || 0, wl2.submittedPct || 0],
       ["Attended by engineer", wl2.attended || 0, wl2.attendedPct || 0],
@@ -3350,55 +3345,218 @@ function exportDashboardToSpreadsheet() {
       ["Follow-ups", wl2.followUps || 0, wl2.followUpsPct || 0],
       ["Google", wl2.google || 0, wl2.googlePct || 0],
       ["Poor feedback", wl2.poor || 0, wl2.poorPct || 0],
-      ["Others", wl2.others || 0, wl2.othersPct || 0]
-    ]);
-
-  // 4) Weekly % — the index "Weekly Achievement" table as shown.
-  var a = computeWeeklyAnalysis_(data);
-  var doneW = a.done || [], upW = a.upcoming || [];
-  var nUp = upW.length * (a.fields.length + a.sectionTargets.length);
-  var holeW = Math.max(0, a.monthTarget - a.monthTotal);
-  var shareW = nUp ? r1_((holeW / nUp) / Math.max(1, a.monthTarget) * 100) : 0;
-  var weekRows = [];
-  weekRows.push(["TOTAL (month)", "summary",
-    a.totalPct + "%", a.fieldPct["E"] + "%", a.fieldPct["F"] + "%", a.fieldPct["G"] + "%"]);
-  function weekLine(w) {
-    var f = a.a[w.idx] || {}, sec = a.sectionA[w.idx] || [];
-    var px = w.kind !== "upcoming" ? f.totalPct : shareW;
-    var pe = w.kind !== "upcoming" ? f.fieldPct["E"] : shareW;
-    var pf = w.kind !== "upcoming" ? f.fieldPct["F"] : shareW;
-    var pg = w.kind !== "upcoming" ? f.fieldPct["G"] : shareW;
-    var overall = (px != null && !isFinite(px)) ? "—" : (px != null ? px + "%" : "—");
-    return [w.label, w.kind === "upcoming" ? "upcoming (balance share)" : w.kind,
-      overall,
-      pe == null ? "—" : pe + "%",
-      pf == null ? "—" : pf + "%",
-      pg == null ? "—" : pg + "%"];
+      ["Others", wl2.others || 0, wl2.othersPct || 0]];
   }
-  doneW.forEach(function (w) { weekRows.push(weekLine(w)); });
-  upW.forEach(function (w) { weekRows.push(weekLine(w)); });
-  grid("Weekly %", ["Week", "Status", "Overall %", (a.fields[0] ? a.fields[0].label : "Service") + " %",
-    (a.fields[1] ? a.fields[1].label : "Accessories") + " %", (a.fields[2] ? a.fields[2].label : "Repair") + " %"],
-    weekRows);
 
-  // 5) KPI Parameters + 6) Store Target — the index cards as shown.
-  var kpiRows = [];
-  [["AR", data.kpi.ar], ["RR", data.kpi.rr], ["SR", data.kpi.sr]].forEach(function (kv) {
-    (kv[1] || []).forEach(function (it) {
-      kpiRows.push([kv[0] + " — " + it.name, it.code || "", it.achieved, it.target, it.pct + "%"]);
+  function weeklyRows_() {
+    var a = computeWeeklyAnalysis_(data);
+    var doneW = a.done || [], upW = a.upcoming || [];
+    var nUp = upW.length * (a.fields.length + a.sectionTargets.length);
+    var holeW = Math.max(0, a.monthTarget - a.monthTotal);
+    var shareW = nUp ? r1_((holeW / nUp) / Math.max(1, a.monthTarget) * 100) : 0;
+    var rows = [["TOTAL (month)", "summary", a.totalPct + "%",
+      a.fieldPct["E"] + "%", a.fieldPct["F"] + "%", a.fieldPct["G"] + "%"]];
+    function line(w) {
+      var f = a.a[w.idx] || {};
+      function pick(key) { return w.kind !== "upcoming" ? f.fieldPct[key] : shareW; }
+      var pt = w.kind !== "upcoming" ? f.totalPct : shareW;
+      return [w.label, w.kind === "upcoming" ? "upcoming (balance share)" : w.kind,
+        pt == null || !isFinite(pt) ? "—" : pt + "%"];
+      }
+    doneW.concat(upW).forEach(function (w) {
+      var f = a.a[w.idx] || {};
+      var base = w.kind !== "upcoming";
+      rows.push([w.label, w.kind === "upcoming" ? "upcoming (balance share)" : w.kind,
+        base ? (isFinite(f.totalPct) ? f.totalPct + "%" : "—") : shareW + "%",
+        base && f.fieldPct["E"] != null ? f.fieldPct["E"] + "%" : base ? "—" : shareW + "%",
+        base && f.fieldPct["F"] != null ? f.fieldPct["F"] + "%" : base ? "—" : shareW + "%",
+        base && f.fieldPct["G"] != null ? f.fieldPct["G"] + "%" : base ? "—" : shareW + "%"]);
     });
-  });
-  grid("KPI Parameters", ["Parameter", "Scheme Code", "Achieved", "Target", "%"], kpiRows);
+    return rows;
+  }
+  function weeklyHeaders_() {
+    var a = computeWeeklyAnalysis_(data);
+    return ["Week", "Status", "Overall %",
+      (a.fields[0] ? a.fields[0].label : "Service") + " %",
+      (a.fields[1] ? a.fields[1].label : "Accessories") + " %",
+      (a.fields[2] ? a.fields[2].label : "Repair") + " %"];
+  }
 
-  var st = data.store;
-  grid("Store Target", ["Revenue Type", "Target", "Achieved", "%", "Balance"],
-    [
-      ["Total", st.totalTarget, st.totalAchieved, fmt1_(st.totalPct) + "%", st.totalBalance],
-      ["Service", st.service.target, st.service.achieved, st.service.pct + "%", st.service.balance],
-      ["Accessories", st.accessories.target, st.accessories.achieved, st.accessories.pct + "%", st.accessories.balance],
-      ["Repair", st.repair.target, st.repair.achieved, st.repair.pct + "%", st.repair.balance],
-      ["Gross Profit", st.gp.target, st.gp.achieved, st.gp.pct + "%", st.gp.balance]
-    ]);
+  function kpiRows_() {
+    var rows = [];
+    [["AR", data.kpi.ar], ["RR", data.kpi.rr], ["SR", data.kpi.sr]].forEach(function (kv) {
+      (kv[1] || []).forEach(function (it) {
+        rows.push([kv[0] + " — " + it.name, it.code || "", it.achieved, it.target, it.pct + "%"]);
+      });
+    });
+    return rows;
+  }
+
+  function attachRows_() {
+    var rows = [];
+    [["AR", data.kpi.ar], ["RR", data.kpi.rr], ["SR", data.kpi.sr]].forEach(function (kv) {
+      var ach = 0, tgt = 0;
+      (kv[1] || []).forEach(function (it) { ach += it.achieved || 0; tgt += it.target || 0; });
+      rows.push([kv[0], ach, tgt, tgt > 0 ? Math.round(ach / tgt * 100) + "%" : "—"]);
+    });
+    return rows;
+  }
+
+  function personRows_() {
+    return (data.salespeople || []).map(function (p) {
+      return [p.name, p.service.pct + "%", p.accessory.pct + "%",
+        p.repair.pct + "%", p.grossProfit.pct + "%", p.total.pct + "%"];
+    });
+  }
+
+  function jobSummaryRows_() {
+    var t = (pd.jobs && pd.jobs.totals) || {};
+    return [["Open jobs", t.openJobs || 0],
+      ["Communication updated", t.communicated || 0],
+      ["Not updated", t.notCommunicated || 0]];
+  }
+
+  var JOB_HEADERS = ["Aging", "GSX Repair Status", "CRM Status", "Repair Type",
+    "Case ID", "Name", "Number", "GSX ID", "S.No", "Model", "Comm. Updated"];
+  function jobRows_() {
+    var now = Date.now(), rows = [];
+    var jobs = (pd.jobs && pd.jobs.available && pd.jobs.jobs) ? pd.jobs.jobs : [];
+    jobs.forEach(function (j) {
+      var comm = "—";
+      if (j.commTs > 0) {
+        var dfc = Math.max(0, Math.floor((now - j.commTs) / 86400000));
+        comm = dfc === 0 ? "today" : dfc + "d";
+      }
+      rows.push([j.jobAge == null ? "" : j.jobAge,
+        j.gsxStatus || "—", j.crmRepairStatus || "—", j.repairType || "—",
+        j.caseId || "—", j.name || "—", j.mobile || "—", j.gsxId || "—",
+        j.serialNo || "—", j.product || "—", comm]);
+    });
+    return rows;
+  }
+
+  // Task 50 bands, kept for both the TECH sheet and the SM sheet.
+  var BANDS = [[0, 2, "0–2 d"], [3, 5, "3–5 d"], [6, 10, "6–10 d"], [11, 15, "11–15 d"],
+    [16, 30, "16–30 d"], [31, 45, "31–45 d"], [46, 60, "46–60 d"], [61, 100, "61–100 d"], [101, 1e12, "100+ d"]];
+  function bucketHeaders_() {
+    return ["Repair Bucket"].concat(BANDS.map(function (bd) { return bd[2]; })).concat(["Age —", "Total"]);
+  }
+  function bucketRows_() {
+    var jobs = (pd.jobs && pd.jobs.available && pd.jobs.jobs) ? pd.jobs.jobs : [];
+    var bMap = {}, bOrder = [];
+    jobs.forEach(function (j) {
+      var b = (j.crmRepairStatus || "—");
+      if (!bMap[b]) { bMap[b] = { bands: BANDS.map(function () { return 0; }), noAge: 0, total: 0 }; bOrder.push(b); }
+      var rec = bMap[b]; rec.total++;
+      var age = (typeof j.jobAge === "number" && isFinite(j.jobAge) && j.jobAge >= 0) ? j.jobAge : null;
+      if (age == null) rec.noAge++;
+      else BANDS.forEach(function (bd, i) { if (age >= bd[0] && age <= bd[1]) rec.bands[i]++; });
+    });
+    bOrder.sort();
+    return bOrder.map(function (b) {
+      var r = bMap[b];
+      return [b].concat(r.bands).concat([r.noAge, r.total]);
+    });
+  }
+
+  function csatHeaders_() {
+    var tb = pd.targetBlock || {};
+    return [tb.nameHeader || "Name"].concat(tb.labels || []).concat(["Total", "C-SAT", "CFI"]);
+  }
+  function csatRows_() {
+    var tb = pd.targetBlock || {};
+    var rows = (tb.people || []).map(function (p) {
+      return [p.name].concat(p.cats).concat([p.total, p.csat || "", p.cfi || ""]);
+    });
+    if (tb.totalRow) rows.push(["TOTAL"].concat(tb.totalRow.cats || [])
+      .concat([tb.totalRow.total || 0, tb.totalRow.csat || "", tb.totalRow.cfi || ""]));
+    return rows;
+  }
+
+  function repairTypeRows_() {
+    var ra = pd.repair || {};
+    return (ra.typeComp || []).map(function (c) {
+      return [c.name, c.cur, c.curDaysAvg == null ? "—" : c.curDaysAvg + " d"];
+    });
+  }
+
+  function opsRows_() {
+    var ex = pd.opsExtras || {};
+    return [
+      ["Declined repairs — unique CaseIDs · 'Declined - Rejected by Local Approver'",
+        ex.decline ? ex.decline.count || 0 : 0, (ex.decline && ex.decline.sheetName) || ""],
+      ["Quote win-backs — serials rejected → approved (RevenueType 'Repair Revenue')",
+        ex.winback ? ex.winback.count || 0 : 0, (ex.winback && ex.winback.sheetName) || ""]];
+  }
+
+  function amcRows_() {
+    return (data.amc || []).map(function (a) {
+      return [a.name, a.amcCount, a.amcEligible, a.accessoryEligible, a.projectedIncentive];
+    });
+  }
+  function bunRows_() {
+    return (data.bundle || []).map(function (b) {
+      return [b.name || b.key || "", b.count || 0, b.projectedIncentive || 0];
+    });
+  }
+
+  // ---------- sheet per dashboard -------------------------------------------
+  var r, sh;
+
+  sh = mkSheet("INDEX"); r = 1;
+  r = safe(sh, r, "Store Performance — achieved of target", STORE_HEADERS, storeRows_);
+  r = safe(sh, r, "Working Days — current month", ["Metric", "Count"], workdayRows_);
+  r = safe(sh, r, "Walk-in Analysis", ["Metric", "Count", "% of total walk-ins"], walkinRows_);
+  r = safe(sh, r, "Weekly Achievement %", weeklyHeaders_(), weeklyRows_);
+  r = safe(sh, r, "KPI Parameters", ["Parameter", "Scheme Code", "Achieved", "Target", "%"], kpiRows_);
+  r = safe(sh, r, "AR / RR / SR — Attachment Summary", ["Category", "Achieved", "Target", "%"], attachRows_);
+  r = safe(sh, r, "Sales Person Performance (% only)",
+    ["Salesperson", "Service %", "Accessory %", "Repair %", "Gross Profit %", "Total %"], personRows_);
+  r = safe(sh, r, "Open Jobs Summary", ["Metric", "Count"], jobSummaryRows_);
+
+  sh = mkSheet("CRE"); r = 1;
+  r = safe(sh, r, "Store Performance — achieved of target", STORE_HEADERS, storeRows_);
+  r = safe(sh, r, "Working Days — current month", ["Metric", "Count"], workdayRows_);
+  r = safe(sh, r, "Weekly Achievement %", weeklyHeaders_(), weeklyRows_);
+  r = safe(sh, r, "KPI Parameters", ["Parameter", "Scheme Code", "Achieved", "Target", "%"], kpiRows_);
+  r = safe(sh, r, "Sales Person Incentive — AMC",
+    ["Salesperson", "AMC Count", "AMC Eligible", "Accessory Eligible", "Projected Incentive"], amcRows_);
+  r = safe(sh, r, "Sales Person Incentive — Bundle (DISC)",
+    ["Salesperson", "Bundle Count", "Projected Incentive"], bunRows_);
+  r = safe(sh, r, "Sales Person Performance (% only)",
+    ["Salesperson", "Service %", "Accessory %", "Repair %", "Gross Profit %", "Total %"], personRows_);
+  r = safe(sh, r, "AR / RR / SR — Attachment Summary", ["Category", "Achieved", "Target", "%"], attachRows_);
+  r = safe(sh, r, "Walk-in Analysis", ["Metric", "Count", "% of total walk-ins"], walkinRows_);
+  r = safe(sh, r, "C-SAT Summary — " + ((pd.targetBlock && pd.targetBlock.periodName) || "current period"),
+    csatHeaders_(), csatRows_);
+
+  sh = mkSheet("TECH"); r = 1;
+  r = safe(sh, r, "Repair Type Performance — " + ((pd.repair && pd.repair.curLabel) || "current month"),
+    ["Repair Type", "This Month", "Avg Days · Now"], repairTypeRows_);
+  r = safe(sh, r, "Decline Repair & Win-back", ["Metric", "Count", "Source"], opsRows_);
+  r = safe(sh, r, "Bucket Aging — 9 aging bands", bucketHeaders_(), bucketRows_);
+  r = safe(sh, r, "Open Jobs — as shown", JOB_HEADERS, jobRows_);
+
+  sh = mkSheet("SM"); r = 1;
+  r = safe(sh, r, "Store Performance — achieved of target", STORE_HEADERS, storeRows_);
+  r = safe(sh, r, "Working Days — current month", ["Metric", "Count"], workdayRows_);
+  r = safe(sh, r, "Walk-in Analysis", ["Metric", "Count", "% of total walk-ins"], walkinRows_);
+  r = safe(sh, r, "Weekly Achievement %", weeklyHeaders_(), weeklyRows_);
+  r = safe(sh, r, "KPI Parameters", ["Parameter", "Scheme Code", "Achieved", "Target", "%"], kpiRows_);
+  r = safe(sh, r, "Sales Person Incentive — AMC",
+    ["Salesperson", "AMC Count", "AMC Eligible", "Accessory Eligible", "Projected Incentive"], amcRows_);
+  r = safe(sh, r, "Sales Person Incentive — Bundle (DISC)",
+    ["Salesperson", "Bundle Count", "Projected Incentive"], bunRows_);
+  r = safe(sh, r, "Sales Person Performance (% only)",
+    ["Salesperson", "Service %", "Accessory %", "Repair %", "Gross Profit %", "Total %"], personRows_);
+  r = safe(sh, r, "AR / RR / SR — Attachment Summary", ["Category", "Achieved", "Target", "%"], attachRows_);
+  r = safe(sh, r, "C-SAT Summary — " + ((pd.targetBlock && pd.targetBlock.periodName) || "current period"),
+    csatHeaders_(), csatRows_);
+  r = safe(sh, r, "Repair Type Performance — " + ((pd.repair && pd.repair.curLabel) || "current month"),
+    ["Repair Type", "This Month", "Avg Days · Now"], repairTypeRows_);
+  r = safe(sh, r, "Decline Repair & Win-back", ["Metric", "Count", "Source"], opsRows_);
+  r = safe(sh, r, "Bucket Aging — 9 aging bands", bucketHeaders_(), bucketRows_);
+  r = safe(sh, r, "Open Jobs — as shown", JOB_HEADERS, jobRows_);
 
   return JSON.stringify({ name: book.getName(), url: book.getUrl() });
 }
@@ -4128,7 +4286,7 @@ function freshnessLineHtml_(data, perfData) {
 }
 
 /** Assembles the complete HTML document. */
-function buildDashboardPage_(data) {
+function buildDashboardPage_(data, initialPage) {
   var css = getDashboardCss_();
   var storeCode = (data.store && data.store.storeCode) ? data.store.storeCode : "";
   // Task 35/43: brand line 1 = the crm!F2 store name verbatim; generic title
@@ -4136,6 +4294,18 @@ function buildDashboardPage_(data) {
   var pageTitle = (storeCode ? storeCode : "iPlanetcare") + " — Store Performance Dashboard";
 
   var perfData = loadPerformanceData_();
+
+  // Task 51: ?page=… deep links — resolve which tab shows first, build the
+  // anchor-fallback URL (blank outside the live Apps Script env), and stamp
+  // the digital clock with the server time so it is never blank.
+  var ACTIVE = "index";
+  PAGES_ACTIVE: {
+    var rq = String(initialPage || "index").toLowerCase();
+    if (["index", "cre", "tech", "sm"].indexOf(rq) !== -1) ACTIVE = rq;
+  }
+  var appUrl = "";
+  try { appUrl = ScriptApp.getService().getUrl() || ""; } catch (eUrl) { appUrl = ""; }
+  var clockStamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd-MM-yyyy hh:mm:ss a");
 
   // Task 47: the eight legacy pages are replaced by four ROLE pages.
   // INDEX - overall store performance at a glance; CRE - minimum basic
@@ -4150,14 +4320,20 @@ function buildDashboardPage_(data) {
     ["SM",    "sm",    "pageSm",    renderSmHtml_(data, perfData),    "SM — full & detailed master report (groups A-G)"],
   ];
 
-  var tabs = PAGES.map(function (pg, idx) {
-    return '<button class="tab-btn' + (idx === 0 ? " active" : "") + '" data-page="' + pg[1] +
-      '" onclick="switchPage(this)">' + pg[0] + "</button>";
+  // Tabs are REAL links (?page=<id>, target _top) so switching keeps working
+  // even when the host strips inline handlers; when JS runs it intercepts the
+  // click and swaps panes in place instead (no reload).
+  var tabs = PAGES.map(function (pg) {
+    var act = (pg[1] === ACTIVE) ? " active" : "";
+    return '<a class="tab-btn' + act + '" href="' +
+      (appUrl ? appUrl + "?page=" + pg[1] : "#page-" + pg[1]) +
+      '" target="_top" data-page="' + pg[1] +
+      '" onclick="switchPage(this);return false;">' + pg[0] + "</a>";
   }).join("");
 
-  var mains = PAGES.map(function (pg, idx) {
+  var mains = PAGES.map(function (pg) {
     return '<main class="wrap" id="' + pg[2] + '" data-pane="' + pg[1] + '" data-meta="' + esc_(pg[4]) + '"' +
-      (idx === 0 ? "" : ' style="display:none;"') + ">" + pg[3] + "</main>";
+      (pg[1] === ACTIVE ? "" : ' style="display:none;"') + ">" + pg[3] + "</main>";
   }).join("");
 
   // Refresh runs through google.script.run because the page is served inside
@@ -4204,7 +4380,14 @@ function buildDashboardPage_(data) {
     "  el.textContent=p(d.getDate())+'-'+p(d.getMonth()+1)+'-'+d.getFullYear()+' '+" +
     "    p(h)+':'+p(d.getMinutes())+':'+p(d.getSeconds())+' '+ap;" +
     "}" +
-    "tickClock(); setInterval(tickClock,1000);" +
+    // Bind clicks via addEventListener too — some sandboxes strip inline
+    // onclick attributes; the anchor href remains the no-JS fallback.
+    "function bindTabs(){" +
+    "  var tabs=document.querySelectorAll('.tab-btn');" +
+    "  for(var i=0;i<tabs.length;i++){(function(t){t.addEventListener('click',function(ev){ev.preventDefault();switchPage(t);});})(tabs[i]);}" +
+    "}" +
+    "try{bindTabs();}catch(e){}" +
+    "try{tickClock(); setInterval(tickClock,1000);}catch(e){}" +
     "function dashRefresh(btn){" +
     "  if(btn.disabled) return;" +
     "  btn.classList.add('loading'); btn.disabled=true;" +
@@ -4263,7 +4446,7 @@ function buildDashboardPage_(data) {
     "  google.script.run" +
     "    .withSuccessHandler(function(res){" +
     "      try{ var d=JSON.parse(res);" +
-    "        n.innerHTML='Exported as-is · <a target=\"_top\" href=\"'+d.url+'\" style=\"color:#63e6b7;font-weight:800\">open '+d.name+'</a>';" +
+    "        n.innerHTML='Exported · INDEX · CRE · TECH · SM sheets — <a target=\"_top\" href=\"'+d.url+'\" style=\"color:#63e6b7;font-weight:800\">open '+d.name+'</a>';" +
     "      }catch(e){ n.textContent='Export finished.'; }" +
     "      done(); })" +
     "    .withFailureHandler(function(err){" +
@@ -4353,7 +4536,7 @@ function buildDashboardPage_(data) {
     "</div>" +
     // ---- live clock, top-middle: Task 30 — gif removed; blue LED digits only ----
     '<div class="topbar-clock" role="timer">' +
-    '<span class="clock-text" id="liveClock">—</span>' +
+    '<span class="clock-text" id="liveClock">' + esc_(clockStamp) + "</span>" +
     "</div>" +
     '<button class="refresh-btn" onclick="dashRefresh(this)">' +
     '<span class="spin"></span><span class="txt">↻ Refresh data</span></button>' +

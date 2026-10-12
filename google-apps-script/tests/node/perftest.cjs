@@ -1069,6 +1069,27 @@ check("export-to-Sheets button + endpoint (Task 50)",
   page.indexOf('onclick="dashExport(this)"')>-1&&page.indexOf("Export to Sheets")>-1
   &&gsSrc.indexOf("function exportDashboardToSpreadsheet()")>-1
   &&gsSrc.indexOf(".exportDashboardToSpreadsheet();")>-1);
+
+console.log("== TASK 51 batch ==");
+check("deep-linkable pages via ?page= (Task 51)",
+  gsSrc.indexOf("e.parameter.page")>-1
+  &&gsSrc.indexOf("function buildDashboardPage_(data, initialPage)")>-1
+  &&gsSrc.indexOf("dashboard_html_v4_")>-1);
+check("tabs are real anchors with a no-JS fallback (Task 51)",
+  page.indexOf('class="tab-btn active" href="')>-1
+  &&page.indexOf('target="_top" data-page="cre"')>-1
+  &&page.indexOf('onclick="switchPage(this);return false;"')>-1);
+check("event-bound tabs + guarded clock init (Task 51)",
+  clientJS.indexOf("function bindTabs()")>-1&&clientJS.indexOf("addEventListener")>-1
+  &&clientJS.indexOf("try{tickClock(); setInterval(tickClock,1000);}catch(e){}")>-1);
+check("clock shows a server-stamped time immediately (Task 51)",
+  /<span class="clock-text" id="liveClock">\d{2}-\d{2}-\d{4}/.test(page)
+  &&page.indexOf('id="liveClock">—<')===-1);
+check("export has one sheet per dashboard with its tables (Task 51)",
+  gsSrc.indexOf('mkSheet("INDEX")')>-1&&gsSrc.indexOf('mkSheet("CRE")')>-1
+  &&gsSrc.indexOf('mkSheet("TECH")')>-1&&gsSrc.indexOf('mkSheet("SM")')>-1
+  &&gsSrc.indexOf('"C-SAT Summary — "')>-1&&gsSrc.indexOf('"Open Jobs — as shown"')>-1
+  &&gsSrc.indexOf('"Sales Person Performance (% only)"')>-1);
 (function(){
   var now=Date.now();
   var ra=computeRepairAnalytics_([
