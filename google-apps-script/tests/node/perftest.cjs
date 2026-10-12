@@ -1105,15 +1105,27 @@ check("panes cached in 90KB chunks — big SM pane never misses (Task 53)",
   gsSrc.indexOf("function paneCachePut_")>-1&&gsSrc.indexOf("function paneCacheGet_")>-1
   &&gsSrc.indexOf("PANE_CACHE_CHUNK = 90000")>-1
   &&gsSrc.indexOf('paneCacheGet_(cache, "dash_pane_v5_" + pg)')>-1);
-check("15-minute background update loop (Task 51b)",
-  clientJS.indexOf("setInterval(autoRefresh,15*60*1000)")>-1
-  &&clientJS.indexOf("setTimeout(autoRefresh,5000)")>-1
+check("15-minute background update loop (Task 55)",
+  clientJS.indexOf("15*60*1000")>-1
   &&clientJS.indexOf("function autoRefresh(")>-1
   &&clientJS.indexOf("function applySections(")>-1);
 check("single-pane pages + chunked page cache restore fast loads (Task 54)",
   gsSrc.indexOf("dash_pg_v6_")>-1&&gsSrc.indexOf("function getDashboardPane")>-1
   &&gsSrc.indexOf("function paneLoadingHtml_")>-1&&gsSrc.indexOf("pane-loading")>-1
   &&gsSrc.indexOf("panes2[page] = active")>-1);
+check("drive-backed persistent pane cache (Task 55)",
+  gsSrc.indexOf("PANE_DRIVE_FILE")>-1&&gsSrc.indexOf("function paneDriveGetAll_")>-1
+  &&gsSrc.indexOf("function paneDriveMerge_")>-1&&gsSrc.indexOf("function paneDriveState_")>-1
+  &&gsSrc.indexOf("paneDriveMerge_(panes,")>-1);
+check("prefill only fills placeholder panes (Task 55)",
+  clientJS.indexOf("function applySections(res,onlyLoading)")>-1
+  &&clientJS.indexOf("!onlyLoading||el.querySelector('.pane-loading')")>-1
+  &&clientJS.indexOf("setTimeout(function(){autoRefresh(true);},5000);")>-1
+  &&clientJS.indexOf("setInterval(function(){autoRefresh(false);},15*60*1000);")>-1);
+check("off-screen sections skip layout work (Task 55)",
+  page.indexOf("content-visibility:auto")>-1);
+check("build marker comment present for deployment verification (Task 55)",
+  page.indexOf("BUILD TASK55")>-1);
 check("tab tap lazily fills an unloaded pane (Task 54)",
   clientJS.indexOf("function fetchPane(")>-1
   &&clientJS.indexOf("el.querySelector('.pane-loading')")>-1

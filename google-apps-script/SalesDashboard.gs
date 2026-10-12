@@ -385,6 +385,19 @@ function doGet(e) {
         }
       } catch (err) { html = null; }
     }
+    if (!html) {
+      // (b2) Task 55 — persistent Drive-backed pane store: survives cache
+      // evictions, so warm loads stay warm between taps.
+      try {
+        var d = paneDriveState_();
+        if (d) {
+          html = buildDashboardPage_(null, page, {
+            storeCode: d.meta ? d.meta.storeCode : "", metaText: d.meta ? d.meta.metaText : "",
+            paneJson: d.panes
+          });
+        }
+      } catch (err2) { html = null; }
+    }
   }
 
   if (!html) {
@@ -3510,6 +3523,51 @@ function paneCacheGet_(cache, key) {
     return out;
   } catch (err) { return null; }
 }
+// Task 55 — CacheService alone proved unreliable live (entries can be evicted
+// at any moment; the whole SM pane is large). The panes + frame record are
+// therefore ALSO persisted to a small Drive file: a "cold" recompute then
+// happens only when the data is genuinely due (the 15-minute cadence), never
+// because a cache entry vanished. All Drive work is best-effort: any failure
+// (e.g. scope not granted) silently falls back to CacheService-only.
+var PANE_DRIVE_FILE = "SalesDashboard_paneCache_v1.json";
+var PANE_DRIVE_TTL_MS = 900000; // 15 minutes, matches the auto-refresh cadence
+
+function paneDriveGetAll_() {
+  try {
+    var files = DriveApp.getFilesByName(PANE_DRIVE_FILE);
+    if (!files.hasNext()) return null;
+    var d = JSON.parse(files.next().getBlob().getDataAsString() || "{}");
+    if (!d || !d.t || (Date.now() - d.t) > PANE_DRIVE_TTL_MS) return null;
+    return d;
+  } catch (err) { return null; }
+}
+function paneDriveMerge_(single, meta) {
+  try {
+    var files = DriveApp.getFilesByName(PANE_DRIVE_FILE);
+    var d = null;
+    if (files.hasNext()) {
+      try { d = JSON.parse(files.next().getBlob().getDataAsString() || "{}"); } catch (e1) { d = null; }
+    }
+    if (!d || typeof d !== "object") d = {};
+    d.t = Date.now();
+    d.panes = d.panes || {};
+    if (single) for (var k in single) if (single[k]) d.panes[k] = single[k];
+    if (meta) d.meta = meta;
+    var body = JSON.stringify(d);
+    var write = files ? null : null;
+    files = DriveApp.getFilesByName(PANE_DRIVE_FILE);
+    if (files.hasNext()) files.next().setContent(body);
+    else DriveApp.createFile(PANE_DRIVE_FILE, body, MimeType.PLAIN_TEXT);
+  } catch (err) { /* best-effort */ }
+}
+/** Read all warm panes + frame meta from the persistent store (or null). */
+function paneDriveState_() {
+  var d = paneDriveGetAll_();
+  if (!d || !d.panes) return null;
+  var all = ["index", "cre", "tech", "sm"].every(function (pg) { return !!d.panes[pg]; });
+  return all ? d : null;
+}
+
 function cachePanes_(data, panes) {
   try {
     var cache = CacheService.getScriptCache();
@@ -3524,6 +3582,11 @@ function cachePanes_(data, panes) {
     try {
       cache.removeAll(["dash_pg_v6_index", "dash_pg_v6_cre", "dash_pg_v6_tech", "dash_pg_v6_sm"]);
     } catch (e2) { /* non-fatal */ }
+    // Task 55: also persist to the Drive-backed store (merge, timestamped).
+    paneDriveMerge_(panes, {
+      storeCode: (data && data.store && data.store.storeCode) ? data.store.storeCode : "",
+      metaText: renderMetaText_(data)
+    });
   } catch (err) { /* caching is best-effort only */ }
 }
 
@@ -3543,6 +3606,13 @@ function getDashboardPane(page) {
   if (["index", "cre", "tech", "sm"].indexOf(page) === -1) page = "index";
   var cache = CacheService.getScriptCache();
   var h = paneCacheGet_(cache, "dash_pane_v5_" + page);
+  if (h == null) {
+    // Task 55: try the persistent Drive store before recomputing.
+    try {
+      var d0 = paneDriveGetAll_();
+      if (d0 && d0.panes && d0.panes[page]) h = d0.panes[page];
+    } catch (e0) { /* keep computing */ }
+  }
   if (h == null) {
     var loaded = loadDashboardData_();
     var perfData = loadPerformanceData_();
@@ -4401,27 +4471,28 @@ function buildDashboardPage_(data, initialPage, opts) {
     // Task 51b — silent background updater: right after the page paints it
     // fills every pane (so tab switches become pure display flips), and from
     // then on it re-checks for updates every 15 minutes without a reload.
-    "function applySections(res){" +
+    "function applySections(res,onlyLoading){" +
     "  try{" +
     "    var d=JSON.parse(res);" +
     "    var map={index:'pageIndex',cre:'pageCre',tech:'pageTech',sm:'pageSm'};" +
-    "    Object.keys(map).forEach(function(pg){var el=document.getElementById(map[pg]);if(el&&d[pg]!==undefined){el.innerHTML=d[pg];}});" +
+    "    Object.keys(map).forEach(function(pg){var el=document.getElementById(map[pg]);" +
+    "      if(el&&d[pg]!==undefined&&(!onlyLoading||el.querySelector('.pane-loading'))){el.innerHTML=d[pg];}});" +
     "    var active=paneEl(currentPage());" +
     "    if(active){document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';}" +
     "    var n=document.getElementById('note');" +
     "    if(n){n.textContent=(d.meta||'Up to date'); n.className='note ok';}" +
     "  }catch(e){}" +
     "}" +
-    "function autoRefresh(){" +
+    "function autoRefresh(prefillOnly){" +
     "  if(!(window.google&&google.script&&google.script.run)) return;" +
     "  google.script.run" +
-    "    .withSuccessHandler(function(res){applySections(res);})" +
+    "    .withSuccessHandler(function(res){applySections(res,prefillOnly);})" +
     "    .withFailureHandler(function(){})" +
     "    .refreshDashboardSections();" +
     "}" +
     "if(window.google&&google.script&&google.script.run){" +
-    "  setTimeout(autoRefresh,5000);" +
-    "  setInterval(autoRefresh,15*60*1000);" +
+    "  setTimeout(function(){autoRefresh(true);},5000);" +
+    "  setInterval(function(){autoRefresh(false);},15*60*1000);" +
     "}" +
     "function dashRefresh(btn){" +
     "  if(btn.disabled) return;" +
@@ -4565,6 +4636,7 @@ function buildDashboardPage_(data, initialPage, opts) {
   var bizMeta = (opts.metaText !== undefined) ? opts.metaText : renderMetaText_(data);
 
   return (
+    "<!-- BUILD TASK55 · fast panes (drive-backed) · per-table export -->" +
     "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
     "<title>" + esc_(pageTitle) + "</title><style>" + css + "</style></head><body>" +
     // Task 30: plain dark-ash backdrop for EVERY page — no image at all.
@@ -5958,6 +6030,10 @@ function getDashboardCss_() {
     ".mini-export:hover { background:#223b59; color:#e6eeff; }" +
     ".mini-export:disabled { opacity:.6; cursor:wait; }" +
     ".pane-loading { text-align:center; color:#8fa3d4; padding:40px 0; }" +
+    // Task 55: off-screen sections are not laid out — big win for tab taps and
+    // first paint on lower-end devices.
+    ".wrap .section, .wrap .sec, .wrap .subpanel {" +
+    " content-visibility:auto; contain-intrinsic-size:auto 520px; }" +
     "" +
     // ============ TASK 50 — one house look everywhere =====================
     // Same background colour + the same table texture on every page and every
