@@ -1092,11 +1092,28 @@ check("15-minute background update loop (Task 51b)",
   &&clientJS.indexOf("setTimeout(autoRefresh,5000)")>-1
   &&clientJS.indexOf("function autoRefresh(")>-1
   &&clientJS.indexOf("function applySections(")>-1);
-check("export has one sheet per dashboard with its tables (Task 51)",
-  gsSrc.indexOf('mkSheet("INDEX")')>-1&&gsSrc.indexOf('mkSheet("CRE")')>-1
-  &&gsSrc.indexOf('mkSheet("TECH")')>-1&&gsSrc.indexOf('mkSheet("SM")')>-1
-  &&gsSrc.indexOf('"C-SAT Summary — "')>-1&&gsSrc.indexOf('"Open Jobs — as shown"')>-1
-  &&gsSrc.indexOf('"Sales Person Performance (% only)"')>-1);
+check("export limited to the seven owner-listed tables (Task 52)",
+  gsSrc.indexOf('mkSheet("Store Target Performance")')>-1
+  &&gsSrc.indexOf('mkSheet("Repairs & Jobs Counts")')>-1
+  &&gsSrc.indexOf('mkSheet("Repair Type Performance")')>-1
+  &&gsSrc.indexOf('mkSheet("Decline Repair")')>-1
+  &&gsSrc.indexOf('mkSheet("Open Jobs")')>-1
+  &&gsSrc.indexOf('mkSheet("High Low Margin")')>-1
+  &&gsSrc.indexOf('mkSheet("KPI Target Parameters")')>-1
+  &&gsSrc.indexOf('mkSheet("INDEX")')===-1&&gsSrc.indexOf('mkSheet("SM")')===-1);
+check("export table builders match the shown columns (Task 52)",
+  gsSrc.indexOf('"Balance (Target − Achievement)"')>-1
+  &&gsSrc.indexOf('"Per Day Requirement / Excess"')>-1
+  &&gsSrc.indexOf('"Approx Balance Value"')>-1
+  &&gsSrc.indexOf("'E1. Job Management — Open Jobs'")==-1
+  &&gsSrc.indexOf('"E1. Job Management — Open Jobs"')>-1);
+check("refresh button is a real ?refresh=1 fallback link (Task 52)",
+  page.indexOf('class="refresh-btn" href="')>-1&&page.indexOf('target="_top"')>-1
+  &&gsSrc.indexOf('"(appUrl ? appUrl + "\u003frefresh=1\u0022 : \"#\u0022)"')>-1
+  || (page.indexOf('class="refresh-btn" href="')>-1&&gsSrc.indexOf('?refresh=1')>-1));
+check("refresh stamps the server-updated line into the note (Task 52)",
+  clientJS.indexOf("n.textContent=(d.meta||'Updated just now')")>-1
+  &&clientJS.indexOf("n.textContent=(d.meta||'Up to date')")>-1);
 (function(){
   var now=Date.now();
   var ra=computeRepairAnalytics_([

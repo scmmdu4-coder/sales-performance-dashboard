@@ -3297,11 +3297,14 @@ function renderMetaText_(data) {
 }
 
 /**
- * Task 51 — "Export to Sheets" button endpoint. Exports the dashboards
- * AS SHOWN: one sheet per dashboard tab (INDEX / CRE / TECH / SM) and inside
- * each sheet only the tables that dashboard actually displays, stacked with
- * titles. Returns { name, url } as JSON.
- * NOTE: no trailing underscore — google.script.run can only call public fns.
+ * Task 52 — "Export to Sheets" button endpoint. Exports ONLY the seven
+ * owner-listed tables (never the whole dashboard), each as its own sheet,
+ * in the owner's order:
+ *   Store Target — Performance · Repairs & Jobs — counts ·
+ *   D2. Repair Type Performance · D3. Decline Repair ·
+ *   E1. Job Management — Open Jobs · A4. High / Low Margin ·
+ *   B. KPI Target — Store KPI Parameters
+ * Returns { name, url } as JSON. Public fn (no trailing underscore).
  */
 function exportDashboardToSpreadsheet() {
   var loaded = loadDashboardData_();
@@ -3324,7 +3327,6 @@ function exportDashboardToSpreadsheet() {
     if (rows.length) sh.getRange(at + 2, 1, rows.length, headers.length).setValues(rows);
     return at + 2 + rows.length + 1;
   }
-  // Never let one missing source kill the whole export.
   function safe(sh, at, title, headers, maker) {
     try { return table(sh, at, title, headers, maker() || []); }
     catch (e) {
@@ -3334,107 +3336,55 @@ function exportDashboardToSpreadsheet() {
     }
   }
 
-  // ---------- shared table builders (dashboard content as displayed) --------
-  function storeRows_() {
+  // ---------- 1) Store Target — Performance (A1 tiles, as shown) --------------
+  function storePerfRows_() {
     var st = data.store;
-    return [
-      ["Total", st.totalTarget, st.totalAchieved, fmt1_(st.totalPct) + "%", st.totalBalance],
-      ["Service", st.service.target, st.service.achieved, st.service.pct + "%", st.service.balance],
-      ["Accessories", st.accessories.target, st.accessories.achieved, st.accessories.pct + "%", st.accessories.balance],
-      ["Repair", st.repair.target, st.repair.achieved, st.repair.pct + "%", st.repair.balance],
-      ["Gross Profit", st.gp.target, st.gp.achieved, st.gp.pct + "%", st.gp.balance]];
-  }
-  var STORE_HEADERS = ["Revenue Type", "Target", "Achieved", "%", "Balance"];
-
-  function workdayRows_() {
-    var s = data.store;
-    return [["Total working days", s.totalWorkingDays],
-      ["Consumed", s.consumedWorkingDays], ["Balance left", s.balanceWorkingDays]];
-  }
-
-  function walkinRows_() {
-    var wl2 = pd.walkin && pd.walkin.totals ? pd.walkin.totals : {};
-    return [
-      ["Total walk-ins", wl2.grandTotal || 0, ""],
-      ["Submitted for repair", wl2.submitted || 0, wl2.submittedPct || 0],
-      ["Attended by engineer", wl2.attended || 0, wl2.attendedPct || 0],
-      ["Care+", wl2.carePlus || 0, wl2.carePlusPct || 0],
-      ["Converted", wl2.converted || 0, wl2.convertedPct || 0],
-      ["Delays", wl2.delayed || 0, wl2.delayedPct || 0],
-      ["Follow-ups", wl2.followUps || 0, wl2.followUpsPct || 0],
-      ["Google", wl2.google || 0, wl2.googlePct || 0],
-      ["Poor feedback", wl2.poor || 0, wl2.poorPct || 0],
-      ["Others", wl2.others || 0, wl2.othersPct || 0]];
+    function tile(title, b) {
+      var pct = b.target > 0 ? (100 * b.achieved / b.target) : 0;
+      var complete = b.target > 0 && pct >= 100;
+      var signedBalance = b.target - b.achieved;
+      return [title, complete ? "Completed" : "In Progress",
+        b.target, b.achieved, (Math.round(pct * 10) / 10) + "%",
+        b.target > 0 ? signedBalance : 0,
+        complete ? signedBalance : b.requiredPerDay];
+    }
+    return [tile("Service Revenue", st.service), tile("Accessory Revenue", st.accessory),
+      tile("Repair Revenue", st.repair), tile("Total Revenue", st.total),
+      tile("Gross Profit", st.grossProfit)];
   }
 
-  function weeklyRows_() {
-    var a = computeWeeklyAnalysis_(data);
-    var doneW = a.done || [], upW = a.upcoming || [];
-    var nUp = upW.length * (a.fields.length + a.sectionTargets.length);
-    var holeW = Math.max(0, a.monthTarget - a.monthTotal);
-    var shareW = nUp ? r1_((holeW / nUp) / Math.max(1, a.monthTarget) * 100) : 0;
-    var rows = [["TOTAL (month)", "summary", a.totalPct + "%",
-      a.fieldPct["E"] + "%", a.fieldPct["F"] + "%", a.fieldPct["G"] + "%"]];
-    function line(w) {
-      var f = a.a[w.idx] || {};
-      function pick(key) { return w.kind !== "upcoming" ? f.fieldPct[key] : shareW; }
-      var pt = w.kind !== "upcoming" ? f.totalPct : shareW;
-      return [w.label, w.kind === "upcoming" ? "upcoming (balance share)" : w.kind,
-        pt == null || !isFinite(pt) ? "—" : pt + "%"];
-      }
-    doneW.concat(upW).forEach(function (w) {
-      var f = a.a[w.idx] || {};
-      var base = w.kind !== "upcoming";
-      rows.push([w.label, w.kind === "upcoming" ? "upcoming (balance share)" : w.kind,
-        base ? (isFinite(f.totalPct) ? f.totalPct + "%" : "—") : shareW + "%",
-        base && f.fieldPct["E"] != null ? f.fieldPct["E"] + "%" : base ? "—" : shareW + "%",
-        base && f.fieldPct["F"] != null ? f.fieldPct["F"] + "%" : base ? "—" : shareW + "%",
-        base && f.fieldPct["G"] != null ? f.fieldPct["G"] + "%" : base ? "—" : shareW + "%"]);
-    });
-    return rows;
-  }
-  function weeklyHeaders_() {
-    var a = computeWeeklyAnalysis_(data);
-    return ["Week", "Status", "Overall %",
-      (a.fields[0] ? a.fields[0].label : "Service") + " %",
-      (a.fields[1] ? a.fields[1].label : "Accessories") + " %",
-      (a.fields[2] ? a.fields[2].label : "Repair") + " %"];
-  }
-
-  function kpiRows_() {
-    var rows = [];
-    [["AR", data.kpi.ar], ["RR", data.kpi.rr], ["SR", data.kpi.sr]].forEach(function (kv) {
-      (kv[1] || []).forEach(function (it) {
-        rows.push([kv[0] + " — " + it.name, it.code || "", it.achieved, it.target, it.pct + "%"]);
-      });
-    });
-    return rows;
-  }
-
-  function attachRows_() {
-    var rows = [];
-    [["AR", data.kpi.ar], ["RR", data.kpi.rr], ["SR", data.kpi.sr]].forEach(function (kv) {
-      var ach = 0, tgt = 0;
-      (kv[1] || []).forEach(function (it) { ach += it.achieved || 0; tgt += it.target || 0; });
-      rows.push([kv[0], ach, tgt, tgt > 0 ? Math.round(ach / tgt * 100) + "%" : "—"]);
-    });
-    return rows;
-  }
-
-  function personRows_() {
-    return (data.salespeople || []).map(function (p) {
-      return [p.name, p.service.pct + "%", p.accessory.pct + "%",
-        p.repair.pct + "%", p.grossProfit.pct + "%", p.total.pct + "%"];
-    });
-  }
-
-  function jobSummaryRows_() {
+  // ---------- 2) Repairs & Jobs — counts (headline cards) ---------------------
+  function opsCountRows_() {
+    var ex = pd.opsExtras || {};
     var t = (pd.jobs && pd.jobs.totals) || {};
-    return [["Open jobs", t.openJobs || 0],
+    return [
+      ["Declined Repairs — unique decline!CaseId · local approver rejected",
+        ex.decline ? ex.decline.count || 0 : 0],
+      ["Requote Win-backs — serials rejected → approved",
+        ex.winback ? ex.winback.count || 0 : 0],
+      ["Open Jobs", t.openJobs || 0],
       ["Communication updated", t.communicated || 0],
-      ["Not updated", t.notCommunicated || 0]];
+      ["Update pending", t.notCommunicated || 0]];
   }
 
+  // ---------- 3) D2. Repair Type Performance ----------------------------------
+  function repairTypeRows_() {
+    var ra = pd.repair || {};
+    return (ra.typeComp || []).map(function (c) {
+      return [c.name, c.cur, c.curDaysAvg == null ? "—" : c.curDaysAvg + " d"];
+    });
+  }
+
+  // ---------- 4) D3. Decline Repair -------------------------------------------
+  function declineRows_() {
+    var ex = pd.opsExtras || {}, d = ex.decline || {};
+    return [
+      ["Declined repairs — unique CaseIDs · 'Declined - Rejected by Local Approver'",
+        d.count || 0, d.sheetName || ""],
+      ["Decline rows matched (all statuses)", d.matched || 0, d.sheetName || ""]];
+  }
+
+  // ---------- 5) E1. Job Management — Open Jobs -------------------------------
   var JOB_HEADERS = ["Aging", "GSX Repair Status", "CRM Status", "Repair Type",
     "Case ID", "Name", "Number", "GSX ID", "S.No", "Model", "Comm. Updated"];
   function jobRows_() {
@@ -3453,8 +3403,6 @@ function exportDashboardToSpreadsheet() {
     });
     return rows;
   }
-
-  // Task 50 bands, kept for both the TECH sheet and the SM sheet.
   var BANDS = [[0, 2, "0–2 d"], [3, 5, "3–5 d"], [6, 10, "6–10 d"], [11, 15, "11–15 d"],
     [16, 30, "16–30 d"], [31, 45, "31–45 d"], [46, 60, "46–60 d"], [61, 100, "61–100 d"], [101, 1e12, "100+ d"]];
   function bucketHeaders_() {
@@ -3478,104 +3426,62 @@ function exportDashboardToSpreadsheet() {
     });
   }
 
-  function csatHeaders_() {
-    var tb = pd.targetBlock || {};
-    return [tb.nameHeader || "Name"].concat(tb.labels || []).concat(["Total", "C-SAT", "CFI"]);
-  }
-  function csatRows_() {
-    var tb = pd.targetBlock || {};
-    var rows = (tb.people || []).map(function (p) {
-      return [p.name].concat(p.cats).concat([p.total, p.csat || "", p.cfi || ""]);
-    });
-    if (tb.totalRow) rows.push(["TOTAL"].concat(tb.totalRow.cats || [])
-      .concat([tb.totalRow.total || 0, tb.totalRow.csat || "", tb.totalRow.cfi || ""]));
-    return rows;
-  }
-
-  function repairTypeRows_() {
-    var ra = pd.repair || {};
-    return (ra.typeComp || []).map(function (c) {
-      return [c.name, c.cur, c.curDaysAvg == null ? "—" : c.curDaysAvg + " d"];
+  // ---------- 6) A4. High / Low Margin ----------------------------------------
+  function marginRows_(key) {
+    var x = data.gpExtras || {};
+    return (x[key] || []).map(function (m) {
+      return [m.partLabel || "—", m.invoice || "—", m.typeLabel || "—",
+        Math.round(m.taxable || 0), Math.round(m.gp || 0),
+        (Math.round((m.margin || 0) * 10) / 10) + "%"];
     });
   }
+  var MARGIN_HEADERS = ["Part", "Invoice", "Revenue Type", "Taxable", "Gross Profit", "Margin %"];
 
-  function opsRows_() {
-    var ex = pd.opsExtras || {};
-    return [
-      ["Declined repairs — unique CaseIDs · 'Declined - Rejected by Local Approver'",
-        ex.decline ? ex.decline.count || 0 : 0, (ex.decline && ex.decline.sheetName) || ""],
-      ["Quote win-backs — serials rejected → approved (RevenueType 'Repair Revenue')",
-        ex.winback ? ex.winback.count || 0 : 0, (ex.winback && ex.winback.sheetName) || ""]];
-  }
-
-  function amcRows_() {
-    return (data.amc || []).map(function (a) {
-      return [a.name, a.amcCount, a.amcEligible, a.accessoryEligible, a.projectedIncentive];
-    });
-  }
-  function bunRows_() {
-    return (data.bundle || []).map(function (b) {
-      return [b.name || b.key || "", b.count || 0, b.projectedIncentive || 0];
+  // ---------- 7) B. KPI Target — Store KPI Parameters --------------------------
+  function kpiTargetRows_() {
+    var allKpis = data.kpi.ar.concat(data.kpi.rr, data.kpi.sr);
+    return allKpis.map(function (k) {
+      var pctVal = k.target > 0 ? pct_(k.achieved, k.target) : 0;
+      var approxBal = k.approxAmount > 0 && k.target > 0 ? k.balance * k.approxAmount : "—";
+      return [k.label || k.name, k.category || "",
+        k.target > 0 ? k.target : "—", k.achieved,
+        k.target > 0 ? pctVal + "%" : "—",
+        k.target > 0 ? k.balance : "—",
+        approxBal === "—" ? "—" : Math.round(approxBal),
+        Math.round(k.achievedValue || 0), Math.round(k.achievedGp || 0)];
     });
   }
 
-  // ---------- sheet per dashboard -------------------------------------------
-  var r, sh;
+  // ---------- sheets, in the owner's order -------------------------------------
+  var sh, r;
 
-  sh = mkSheet("INDEX"); r = 1;
-  r = safe(sh, r, "Store Performance — achieved of target", STORE_HEADERS, storeRows_);
-  r = safe(sh, r, "Working Days — current month", ["Metric", "Count"], workdayRows_);
-  r = safe(sh, r, "Walk-in Analysis", ["Metric", "Count", "% of total walk-ins"], walkinRows_);
-  r = safe(sh, r, "Weekly Achievement %", weeklyHeaders_(), weeklyRows_);
-  r = safe(sh, r, "KPI Parameters", ["Parameter", "Scheme Code", "Achieved", "Target", "%"], kpiRows_);
-  r = safe(sh, r, "AR / RR / SR — Attachment Summary", ["Category", "Achieved", "Target", "%"], attachRows_);
-  r = safe(sh, r, "Sales Person Performance (% only)",
-    ["Salesperson", "Service %", "Accessory %", "Repair %", "Gross Profit %", "Total %"], personRows_);
-  r = safe(sh, r, "Open Jobs Summary", ["Metric", "Count"], jobSummaryRows_);
+  sh = mkSheet("Store Target Performance"); r = 1;
+  r = safe(sh, r, "Store Target — Performance",
+    ["Revenue Type", "Status", "Target", "Achievement", "Achievement %", "Balance (Target − Achievement)", "Per Day Requirement / Excess"],
+    storePerfRows_);
 
-  sh = mkSheet("CRE"); r = 1;
-  r = safe(sh, r, "Store Performance — achieved of target", STORE_HEADERS, storeRows_);
-  r = safe(sh, r, "Working Days — current month", ["Metric", "Count"], workdayRows_);
-  r = safe(sh, r, "Weekly Achievement %", weeklyHeaders_(), weeklyRows_);
-  r = safe(sh, r, "KPI Parameters", ["Parameter", "Scheme Code", "Achieved", "Target", "%"], kpiRows_);
-  r = safe(sh, r, "Sales Person Incentive — AMC",
-    ["Salesperson", "AMC Count", "AMC Eligible", "Accessory Eligible", "Projected Incentive"], amcRows_);
-  r = safe(sh, r, "Sales Person Incentive — Bundle (DISC)",
-    ["Salesperson", "Bundle Count", "Projected Incentive"], bunRows_);
-  r = safe(sh, r, "Sales Person Performance (% only)",
-    ["Salesperson", "Service %", "Accessory %", "Repair %", "Gross Profit %", "Total %"], personRows_);
-  r = safe(sh, r, "AR / RR / SR — Attachment Summary", ["Category", "Achieved", "Target", "%"], attachRows_);
-  r = safe(sh, r, "Walk-in Analysis", ["Metric", "Count", "% of total walk-ins"], walkinRows_);
-  r = safe(sh, r, "C-SAT Summary — " + ((pd.targetBlock && pd.targetBlock.periodName) || "current period"),
-    csatHeaders_(), csatRows_);
+  sh = mkSheet("Repairs & Jobs Counts"); r = 1;
+  r = safe(sh, r, "Repairs & Jobs — counts", ["Metric", "Count"], opsCountRows_);
 
-  sh = mkSheet("TECH"); r = 1;
-  r = safe(sh, r, "Repair Type Performance — " + ((pd.repair && pd.repair.curLabel) || "current month"),
+  sh = mkSheet("Repair Type Performance"); r = 1;
+  r = safe(sh, r, "D2. Repair Type Performance · " + ((pd.repair && pd.repair.curLabel) || "current month"),
     ["Repair Type", "This Month", "Avg Days · Now"], repairTypeRows_);
-  r = safe(sh, r, "Decline Repair & Win-back", ["Metric", "Count", "Source"], opsRows_);
-  r = safe(sh, r, "Bucket Aging — 9 aging bands", bucketHeaders_(), bucketRows_);
-  r = safe(sh, r, "Open Jobs — as shown", JOB_HEADERS, jobRows_);
 
-  sh = mkSheet("SM"); r = 1;
-  r = safe(sh, r, "Store Performance — achieved of target", STORE_HEADERS, storeRows_);
-  r = safe(sh, r, "Working Days — current month", ["Metric", "Count"], workdayRows_);
-  r = safe(sh, r, "Walk-in Analysis", ["Metric", "Count", "% of total walk-ins"], walkinRows_);
-  r = safe(sh, r, "Weekly Achievement %", weeklyHeaders_(), weeklyRows_);
-  r = safe(sh, r, "KPI Parameters", ["Parameter", "Scheme Code", "Achieved", "Target", "%"], kpiRows_);
-  r = safe(sh, r, "Sales Person Incentive — AMC",
-    ["Salesperson", "AMC Count", "AMC Eligible", "Accessory Eligible", "Projected Incentive"], amcRows_);
-  r = safe(sh, r, "Sales Person Incentive — Bundle (DISC)",
-    ["Salesperson", "Bundle Count", "Projected Incentive"], bunRows_);
-  r = safe(sh, r, "Sales Person Performance (% only)",
-    ["Salesperson", "Service %", "Accessory %", "Repair %", "Gross Profit %", "Total %"], personRows_);
-  r = safe(sh, r, "AR / RR / SR — Attachment Summary", ["Category", "Achieved", "Target", "%"], attachRows_);
-  r = safe(sh, r, "C-SAT Summary — " + ((pd.targetBlock && pd.targetBlock.periodName) || "current period"),
-    csatHeaders_(), csatRows_);
-  r = safe(sh, r, "Repair Type Performance — " + ((pd.repair && pd.repair.curLabel) || "current month"),
-    ["Repair Type", "This Month", "Avg Days · Now"], repairTypeRows_);
-  r = safe(sh, r, "Decline Repair & Win-back", ["Metric", "Count", "Source"], opsRows_);
-  r = safe(sh, r, "Bucket Aging — 9 aging bands", bucketHeaders_(), bucketRows_);
-  r = safe(sh, r, "Open Jobs — as shown", JOB_HEADERS, jobRows_);
+  sh = mkSheet("Decline Repair"); r = 1;
+  r = safe(sh, r, "D3. Decline Repair", ["Metric", "Count", "Source sheet"], declineRows_);
+
+  sh = mkSheet("Open Jobs"); r = 1;
+  r = safe(sh, r, "Bucket Summary — 9 aging bands", bucketHeaders_(), bucketRows_);
+  r = safe(sh, r, "E1. Job Management — Open Jobs", JOB_HEADERS, jobRows_);
+
+  sh = mkSheet("High Low Margin"); r = 1;
+  r = safe(sh, r, "A4. High Margin — top 5", MARGIN_HEADERS, function () { return marginRows_("marginHigh"); });
+  r = safe(sh, r, "A4. Low Margin — top 5", MARGIN_HEADERS, function () { return marginRows_("marginLow"); });
+
+  sh = mkSheet("KPI Target Parameters"); r = 1;
+  r = safe(sh, r, "B. KPI Target — Store KPI Parameters",
+    ["KPI", "Category", "Target", "Achieved", "%", "Balance", "Approx Balance Value", "Achieved Value", "Achieved GP"],
+    kpiTargetRows_);
 
   return JSON.stringify({ name: book.getName(), url: book.getUrl() });
 }
@@ -4450,7 +4356,7 @@ function buildDashboardPage_(data, initialPage, opts) {
     "    var active=paneEl(currentPage());" +
     "    if(active){document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';}" +
     "    var n=document.getElementById('note');" +
-    "    if(n){n.textContent='Up to date'; n.className='note ok';}" +
+    "    if(n){n.textContent=(d.meta||'Up to date'); n.className='note ok';}" +
     "  }catch(e){}" +
     "}" +
     "function autoRefresh(){" +
@@ -4493,7 +4399,7 @@ function buildDashboardPage_(data, initialPage, opts) {
     "            nb.querySelector('.txt').textContent=nb.dataset.less; }" +
     "        }" +
     "        var n=document.getElementById('note');" +
-    "        n.textContent='Updated just now'; n.className='note ok';" +
+    "        n.textContent=(d.meta||'Updated just now'); n.className='note ok';" +
     "      }catch(e){" +
     "        document.getElementById('note').textContent='Refresh failed: '+e;" +
     "        document.getElementById('note').className='note err';" +
@@ -4614,8 +4520,10 @@ function buildDashboardPage_(data, initialPage, opts) {
     '<div class="topbar-clock" role="timer">' +
     '<span class="clock-text" id="liveClock">' + esc_(clockStamp) + "</span>" +
     "</div>" +
-    '<button class="refresh-btn" onclick="dashRefresh(this)">' +
-    '<span class="spin"></span><span class="txt">↻ Refresh data</span></button>' +
+    // Task 52: refresh is also a real ?refresh=1 link — if inline JS were
+    // stripped, the click still forces a full fresh recompute server-side.
+    '<a class="refresh-btn" href="' + (appUrl ? appUrl + "?refresh=1" : "#") + '" target="_top" onclick="dashRefresh(this);return false;">' +
+    '<span class="spin"></span><span class="txt">↻ Refresh data</span></a>' +
     // Task 50: export the dashboard data as-is into a new spreadsheet.
     '<button class="refresh-btn" onclick="dashExport(this)" style="margin-left:8px">' +
     '<span class="spin"></span><span class="txt">⬇ Export to Sheets</span></button>' +
