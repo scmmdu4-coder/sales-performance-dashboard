@@ -357,13 +357,12 @@ function doGet(e) {
   if (["index", "cre", "tech", "sm"].indexOf(page) === -1) page = "index";
   var cache = CacheService.getScriptCache();
 
-  // ---- Task 54: fast page loads, three tiers ---------------------------
-  // (a) whole-page cache, chunked per page — the old "renders fast"
-  //     behaviour from when pages were small enough to cache. Zero compute.
-  // (b) all four pane caches + frame record warm → cheap local rebuild.
-  // (c) cold → compute ONLY the requested pane; the other panes stream in
-  //     behind the scenes (lazy fetch / 15-minute auto-refresh) or on their
-  //     own first visit, then cache the same way.
+  // ---- fast page loads, three tiers --------------------------------------
+  // (a) whole-page cache, chunked per page — zero compute, all panes embedded.
+  // (b) pane caches (script + Drive) + frame record warm → cheap rebuild.
+  // (c) cold → the load itself PREFETCHES everything: all four panes are
+  //     computed, embedded and cached in one pass (Task 56), so once loading
+  //     completes switching between pages never recomputes.
   var html = null;
   if (!wantsFresh) {
     try { html = paneCacheGet_(cache, "dash_pg_v6_" + page); } catch (e0) { html = null; }
@@ -404,15 +403,16 @@ function doGet(e) {
     var loaded = loadDashboardData_();
     var perfData = loadPerformanceData_();
     var data = loaded.data;
-    var active = page === "index" ? renderIndexHtml_(data, perfData)
-      : page === "cre" ? renderCreHtml_(data, perfData)
-      : page === "tech" ? renderTechHtml_(perfData)
-      : renderSmHtml_(data, perfData);
-    var panes2 = {}, single = {};
-    ["index", "cre", "tech", "sm"].forEach(function (pg) { panes2[pg] = paneLoadingHtml_(); });
-    panes2[page] = active;
-    single[page] = active;
-    cachePanes_(data, single);
+    // Task 56 (owner's call): everything is prefetched DURING the load itself —
+    // the cold load computes and embeds all four panes in one pass and caches
+    // them, so once loading completes no tab tap ever touches the sheets again.
+    var panes2 = {
+      index: renderIndexHtml_(data, perfData),
+      cre: renderCreHtml_(data, perfData),
+      tech: renderTechHtml_(perfData),
+      sm: renderSmHtml_(data, perfData)
+    };
+    cachePanes_(data, panes2);
     html = buildDashboardPage_(data, page, { paneJson: panes2 });
   }
   try { paneCachePut_(cache, "dash_pg_v6_" + page, html); } catch (err3) { /* skip */ }
@@ -3590,43 +3590,7 @@ function cachePanes_(data, panes) {
   } catch (err) { /* caching is best-effort only */ }
 }
 
-/** Placeholder shown in a pane that has not been rendered yet (Task 54). */
-function paneLoadingHtml_() {
-  return '<section class="section pane-loading"><div class="body">' +
-    '<p class="sec-desc">This page is loading…</p></div></section>';
-}
 
-/**
- * Public endpoint (google.script.run): serves ONE pane, warm from the
- * chunked pane cache when possible, otherwise computed on demand — that is
- * what the client uses to lazily fill panes after the first paint.
- */
-function getDashboardPane(page) {
-  page = String(page || "index").toLowerCase();
-  if (["index", "cre", "tech", "sm"].indexOf(page) === -1) page = "index";
-  var cache = CacheService.getScriptCache();
-  var h = paneCacheGet_(cache, "dash_pane_v5_" + page);
-  if (h == null) {
-    // Task 55: try the persistent Drive store before recomputing.
-    try {
-      var d0 = paneDriveGetAll_();
-      if (d0 && d0.panes && d0.panes[page]) h = d0.panes[page];
-    } catch (e0) { /* keep computing */ }
-  }
-  if (h == null) {
-    var loaded = loadDashboardData_();
-    var perfData = loadPerformanceData_();
-    var data = loaded.data;
-    h = page === "index" ? renderIndexHtml_(data, perfData)
-      : page === "cre" ? renderCreHtml_(data, perfData)
-      : page === "tech" ? renderTechHtml_(perfData)
-      : renderSmHtml_(data, perfData);
-    var single = {};
-    single[page] = h;
-    cachePanes_(data, single);
-  }
-  return JSON.stringify({ page: page, html: h });
-}
 
 /**
  * Server endpoint for the Refresh button.
@@ -4443,8 +4407,6 @@ function buildDashboardPage_(data, initialPage, opts) {
     "  var tabs=document.querySelectorAll('.tab-btn');" +
     "  for(var i=0;i<tabs.length;i++){tabs[i].classList.toggle('active', tabs[i]===btn);}" +
     "  showPane(btn.dataset.page);" +
-    "  var el=paneEl(btn.dataset.page);" +
-    "  if(el && el.querySelector && el.querySelector('.pane-loading')) fetchPane(btn.dataset.page);" +
     "}" +
     // Tile click → flip to that page (tab highlight follows automatically).
     "function gotoPage(page, el){" +
@@ -4491,7 +4453,6 @@ function buildDashboardPage_(data, initialPage, opts) {
     "    .refreshDashboardSections();" +
     "}" +
     "if(window.google&&google.script&&google.script.run){" +
-    "  setTimeout(function(){autoRefresh(true);},5000);" +
     "  setInterval(function(){autoRefresh(false);},15*60*1000);" +
     "}" +
     "function dashRefresh(btn){" +
@@ -4558,15 +4519,6 @@ function buildDashboardPage_(data, initialPage, opts) {
     "    .exportDashboardSectionToSpreadsheet(key);" +
     "}" +
     "" +
-    "// Task 54: lazily fetch a pane the user taps before prefetch finished." +
-    "function fetchPane(page){" +
-    "  var el=paneEl(page); if(!el) return;" +
-    "  if(!(window.google && google.script && google.script.run)) return;" +
-    "  google.script.run" +
-    "    .withSuccessHandler(function(res){try{var d=JSON.parse(res);if(d&&d.html) el.innerHTML=d.html;}catch(e){}})" +
-    "    .withFailureHandler(function(){})" +
-    "    .getDashboardPane(page);" +
-    "}" +
     // ---- chat bot: toggle / send / answer ----
     "function chatToggle(){" +
     "  var p=document.getElementById('chatPanel'); if(!p) return;" +
@@ -4636,7 +4588,7 @@ function buildDashboardPage_(data, initialPage, opts) {
   var bizMeta = (opts.metaText !== undefined) ? opts.metaText : renderMetaText_(data);
 
   return (
-    "<!-- BUILD TASK55 · fast panes (drive-backed) · per-table export -->" +
+    "<!-- BUILD TASK56 · everything prefetched at load · per-table export -->" +
     "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
     "<title>" + esc_(pageTitle) + "</title><style>" + css + "</style></head><body>" +
     // Task 30: plain dark-ash backdrop for EVERY page — no image at all.
