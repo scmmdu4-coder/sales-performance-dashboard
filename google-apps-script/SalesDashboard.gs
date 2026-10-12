@@ -374,8 +374,7 @@ function doGet(e) {
       if (metaJ) {
         var panes = {}, cold = false;
         ["index", "cre", "tech", "sm"].forEach(function (pg) {
-          var h = null;
-          try { h = cache.get("dash_pane_v5_" + pg); } catch (e1) { h = null; }
+          var h = paneCacheGet_(cache, "dash_pane_v5_" + pg);
           if (h == null) cold = true; else panes[pg] = h;
         });
         if (!cold) {
@@ -3492,14 +3491,40 @@ function exportDashboardToSpreadsheet() {
  * record (store code + meta line) so doGet can serve repeat loads without a
  * single sheet read. TTL matches the 15-minute background refresh cadence.
  */
+// CacheService caps each value at 100 KB — the SM pane alone can be larger
+// than that with real data. Every pane is therefore stored as 90 KB chunks:
+// key_n = chunk count, key_0 .. key_{n-1} = the pieces. Without this the
+// whole-pane cache missed EVERY load, which is why each tab tap recomputed.
+var PANE_CACHE_CHUNK = 90000;
+function paneCachePut_(cache, key, html) {
+  try {
+    if (!html) return;
+    var n = Math.ceil(html.length / PANE_CACHE_CHUNK);
+    if (n > 40) return; // pathological size — serve without caching
+    for (var i = 0; i < n; i++) {
+      cache.put(key + "_" + i, html.substr(i * PANE_CACHE_CHUNK, PANE_CACHE_CHUNK), 900);
+    }
+    cache.put(key + "_n", String(n), 900);
+  } catch (err) { /* best-effort */ }
+}
+function paneCacheGet_(cache, key) {
+  try {
+    var nS = cache.get(key + "_n");
+    if (!nS) return null;
+    var n = parseInt(nS, 10) || 0, out = "";
+    for (var i = 0; i < n; i++) {
+      var part = cache.get(key + "_" + i);
+      if (part == null) return null;
+      out += part;
+    }
+    return out;
+  } catch (err) { return null; }
+}
 function cachePanes_(data, panes) {
   try {
     var cache = CacheService.getScriptCache();
     ["index", "cre", "tech", "sm"].forEach(function (pg) {
-      var h = panes[pg] || "";
-      if (h && h.length < 100000) {
-        try { cache.put("dash_pane_v5_" + pg, h, 900); } catch (e1) { /* skip */ }
-      }
+      if (panes[pg]) paneCachePut_(cache, "dash_pane_v5_" + pg, panes[pg]);
     });
     cache.put("dash_meta_v5", JSON.stringify({
       storeCode: (data && data.store && data.store.storeCode) ? data.store.storeCode : "",

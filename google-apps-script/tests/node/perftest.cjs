@@ -1087,6 +1087,10 @@ check("clock shows a server-stamped time immediately (Task 51)",
 check("pane-level caches make repeat loads instant (Task 51b)",
   gsSrc.indexOf("dash_pane_v5_")>-1&&gsSrc.indexOf("dash_meta_v5")>-1
   &&gsSrc.indexOf("function cachePanes_")>-1&&gsSrc.indexOf("cachePanes_(data,")>-1);
+check("panes cached in 90KB chunks — big SM pane never misses (Task 53)",
+  gsSrc.indexOf("function paneCachePut_")>-1&&gsSrc.indexOf("function paneCacheGet_")>-1
+  &&gsSrc.indexOf("PANE_CACHE_CHUNK = 90000")>-1
+  &&gsSrc.indexOf('paneCacheGet_(cache, "dash_pane_v5_" + pg)')>-1);
 check("15-minute background update loop (Task 51b)",
   clientJS.indexOf("setInterval(autoRefresh,15*60*1000)")>-1
   &&clientJS.indexOf("setTimeout(autoRefresh,5000)")>-1
