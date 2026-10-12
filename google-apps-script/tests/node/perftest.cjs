@@ -263,15 +263,22 @@ check("brand shows crm F2 store name verbatim (Task 43)",
   page.indexOf('<div class="brand">')>-1&&page.indexOf("<div class=\"brand\">iPlanet Care - Sulur</div>")>-1
   &&page.indexOf("iPlanetcare Service</div>")===-1&&page.indexOf('"iPlanetcare"')===-1
   &&page.indexOf('class="brand-sub"')>-1&&page.indexOf("Store Performance Dashboard</div>")>-1);
-check("seven tabs: Index/GP/KPI/WALK-IN/Operation/Jobs/DATE",
-  page.indexOf("🏠 Index")>-1&&page.indexOf("🎯 GP")>-1&&page.indexOf("📊 KPI")>-1
-  &&page.indexOf("🚶 WALK-IN")>-1&&page.indexOf("⚙️ Operation")>-1
-  &&page.indexOf("🧰 Open Jobs")>-1&&page.indexOf("📅 DATE")>-1);
+check("four role tabs: INDEX/CRE/TECH/SM (Task 47)",
+  page.indexOf('data-page="index"')>-1&&page.indexOf('data-page="cre"')>-1
+  &&page.indexOf('data-page="tech"')>-1&&page.indexOf('data-page="sm"')>-1
+  &&page.indexOf('data-page="gp"')===-1&&page.indexOf('data-page="kpi"')===-1
+  &&page.indexOf('data-page="walkin"')===-1&&page.indexOf('data-page="operation"')===-1
+  &&page.indexOf('data-page="jobs"')===-1&&page.indexOf('data-page="date"')===-1
+  &&page.indexOf('data-page="deck"')===-1);
+check("_legacy tab labels gone", page.indexOf(">🎯 GP<")===-1&&page.indexOf(">📊 KPI<")===-1
+  &&page.indexOf(">🧰 Open Jobs<")===-1&&page.indexOf(">🗂 Deck<")===-1);
 check("index tiles render",page.indexOf("glass-tile")>-1&&page.indexOf("Store Target")>-1
   &&page.indexOf("AR Attachment")>-1&&page.indexOf("Decline Repair")>-1
   &&page.indexOf("Requote - Winback")>-1&&page.indexOf("Job Management")>-1
   &&page.indexOf("Date-wise Sales Revenue Analysis")>-1);
-check("tile gotoPage hook",page.indexOf("gotoPage('gp'")>-1&&page.indexOf("gotoPage('date'")>-1);
+check("tile gotoPage hook routes to role pages (Task 47)",
+  page.indexOf("gotoPage('sm'")>-1&&page.indexOf("gotoPage('tech'")>-1
+  &&page.indexOf("gotoPage('gp'")===-1&&page.indexOf("gotoPage('date'")===-1);
 check("tab slider row",page.indexOf('class="tabs-row"')>-1);
 check("fonts bumped globally",page.indexOf("html { font-size:20.7px")>-1);
 check("DISC/AMC notes hidden",page.indexOf("starts with DISC")===-1&&page.indexOf("SubCategory contains AMC")===-1);
@@ -322,7 +329,10 @@ check("KPI targets from row 15",careplus.target===25&&biz.kpi.ar.filter(function
 check("no 3-month comparison anywhere (Task 45)",page.indexOf("no 3-month baseline")===-1
   &&page.indexOf("vs 3-mo avg")===-1&&page.indexOf("Prev 3M")===-1&&page.indexOf("prev 3 months")===-1
   &&page.indexOf("Avg / Month")===-1&&page.indexOf('<div class="repair-strip">')===-1);
-check("repair meta",page.indexOf("5 repairs this month · 2 repair types")>-1);
+check("repair meta replaced by role metas (Task 47)",
+  page.indexOf("SM — full &amp; detailed master report (groups A-G)")>-1
+  &&page.indexOf("CRE — walk-in tokens · jobs &amp; invoices created · C-SAT summary")>-1
+  &&page.indexOf("TECH — job buckets · bucket aging · communication status")>-1);
 check("avg days col header",page.indexOf("Avg Days · Now")>-1);
 check("walk-in repair row: count + avg days only (Task 45)",
   /<strong>Walk-In Repair<\/strong><\/td><td class="num">3<\/td><td class="num">2 d<\/td><\/tr>/.test(page)
@@ -411,7 +421,7 @@ check("index page pane", page.indexOf('data-pane="index"')>-1&&page.indexOf("ind
 check("index tiles built (11 now, matrix tile removed)", (page.match(/class="glass-tile"/g)||[]).length>=11,
   (page.match(/class="glass-tile"/g)||[]).length);
 check("tile group heads", page.indexOf("tile-group-head")>-1);
-check("eight panes incl deck (Task 24)", (page.match(/data-pane=/g)||[]).length===8,
+check("four panes: INDEX/CRE/TECH/SM (Task 47)", (page.match(/data-pane=/g)||[]).length===4,
   (page.match(/data-pane=/g)||[]).length);
 
 console.log("== TASK 20 polish ==");
@@ -505,10 +515,10 @@ check("tile glitter dimmed on hover", page.indexOf("opacity:.55; filter:brightne
 check("tile overflow clips video", page.indexOf(".glass-tile { overflow:hidden")>-1);
 check("kpi table full width left", page.indexOf(".kpi-pair { flex-direction:column")>-1
   &&page.indexOf(".kpi-pair .kp-left table { width:100%")>-1);
-check("walkin heads aligned on one line", page.indexOf('wp-head">🚶 Walk-in Analysis')>-1
-  &&page.indexOf('wp-head">🎟 Token Creation')>-1);
+check("walkin heads aligned on one line (C1/C3 numbered, Task 47)", page.indexOf('wp-head">C1. 🚶 Walk-in Analysis')>-1
+  &&page.indexOf('wp-head">C3. 🎟 Token Creation')>-1);
 check("day-wise token table full width", page.indexOf('class="wp-daytable"')>-1
-  &&page.indexOf('wp-head">📅 Day-wise Walk-in')>-1
+  &&page.indexOf('wp-head">C4. 📅 Day-wise Walk-in')>-1
   &&page.indexOf(".wp-daytable .walkintable { width:100%")>-1);
 check("walkin analysis split remains", page.indexOf("ptable walksum")>-1&&page.indexOf("ptable walkintable")>-1);
 
@@ -661,7 +671,7 @@ check("clock has no gif asset", page.indexOf("AC40-01-10-02-R")===-1
   &&page.indexOf("tgsclc821blu_thumbnail.gif")===-1&&page.indexOf("animation.gif")===-1);
 check("clock fits a bigger frame (Task 31)", page.indexOf("width:400px; height:96px")>-1
   &&page.indexOf("font-size:1.296rem")>-1);
-check("deck tab present", page.indexOf('data-page="deck"')>-1&&page.indexOf('id="pageDeck"')>-1);
+check("deck group present on SM page (Task 47)", page.indexOf('G. 🗂 Deck — ')>-1&&page.indexOf('id="deck-sales"')>-1);
 check("deck NOT on index tiles", (page.match(/glass-tile[^>]*data-page="deck"/g)||[]).length===0);
 console.log("== TASK 36: deck rework (8 tables, current month) ==");
 var dk=biz.deckAnalysis;
@@ -710,7 +720,9 @@ check("comm contrast lifted vs bucket tints (Task 36-C)",
 check("csat side-lane css gone (Task 40)",
   page.indexOf(".csat-right")===-1&&page.indexOf(".csat-flex")===-1);
 var gsSrc=fs.readFileSync(__dirname+"/../../SalesDashboard.gs","utf8");
-check("refresh includes deck", page.indexOf("deck:'pageDeck'")>-1&&gsSrc.indexOf("deck: renderDeckHtml_(")>-1);
+check("refresh payload covers role pages (Task 47)", page.indexOf("cre:'pageCre'")>-1
+  &&gsSrc.indexOf("cre: renderCreHtml_(")>-1&&gsSrc.indexOf("tech: renderTechHtml_(")>-1
+  &&gsSrc.indexOf("sm: renderSmHtml_(")>-1);
 
 console.log("== TASK 25 batch ==");
 var NAVY="rgba(28,43,82,.60)";
@@ -944,6 +956,33 @@ console.log("== TASK 46 batch ==");
   check("margin tables readable: wider part column + bigger invoice sub-line (Task 46)",
     page.indexOf('width:38%;')>-1&&page.indexOf(".cell-sub { display:block; font-size:.7rem")>-1
     &&page.indexOf("#sec-gpmargin .subpanel-head { font-size:.86rem")>-1);
+})();
+console.log("== TASK 47 batch ==");
+(function(){
+  ["A1. 🎯 Store Target","A6. 🗓 Weekly Revenue Analysis","B. 📊 KPI Target","B3. 🔗 AR Attachment",
+   "C. 🚶 Walk-in Analysis","D1. ","D2. Repair Type Performance","D4. 🔁 Requote","E1. 🔧 Job Management",
+   "F1. 📆 Date-wise","G. 🗂 Deck","G8. Coverage Analysis | LOB"].forEach(function(s,i){
+    check("numbered heading present ["+s+"] (Task 47)", page.indexOf(s)>-1);
+  });
+  var pdX=loadPerformanceData_();
+  var wlt=pdX.walkin.totals, tb=pdX.targetBlock, rar=pdX.repair, jm=pdX.jobs;
+  check("SM group banners A-G (Task 47)", (page.match(/gb-letter">/g)||[]).length===7,
+    (page.match(/gb-letter">/g)||[]).length);
+  check("CRE day-wise reduced table (Task 47)",
+    page.indexOf('id="sec-cre-day"')>-1
+    &&page.indexOf('<th class="num">Total Tokens</th><th class="num">Jobs Created</th><th class="num">Invoices Created</th>')>-1
+    &&page.indexOf('<b>Month total</b></td><td class="num"><b>'+wlt.walkins+'</b></td><td class="num"><b>'+wlt.cases+'</b></td><td class="num"><b>'+wlt.invoices+'</b></td>')>-1);
+  var csatN=(tb&&tb.totalRow)?tb.totalRow.total:0, doneN=rar.completedThisMonth||0;
+  check("CRE C-SAT vs completed repairs cards (Task 47)",
+    page.indexOf('<div class="label">C-SAT responses</div><div class="value">'+csatN+'</div>')>-1
+    &&page.indexOf('<div class="label">Completed repairs</div><div class="value">'+doneN+'</div>')>-1);
+  check("TECH bucket summary with aging bands (Task 47)",
+    page.indexOf('id="sec-tech-jobs"')>-1&&page.indexOf('Bucket Summary')>-1
+    &&page.indexOf('<th class="num">0–7 d</th><th class="num">8–15 d</th><th class="num">16–30 d</th><th class="num">31+ d</th>')>-1
+    &&page.indexOf('<b>All open jobs</b></td>')>-1);
+  check("TECH communication cards (Task 47)",
+    page.indexOf('<div class="label">Communication updated</div><div class="value pos">'+jm.totals.communicated+'</div>')>-1
+    &&page.indexOf('<div class="label">Not updated</div><div class="value neg">'+jm.totals.notCommunicated+'</div>')>-1);
 })();
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);

@@ -2215,6 +2215,16 @@ function computeRepairAnalytics_(serviceRows) {
     return (r.warranty || "").trim() || "Unspecified";
   });
 
+  // Task 47 (CRE page): completed repairs this month = unique non-SNR cases
+  // whose Ready_For_Pickup date falls inside the running month.
+  var completedThisMonth = 0;
+  rows.forEach(function (r) {
+    if (r.readyTs > 0) {
+      var rd = new Date(r.readyTs);
+      if (rd.getFullYear() === now.getFullYear() && rd.getMonth() === now.getMonth()) completedThisMonth++;
+    }
+  });
+
   // Month-to-date totals per repair type (no date rows, as requested).
   var mtdTotal = 0;
   var mtdRows = typeComp.filter(function (c) { return c.cur > 0; })
@@ -2264,6 +2274,7 @@ function computeRepairAnalytics_(serviceRows) {
     typeCount: typeComp.length,
     totalRows: all.length, exclRows: rows.length,
     monthRepairsTotal: typeComp.reduce(function (a, c) { return a + c.cur; }, 0),
+    completedThisMonth: completedThisMonth,
     prevRepairAvgTotal: typeComp.reduce(function (a, c) { return a + c.perMonth; }, 0),
   };
 }
@@ -2302,7 +2313,7 @@ function renderRepairAnalyticsInner_(ra) {
     return o.join("");
   }
 
-  var typeSec = bucketSection("📈", "Repair Type Performance", "Repair Type", ra.typeComp,
+  var typeSec = bucketSection("📈", "D2. Repair Type Performance", "Repair Type", ra.typeComp,
     "Case counts in " + ra.curLabel + " (month to date).");
 
   out.push(typeSec);
@@ -2483,7 +2494,7 @@ function renderTargetBlock_(tb, ra) {
   // last-3-month average comparisons anywhere on the dashboards).
 
   return '<section class="sec"><div class="sec-head">' +
-    "<h2>🎯 " + esc_(title) + "</h2>" +
+    "<h2>🎯 D1. " + esc_(title) + "</h2>" +
     '<p class="sec-sub">Every feedback response lands in a satisfaction bucket. Period name from ' +
     '<span class="src-hint">target!K1</span>, table from <span class="src-hint">target!L1:U5</span> — ' +
     "cleaned and re-presented (junk columns dropped, totals verified).</p></div>" +
@@ -2780,7 +2791,7 @@ function renderGpExtras_(x) {
     '</b></td><td class="num"><b>' + money0(discount.value) + "</b></td><td></td></tr>";
 
   var marginPanel =
-    '<section class="section" id="sec-gpmargin"><h2>📈 High / Low Margin</h2><div class="body">' +
+    '<section class="section" id="sec-gpmargin"><h2>A4. 📈 High / Low Margin</h2><div class="body">' +
     '<div class="sec-desc">margin % = crm!GrossProfit ÷ crm!TaxableAmount per unique invoice (SALES only; ' +
     "zero-base invoices skipped). Top 5 at each end, across all revenue types.</div>" +
     '<div class="hl-pair">' +
@@ -2789,7 +2800,7 @@ function renderGpExtras_(x) {
     "</div></div></section>";
 
   var discPanel =
-    '<section class="section" id="sec-discount"><h2>🏷 Discounted Cases</h2><div class="body">' +
+    '<section class="section" id="sec-discount"><h2>A5. 🏷 Discounted Cases</h2><div class="body">' +
     '<div class="sec-desc">crm!DiscountAmount &gt; 0 rows (SALES only); cases counted once per unique invoice code.</div>' +
     '<div class="cards" style="margin-bottom:12px">' +
     '<div class="card"><div class="label">Discounted Invoices</div><div class="value">' + discount.count +
@@ -2829,7 +2840,7 @@ function renderDateHtml_(data) {
 function renderWalkinHtml_(pd) {
   var wl = pd.walkin;
   var head =
-    '<section class="section" id="sec-walkin"><h2>🚶 Walk-in Analysis &amp; Token Creation</h2><div class="body">' +
+    '<section class="section" id="sec-walkin"><h2>C. 🚶 Walk-in Analysis &amp; Token Creation</h2><div class="body">' +
     '<div class="sec-desc">source: ' + esc_(wl.sheetName) +
     ". Every row is one walk-in — MobileNo identifies the visitor (Unique = distinct mobiles); a row with a CaseId counts as a case, a row with an InvoiceCode as a completed sale. The token table pins which user created each token.</div>" +
     '<div class="walkin-pair">';
@@ -2837,20 +2848,20 @@ function renderWalkinHtml_(pd) {
   // Matching heads keep 🚶 Walk-in Analysis and 🎟 Token Creation aligned on
   // ONE line; the wide day-wise table gets the full page width below the pair.
   var left =
-    '<div class="wp-left"><div class="wp-head">🚶 Walk-in Analysis</div>' +
+    '<div class="wp-left"><div class="wp-head">C1. 🚶 Walk-in Analysis</div>' +
     '<p class="sec-desc" style="margin:-2px 0 10px">month-to-date walk-in summary — visitors, cases, invoices, remarks and dead leads.</p>' +
     renderWalkinAnalysis_(wl) + "</div>";
   var mid =
-    '<div class="wp-mid"><div class="wp-head">🧭 Customer Source Analysis</div>' +
+    '<div class="wp-mid"><div class="wp-head">C2. 🧭 Customer Source Analysis</div>' +
     '<p class="sec-desc" style="margin:-2px 0 10px">pivot on walkin!CustomerVisitSource against the total number of walk-ins.</p>' +
     renderCustomerSource_(wl) + "</div>";
   var right =
-    '<div class="wp-right"><div class="wp-head">🎟 Token Creation</div>' +
+    '<div class="wp-right"><div class="wp-head">C3. 🎟 Token Creation</div>' +
     '<p class="sec-desc" style="margin:-2px 0 10px">how many walk-in tokens each user created, and their share of the month&rsquo;s tokens.</p>' +
     renderTokenCreation_(wl) + "</div>";
 
   return head + left + mid + right + "</div>" +
-    '<div class="wp-daytable"><div class="wp-head">📅 Day-wise Walk-in &amp; Token Details</div>' +
+    '<div class="wp-daytable"><div class="wp-head">C4. 📅 Day-wise Walk-in &amp; Token Details</div>' +
     renderWalkinDayTable_(wl) + "</div></div></section>";
 }
 
@@ -2863,7 +2874,7 @@ function renderOperationHtml_(pd) {
   // Task 35 — Decline Repair: unique decline!CaseId whose GSX status is
   // "Declined - Rejected by Local Approver".
   out.push(
-    '<div class="ops-pair"><section class="sec"><div class="sec-head"><h2>🚫 Decline Repair</h2>' +
+    '<div class="ops-pair"><section class="sec"><div class="sec-head"><h2>D3. 🚫 Decline Repair</h2>' +
     '<p class="sec-sub">Unique CaseIDs in <b>decline</b> where GSXRepairStatusDescription is ' +
     '"Declined - Rejected by Local Approver".</p></div>' +
     '<div class="cards">' +
@@ -2874,7 +2885,7 @@ function renderOperationHtml_(pd) {
   // Task 41 — Requote & Win-back: eligible cases are carry-in / mail-in
   // parts repairs, OUT of warranty (service!ProductWarrantyDesc); a win-back
   // is a serial whose Repair-Revenue quote was rejected and later approved.
-    '<section class="sec"><div class="sec-head"><h2>🔁 Requote &amp; Win-back</h2>' +
+    '<section class="sec"><div class="sec-head"><h2>D4. 🔁 Requote &amp; Win-back</h2>' +
     '<p class="sec-sub">Serials (service!SerialNo1) of out-of-warranty carry-in / mail-in cases whose ' +
     '<b>quote</b> rows (RevenueType "Repair Revenue") show lastAction rejected and later approved for the same serial.</p></div>' +
     '<div class="cards">' +
@@ -3155,7 +3166,7 @@ function renderDeckHtml_(data, pd) {
 
   // ---- 1) Sales Revenue Analysis (revenue details) ----
   var sr = d.salesRev || { rows: [] };
-  sections.push(table("deck-sales", "📊", "Sales Revenue Analysis",
+  sections.push(table("deck-sales", "📊", "G1. Sales Revenue Analysis",
     "Revenue details — count & value per crm!RevenueType · crm!TaxableAmount. " +
     "crm!TranType = SALESRETURN is excluded from every valuation on this page.",
     ["Revenue Type", "Count", "Value"],
@@ -3164,7 +3175,7 @@ function renderDeckHtml_(data, pd) {
 
   // ---- 2) Walk-in details ----
   var w = d.walkins || {};
-  sections.push(table("deck-walkin", "🚶", "Walk-in Details",
+  sections.push(table("deck-walkin", "🚶", "G2. Walk-in Details",
     "Total unique walk-in count from walkin!MobileNo · unique invoice count from crm!InvoiceCode.",
     ["Metric", "Count"],
     tr(["No. Of Walkin (unique)", w.unique || 0]) +
@@ -3172,7 +3183,7 @@ function renderDeckHtml_(data, pd) {
 
   // ---- 3) Repair Revenue Analysis ----
   var rr = d.repairRev || { rows: [] };
-  sections.push(table("deck-repair", "🔧", "Repair Revenue Analysis",
+  sections.push(table("deck-repair", "🔧", "G3. Repair Revenue Analysis",
     "Product families by service!ProductDescription · unique count from service!SerialNo1 · " +
     "value = crm!TaxableAmount where service!CaseId = crm!OrderCode. Service Non-Repair excluded.",
     ["Product", "Count", "Value"],
@@ -3181,7 +3192,7 @@ function renderDeckHtml_(data, pd) {
 
   // ---- 4) Accessories Revenue Analysis ----
   var ar = d.accessoriesRev || { rows: [] };
-  sections.push(table("deck-accessories", "📱", "Accessories Revenue Analysis",
+  sections.push(table("deck-accessories", "📱", "G4. Accessories Revenue Analysis",
     "Buckets from crm!ItemDescription — tg / temper(ed) glass / tamper → Tempered Glass; " +
     "Case; Adapter & Cable; AppleCare+/AC+; Protect Plus; AMC; rest → Others. Value = crm!TaxableAmount.",
     ["Product", "Count", "Value"],
@@ -3190,7 +3201,7 @@ function renderDeckHtml_(data, pd) {
 
   // ---- 5) Service Revenue Analysis ----
   var sv = d.serviceRev || { rows: [] };
-  sections.push(table("deck-service", "🧾", "Service Revenue Analysis",
+  sections.push(table("deck-service", "🧾", "G5. Service Revenue Analysis",
     "Pivot on crm!ItemCode — Service Revenue only; crm!TranType = SALESRETURN excluded.",
     ["Item Code", "Count", "Value"],
     sv.rows.map(function (r) { return tr([esc_(r.label), r.count, money0(r.value)]); }).join("") ||
@@ -3199,7 +3210,7 @@ function renderDeckHtml_(data, pd) {
 
   // ---- 6) Gross Profit Analysis — Value ----
   var gp = d.gpValue || { rows: [] };
-  sections.push(table("deck-gp", "💰", "Gross Profit Analysis — Value",
+  sections.push(table("deck-gp", "💰", "G6. Gross Profit Analysis — Value",
     "Invoice value = Σ crm!TaxableAmount · GP value = Σ crm!GrossProfit · GP% = GP ÷ invoice value.",
     ["Revenue Type", "Invoice Value", "GP Value", "GP %"],
     gp.rows.map(function (r) {
@@ -3210,7 +3221,7 @@ function renderDeckHtml_(data, pd) {
 
   // ---- 7) Walk-in Analysis (rank: most important) ----
   var wa = d.walkinAnalysis || [];
-  sections.push(table("deck-walkin-analysis", "📈", "Walk-in Analysis",
+  sections.push(table("deck-walkin-analysis", "📈", "G7. Walk-in Analysis",
     "No. Of Walkin = unique walkin!MobileNo · Unique Bill = unique crm!InvoiceCode · Bills = total invoices · " +
     "AR/RR/SR = unique invoice count per crm!RevenueType · Walkin to Bills % = unique bills ÷ walk-ins · Enquiry = walk-ins − unique bills.",
     ["Metric", "Count"],
@@ -3218,7 +3229,7 @@ function renderDeckHtml_(data, pd) {
 
   // ---- 8) Coverage Analysis | LOB ----
   var cov = d.coverage || { rows: [] };
-  sections.push(table("deck-coverage", "🛡", "Coverage Analysis | LOB",
+  sections.push(table("deck-coverage", "🛡", "G8. Coverage Analysis | LOB",
     "Product + battery/display from service!ProductDescription & service!PartDescription (must match) · " +
     "W / NW from service!CoverageCodeDescription.",
     ["Product", "Cases", "W", "NW"],
@@ -3231,7 +3242,7 @@ function renderDeckHtml_(data, pd) {
   for (var pi = 0; pi < sections.length; pi += 2) {
     grid += '<div class="deck-pair">' + sections[pi] + (sections[pi + 1] || "") + "</div>";
   }
-  return '<section class="sec"><div class="sec-head"><h2>🗂 Deck — ' + esc_(month || "Current Month") + " " + stamp + '</h2>' +
+  return '<section class="sec"><div class="sec-head"><h2>G. 🗂 Deck — ' + esc_(month || "Current Month") + " " + stamp + '</h2>' +
     '<p class="sec-sub">Owner order — revenue · walk-in · repair · accessories · service · GP · walk-in analysis · coverage. ' +
     "Current month only; previous months are kept manually by the owner. SALESRETURN is excluded everywhere.</p></div></section>" +
     grid;
@@ -3278,13 +3289,9 @@ function refreshDashboardSections() {
   return JSON.stringify({
     meta: renderMetaText_(data),
     index: renderIndexHtml_(data, perfData),
-    gp: renderGpHtml_(data),
-    kpi: renderKpiHtml_(data),
-    walkin: renderWalkinHtml_(perfData),
-    operation: renderOperationHtml_(perfData),
-    jobs: renderJobsHtml_(perfData),
-    date: renderDateHtml_(data),
-    deck: renderDeckHtml_(data, perfData),
+    cre: renderCreHtml_(perfData),
+    tech: renderTechHtml_(perfData),
+    sm: renderSmHtml_(data, perfData),
   });
 }
 
@@ -3835,6 +3842,9 @@ function pieSvgHtml_(segments, cx, cy, radius, thick) {
 
 function renderIndexHtml_(data, perfData) {
   var s = data.store;
+  // Task 47: the legacy per-page tiles now land on the four role pages —
+  // job-management tiles open TECH, everything else opens the full SM report.
+  function rolePageOf(page) { return page === "jobs" ? "tech" : (page === "index" ? "index" : "sm"); }
   function p1(x) { return (x || 0).toFixed(1) + "%"; }
   var walkT = perfData && perfData.walkin && perfData.walkin.available ? perfData.walkin.totals : null;
   var jobT = perfData && perfData.jobs && perfData.jobs.available ? perfData.jobs.totals : null;
@@ -3844,6 +3854,7 @@ function renderIndexHtml_(data, perfData) {
   var exWin = perfData && perfData.opsExtras ? perfData.opsExtras.winback : null;
 
   function tile(page, icon, title, blurb, stats) {
+    page = rolePageOf(page);
     var statHtml = stats && stats.length
       ? '<div class="tile-data">' + stats.map(function (st) {
           return '<div class="tile-stat"><span>' + esc_(st[0]) + "</span><b>" + esc_(String(st[1])) + "</b></div>";
@@ -3870,7 +3881,7 @@ function renderIndexHtml_(data, perfData) {
 
   function group(title, page, tilesHtml, pieHtml) {
     return '<div class="tile-group"><h3 class="tile-group-head">' +
-      '<button type="button" class="tile-group-link" onclick="gotoPage(\'' + esc_(page) +
+      '<button type="button" class="tile-group-link" onclick="gotoPage(\'' + esc_(rolePageOf(page)) +
       "')\" title=\"Open the " + esc_(title) + ' page">' + esc_(title) + " &rarr;</button></h3>" +
       pieHtml + '<div class="tile-col">' + tilesHtml + "</div></div>";
   }
@@ -4061,17 +4072,17 @@ function buildDashboardPage_(data) {
 
   var perfData = loadPerformanceData_();
 
+  // Task 47: the eight legacy pages are replaced by four ROLE pages.
+  // INDEX - overall store performance at a glance; CRE - minimum basic
+  // details; TECH - job management basics only; SM - the full master report
+  // (groups A-G). Fine-grained per-role gating per target!X1:Y50 follows in
+  // the next iteration.
   var PAGES = [
     // [tab label, data-page id, main id, html, meta-subtitle]
-    ["🏠 Index",     "index",     "pageIndex",     renderIndexHtml_(data, perfData), "Landing — pick a tile to jump to its page"],
-    ["🎯 GP",        "gp",        "pageGp",        renderGpHtml_(data),       renderMetaText_(data)],
-    ["📊 KPI",       "kpi",       "pageKpi",       renderKpiHtml_(data),      renderMetaText_(data)],
-    ["🚶 WALK-IN",   "walkin",    "pageWalkin",    renderWalkinHtml_(perfData),  perfMeta_(perfData)],
-    ["⚙️ Operation", "operation", "pageOperation", renderOperationHtml_(perfData), repairMeta_(perfData.repair, perfData.generatedAt)],
-    ["🧰 Open Jobs", "jobs",      "pageJobs",      renderJobsHtml_(perfData), perfMeta_(perfData)],
-    ["📅 DATE",      "date",      "pageDate",      renderDateHtml_(data),     renderMetaText_(data)],
-    // DECK lives as the last tab but is intentionally NOT on the index page.
-    ["🗂 Deck",      "deck",      "pageDeck",      renderDeckHtml_(data, perfData), "Current month — revenue, walk-ins, repairs, accessories, service, GP & coverage"],
+    ["INDEX", "index", "pageIndex", renderIndexHtml_(data, perfData), "Overall store performance — every dashboard at a glance"],
+    ["CRE",   "cre",   "pageCre",   renderCreHtml_(perfData),         "CRE — walk-in tokens · jobs & invoices created · C-SAT summary"],
+    ["TECH",  "tech",  "pageTech",  renderTechHtml_(perfData),        "TECH — job buckets · bucket aging · communication status"],
+    ["SM",    "sm",    "pageSm",    renderSmHtml_(data, perfData),    "SM — full & detailed master report (groups A-G)"],
   ];
 
   var tabs = PAGES.map(function (pg, idx) {
@@ -4100,7 +4111,7 @@ function buildDashboardPage_(data) {
     "}" +
     // Pane routing: flip the active tab, show the matching <main>, swap the
     // subtitle from its data-meta. Panes are keyed by data-pane.
-    "function paneId(page){return {index:'pageIndex',gp:'pageGp',kpi:'pageKpi',walkin:'pageWalkin',operation:'pageOperation',jobs:'pageJobs',date:'pageDate'}[page]||'pageIndex';}" +
+    "function paneId(page){return {index:'pageIndex',cre:'pageCre',tech:'pageTech',sm:'pageSm'}[page]||'pageIndex';}" +
     "function paneEl(page){return document.getElementById(paneId(page));}" +
     "function currentPage(){var a=document.querySelector('.tab-btn.active');return a?a.dataset.page:'index';}" +
     "function showPane(page){" +
@@ -4143,7 +4154,7 @@ function buildDashboardPage_(data) {
     "        var prev=document.getElementById('dwTable');" +
     "        var wasOpen=prev?!prev.classList.contains('collapsed'):false;" +
     "        var d=JSON.parse(res);" +
-    "        var map={index:'pageIndex',gp:'pageGp',kpi:'pageKpi',walkin:'pageWalkin',operation:'pageOperation',jobs:'pageJobs',date:'pageDate',deck:'pageDeck'};" +
+    "        var map={index:'pageIndex',cre:'pageCre',tech:'pageTech',sm:'pageSm'};" +
     "        Object.keys(map).forEach(function(page){" +
     "          var el=document.getElementById(map[page]);" +
     "          if(el && d[page]!==undefined){ el.innerHTML=d[page]; }" +
@@ -4672,12 +4683,163 @@ function renderJobManagement_(jm) {
   return head + mapLine + table + caseBits;
 }
 
+/** Task 47 — group banner separating the master's A-G groups on the SM page. */
+function roleBanner_(letter, name) {
+  return '<div class="group-banner"><span class="gb-letter">' + esc_(letter) + "</span>" +
+    '<span class="gb-name">' + esc_(name) + "</span></div>";
+}
+
+/**
+ * Task 47 — CRE page: minimum basic details only.
+ *   C4  day-wise walk-in & token details — total tokens, jobs created,
+ *       invoices created per day (nothing else).
+ *   D1  total C-SAT responses against the total completed repairs of the
+ *       current month.
+ */
+function renderCreHtml_(pd) {
+  var wl = pd.walkin || { available: false };
+  var tb = pd.targetBlock || { available: false };
+  var ra = pd.repair || { available: false };
+
+  // ---- C4: day-wise walk-in — tokens / jobs / invoices only ----
+  var c4;
+  if (!wl.available) {
+    c4 = emptyPerf_(CONFIG.WALKIN_SHEET_NAMES[0],
+      "Add a walk-in sheet to see the day-wise token, job and invoice counts.");
+  } else {
+    var t = wl.totals;
+    function cnum(n) { return n ? ('<td class="num">' + n + "</td>") : '<td class="num muted">—</td>'; }
+    var rows = wl.days.map(function (d) {
+      return "<tr" + (d.undated ? ' class="undated-row"' : "") + ">" +
+        '<td class="daycell"><b>' + esc_(d.undated ? "No date" : d.dateKey) + "</b>" +
+        (d.weekday ? ' <span class="muted">' + d.weekday + "</span>" : "") + "</td>" +
+        '<td class="num"><b>' + d.walkins + "</b></td>" +
+        cnum(d.cases) + cnum(d.invoices) + "</tr>";
+    }).join("");
+    var tot = '<tr class="totrow"><td><b>Month total</b></td>' +
+      '<td class="num"><b>' + t.walkins + "</b></td>" +
+      '<td class="num"><b>' + t.cases + "</b></td>" +
+      '<td class="num"><b>' + t.invoices + "</b></td></tr>";
+    c4 = '<div class="scroll-x"><table class="ptable"><thead><tr><th>Date</th>' +
+      '<th class="num">Total Tokens</th><th class="num">Jobs Created</th><th class="num">Invoices Created</th>' +
+      "</tr></thead><tbody>" + rows + tot + "</tbody></table></div>";
+  }
+
+  // ---- D1: C-SAT responses vs completed repairs (current month) ----
+  var csatN = (tb.available && tb.totalRow) ? tb.totalRow.total : 0;
+  var doneN = ra.available ? (ra.completedThisMonth || 0) : 0;
+  var pct = doneN > 0 ? Math.round((csatN * 100) / doneN) : 0;
+  var d1 =
+    '<div class="cards">' +
+    '<div class="card"><div class="label">C-SAT responses</div><div class="value">' + csatN +
+    '</div><div class="sub">total feedback rows · target!L1:U5</div></div>' +
+    '<div class="card"><div class="label">Completed repairs</div><div class="value">' + doneN +
+    '</div><div class="sub">ready-for-pickup in ' + esc_(ra.available ? ra.curLabel : "this month") + '</div></div>' +
+    '<div class="card"><div class="label">C-SAT coverage</div><div class="value">' + pct +
+    '%</div><div class="sub">responses ÷ completed repairs</div></div>' +
+    "</div>";
+
+  return '<section class="section" id="sec-cre-day"><h2>C4. 📅 Day-wise Walk-in &amp; Token Details</h2><div class="body">' +
+    '<div class="sec-desc">CRE basic view — per day: total walk-in tokens and, against them, how many jobs and invoices were created.</div>' +
+    c4 + "</div></section>" +
+    '<section class="section" id="sec-cre-csat"><h2>D1. 🎯 Customer Satisfaction</h2><div class="body">' +
+    '<div class="sec-desc">total C-SAT responses against the total completed repairs of the current month.</div>' +
+    d1 + "</div></section>";
+}
+
+/**
+ * Task 47 — TECH page: job-management basics only.
+ *   E1  open-job count per repair bucket, split by aging band inside each
+ *       bucket, plus communication-updated vs not-updated totals.
+ */
+function renderTechHtml_(pd) {
+  var jm = pd.jobs || { available: false };
+  if (!jm.available || !jm.jobs) {
+    return emptyPerf_("service", "Add a service sheet to see the bucket, aging and communication summary.");
+  }
+  var t = jm.totals || {};
+  var BANDS = [[0, 7, "0–7 d"], [8, 15, "8–15 d"], [16, 30, "16–30 d"], [31, 1e12, "31+ d"]];
+  var order = [], map = {};
+  jm.jobs.forEach(function (j) {
+    var b = (j.crmRepairStatus || "").trim() || "—";
+    if (!map[b]) { map[b] = { bands: [0, 0, 0, 0], noAge: 0, total: 0 }; order.push(b); }
+    var rec = map[b];
+    rec.total++;
+    var age = (typeof j.jobAge === "number" && isFinite(j.jobAge) && j.jobAge >= 0) ? j.jobAge : null;
+    if (age == null) rec.noAge++;
+    else BANDS.forEach(function (bd, i) { if (age >= bd[0] && age <= bd[1]) rec.bands[i]++; });
+  });
+
+  // Alphabetical bucket order — mirrors the band order of the detailed SM table.
+  order.sort();
+  function cell(n) { return n ? ('<td class="num">' + n + "</td>") : '<td class="num muted">—</td>'; }
+  var rows = order.map(function (b) {
+    var r = map[b];
+    return "<tr><td><b>" + esc_(b) + "</b></td>" +
+      cell(r.bands[0]) + cell(r.bands[1]) + cell(r.bands[2]) + cell(r.bands[3]) + cell(r.noAge) +
+      '<td class="num"><b>' + r.total + "</b></td></tr>";
+  }).join("");
+  var g = [0, 0, 0, 0], gNoAge = 0, gTotal = 0;
+  order.forEach(function (b) {
+    var r = map[b];
+    g[0] += r.bands[0]; g[1] += r.bands[1]; g[2] += r.bands[2]; g[3] += r.bands[3];
+    gNoAge += r.noAge; gTotal += r.total;
+  });
+  var tot = '<tr class="totrow"><td><b>All open jobs</b></td>' +
+    '<td class="num"><b>' + g[0] + "</b></td><td class=\"num\"><b>" + g[1] + "</b></td>" +
+    '<td class="num"><b>' + g[2] + "</b></td><td class=\"num\"><b>" + g[3] + "</b></td>" +
+    '<td class="num"><b>' + (gNoAge || 0) + "</b></td>" +
+    '<td class="num"><b>' + gTotal + "</b></td></tr>";
+
+  var commCards =
+    '<div class="cards">' +
+    '<div class="card"><div class="label">Open jobs</div><div class="value">' + (t.openJobs || gTotal) +
+    '</div><div class="sub">across ' + order.length + " repair bucket" + (order.length === 1 ? "" : "s") + '</div></div>' +
+    '<div class="card"><div class="label">Communication updated</div><div class="value pos">' + (t.communicated || 0) +
+    '</div><div class="sub">' + (t.commRate || 0) + '% of open jobs</div></div>' +
+    '<div class="card"><div class="label">Not updated</div><div class="value neg">' + (t.notCommunicated || 0) +
+    '</div><div class="sub">no comm entry for the case</div></div>' +
+    "</div>";
+
+  return '<section class="section" id="sec-tech-jobs"><h2>E1. 🔧 Job Management — Open Jobs · Bucket Summary</h2><div class="body">' +
+    '<div class="sec-desc">open jobs per repair bucket with aging inside each bucket (Jobs without a readable age are ' +
+    'listed in a separate column); then communication updated vs not updated for all open jobs.</div>' +
+    commCards +
+    '<div class="scroll-x"><table class="ptable"><thead><tr><th>Repair Bucket</th>' +
+    '<th class="num">0–7 d</th><th class="num">8–15 d</th><th class="num">16–30 d</th><th class="num">31+ d</th>' +
+    '<th class="num">Age —</th><th class="num">Total</th></tr></thead><tbody>' +
+    rows + tot + "</tbody></table></div></div></section>";
+}
+
+/**
+ * Task 47 — SM page: the full & detailed master report. Every section of the
+ * legacy pages in the owner's master order A → G, separated by group banners.
+ */
+function renderSmHtml_(data, pd) {
+  return (
+    roleBanner_("A", "GP — store target · working days · valuation · margin · discount · weekly") +
+      renderGpHtml_(data) +
+    roleBanner_("B", "KPI — target parameters · incentive · salesperson performance · AR attachment") +
+      renderKpiHtml_(data) +
+    roleBanner_("C", "WALK-IN — analysis · customer source · token creation · day-wise") +
+      renderWalkinHtml_(pd) +
+    roleBanner_("D", "OPERATION — customer satisfaction · repair types · decline · win-back") +
+      renderOperationHtml_(pd) +
+    roleBanner_("E", "OPEN JOBS — job management") +
+      renderJobsHtml_(pd) +
+    roleBanner_("F", "DATE — date-wise sales revenue by salesperson") +
+      renderDateHtml_(data) +
+    roleBanner_("G", "DECK — current-month summary tables") +
+      renderDeckHtml_(data, pd)
+  );
+}
+
 /** Job management section (OPEN JOBS page). */
 function renderJobsSection_(pd) {
   var jm = pd.jobs;
   return (
     '<section class="sec"><div class="sec-head">' +
-    '<h2>🔧 Job Management — Open Jobs</h2>' +
+    '<h2>E1. 🔧 Job Management — Open Jobs</h2>' +
     "</div>" + renderJobManagement_(jm) + "</section>"
   );
 }
@@ -5239,6 +5401,13 @@ function getDashboardCss_() {
     // ---- GP margin / discount panels: stacked, each one full-page-width ----
     ".gp-stack { display:flex; flex-direction:column; gap:16px; }" +
     ".gp-stack > .section { width:100%; box-sizing:border-box; margin-bottom:0; border:1px solid #d5dde6;" +
+    // ---- Task 47: A–G group banners on the SM master page ----
+    ".group-banner { display:flex; align-items:center; gap:10px; margin:26px 0 12px; padding:8px 14px;" +
+    " border-radius:9px; background:#172b43; color:#f8fbff; }" +
+    ".group-banner:first-child { margin-top:0; }" +
+    ".group-banner .gb-letter { font-size:1.02rem; font-weight:900; background:#ffd477; color:#17263a;" +
+    " border-radius:7px; padding:3px 9px; line-height:1.15; }" +
+    ".group-banner .gb-name { font-size:.9rem; font-weight:800; letter-spacing:.04em; }" +
     " border-radius:9px; background:#ffffff; padding:10px 12px 14px; }" +
     // ---- job table: fixed layout compressed to the page width ----
     ".jobwrap { overflow-x:auto; }" +
@@ -5554,7 +5723,7 @@ function renderStoreTable_(data) {
       "</div>";
   }
   return (
-    '<section class="section" id="sec-store"><h2>🎯 Store Target — Performance</h2><div class="body">' +
+    '<section class="section" id="sec-store"><h2>A1. 🎯 Store Target — Performance</h2><div class="body">' +
     '<div class="sec-desc">Target vs Achievement &middot; Run Rate</div>' +
     '<div class="rgrid">' +
     tile("Service Revenue", s.service) +
@@ -5569,7 +5738,7 @@ function renderStoreTable_(data) {
 function renderWorkingDaysCard_(data) {
   var s = data.store;
   return (
-    '<section class="section" id="sec-workdays"><h2>📅 Working Days (Current Month)</h2><div class="body">' +
+    '<section class="section" id="sec-workdays"><h2>A2. 📅 Working Days (Current Month)</h2><div class="body">' +
     '<div class="sec-desc">Definition: days the store is open this month — total, already consumed, and how many selling days are left. Holiday dates come from CONFIG.</div>' +
     '<div class="cards" style="margin-bottom:0">' +
     '<div class="card"><div class="label">Total Working Days</div><div class="value">' + s.totalWorkingDays + "</div></div>" +
@@ -5607,7 +5776,7 @@ function renderSalespersonCards_(data) {
   }
 
   if (!data.salespeople.length) {
-    return '<section class="section" id="sec-person"><h2>👤 Sales Person Performance</h2><div class="body">' +
+    return '<section class="section" id="sec-person"><h2>B2. 👤 Sales Person Performance</h2><div class="body">' +
       '<div class="empty-state">No salespersons on the roster — add names to <b>target!C1:J1</b> (empty cells are skipped). ' +
       "People named in the CRM but not on the roster count only toward the store totals.</div></div></section>";
   }
@@ -5650,7 +5819,7 @@ function renderSalespersonCards_(data) {
   }).join("");
 
   return (
-    '<section class="section" id="sec-person"><h2>👤 Sales Person Performance</h2><div class="body">' +
+    '<section class="section" id="sec-person"><h2>B2. 👤 Sales Person Performance</h2><div class="body">' +
     '<div class="person-grid">' + cards + "</div>" +
     '<p class="muted" style="font-size:12.5px;margin:14px 0 0">' +
     "Only <b>Service</b> and <b>Accessory</b> revenue earn incentive — payout is the pro-rata IFS formula. Service tiers 71/81/91/100&#8209;&#62;110% (&uarr;to &#8377;12,000); Accessory tiers 51/61/71/81&#8209;&#62;110% (&uarr;to &#8377;8,000). " +
@@ -5697,7 +5866,7 @@ function renderIncentiveTable_(data) {
     '</td><td></td><td class="pos">' + money_(bunTot.inc) + "</td></tr>";
 
   return (
-    '<section class="section" id="sec-incentive"><h2>💰 Sales Person Incentive — AMC &amp; Bundle</h2><div class="body">' +
+    '<section class="section" id="sec-incentive"><h2>B1. 💰 Sales Person Incentive — AMC &amp; Bundle</h2><div class="body">' +
     '<div class="inc-pair">' +
     '<div class="inc-cat"><div class="inc-cat-title">Category 1 · AMC</div>' +
     '<div class="scroll-x"><table><thead><tr><th>Salesperson</th><th>AMC Count</th><th>AMC Eligible</th>' +
@@ -5741,7 +5910,7 @@ function renderKpiSection_(data) {
   }).join("");
 
   return (
-    '<section class="section" id="sec-kpi"><h2>📊 KPI Target — Store KPI Parameters</h2><div class="body">' +
+    '<section class="section" id="sec-kpi"><h2>B. 📊 KPI Target — Store KPI Parameters</h2><div class="body">' +
     '<div class="scroll-x">' +
     "<table><thead><tr><th>KPI</th><th>Type</th><th>Target</th><th>Achieved</th><th>Achieved %</th>" +
     "<th>Balance</th><th>Approx Achievable Value</th><th>Achieved Value</th><th>Achieved GP</th></tr></thead><tbody>" + rows +
@@ -5761,7 +5930,7 @@ function renderInvoiceValuation_(data) {
     "</td><td>" + data.invoiceValuation.totalUniqueInvoices + "</td><td>" + money_(data.store.total.achieved) +
     "</td><td>" + money_(data.store.grossProfit.achieved) + "</td></tr>";
   return (
-    '<section class="section" id="sec-invoice"><h2>🧾 Invoice Valuation</h2><div class="body">' +
+    '<section class="section" id="sec-invoice"><h2>A3. 🧾 Invoice Valuation</h2><div class="body">' +
     '<div class="sec-desc">Definition: what invoices are really worth — line count, unique invoice count, revenue and gross profit per revenue type, plus AR (accessory attachment) rate next to invoices that qualified for one.</div>' +
     '<div class="iv-split">' +
     '<div class="iv-left"><div class="scroll-x">' +
@@ -5788,7 +5957,7 @@ function renderInvoiceValuation_(data) {
  */
 function renderArSection_(data) {
   return (
-    '<section class="section" id="sec-ar"><h2>🔗 AR Attachment — accessory sold with service / repair</h2><div class="body">' +
+    '<section class="section" id="sec-ar"><h2>B3. 🔗 AR Attachment — accessory sold with service / repair</h2><div class="body">' +
     '<div class="sec-desc">Definition: an invoice counts as an AR attachment when accessory revenue shares the invoice code with service or repair revenue; value and GP shown are the accessory portion of those invoices. Accessory-only invoices are excluded.</div>' +
     renderArAttachment_(data) + "</div></section>"
   );
@@ -5970,7 +6139,7 @@ function renderWeeklyAnalysis_(data) {
   foot += "</tr>";
 
   return (
-    '<section class="section" id="sec-weekly"><h2>🗓 Weekly Revenue Analysis — ' +
+    '<section class="section" id="sec-weekly"><h2>A6. 🗓 Weekly Revenue Analysis — ' +
       esc_(wa.monthName) + '</h2><div class="body">' +
     '<div class="sec-desc">Current month split into ' + wa.weeks.length + ' weeks — achieved vs weekly target, per revenue type</div>' +
     '<div class="scroll-x" style="margin-top:12px"><table class="matrix hdr-deep">' +
@@ -6088,7 +6257,7 @@ function renderDateWiseTable_(data) {
     : "";
 
   return (
-    '<section class="section" id="sec-datewise"><h2>📆 Date-wise Sales Revenue Analysis (by salesperson)</h2><div class="body">' +
+    '<section class="section" id="sec-datewise"><h2>F1. 📆 Date-wise Sales Revenue Analysis (by salesperson)</h2><div class="body">' +
     '<div class="cards" style="margin-bottom:14px">' +
     '<div class="card"><div class="label">Store Daily Target</div><div class="value">' + money_(dailyTarget) +
     '</div><div class="sub">total target ÷ ' + data.store.totalWorkingDays + " working days</div></div>" +
