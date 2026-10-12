@@ -2152,7 +2152,8 @@ function computeRepairAnalytics_(serviceRows) {
   });
   all = order.map(function (k) { return bestByCase[k]; });
   // Service Non-Repair cases are excluded from every analytic on this page.
-  var rows = all.filter(function (r) { return !isSNRType_(r.repairType); });
+  // Task 50 (owner): rows with a blank service!RepairDocType are excluded too.
+  var rows = all.filter(function (r) { return str_(r.repairType) !== "" && !isSNRType_(r.repairType); });
 
   var now = new Date();
   function pad2(x) { return (x < 10 ? "0" : "") + x; }
@@ -2294,7 +2295,7 @@ function renderRepairAnalyticsInner_(ra) {
     if (!comp.length) return "";
     var o = ['<div class="section">' +
       '<h2 class="section-title">' + icon + " " + esc_(title) + " · <em>" + esc_(ra.curLabel) + "</em></h2>" +
-      '<div class="section-sub">' + esc_(note) + ' Counts are whole numbers. "Service Non-Repair" cases are excluded.</div>' +
+      '<div class="section-sub">' + esc_(note) + ' Counts are whole numbers. Blank and "Service Non-Repair" repair types are excluded.</div>' +
       '<div class="tile-grid">'];
     comp.forEach(function (c) {
       o.push('<div class="tile"><div class="label">' + esc_(c.name) + "</div>" +
@@ -2339,9 +2340,10 @@ function repairMeta_(ra, generatedAt) {
 
 /**
  * Process-page C-SAT block — read from the target sheet, presented cleanly:
- *   target!K1     = the period name shown as the dashboard title
- *   target!L1:U5  = the C-SAT grid (10 cols × 5 rows; row 1 = headers,
- *                   rows 2-5 = one row per salesperson plus a TOTAL row)
+ * Task 50 (owner): the block moved within the same sheet:
+ *   target!D47    = the period name shown as the dashboard title
+ *   target!E47:O51 = the C-SAT grid (11 cols × 5 rows; row 47 = headers,
+ *                   rows 48-51 = one row per salesperson plus a TOTAL row)
  * The sheet's raw grid is NEVER dumped verbatim: junk/empty columns are
  * dropped, the TOTAL row is confirmed against the person rows, the summary
  * numbers (responses, C-SAT, CFI) become tiles, and the table gets
@@ -2353,12 +2355,15 @@ function computeTargetBlock_(ss) {
   var rows = sheet.getDataRange().getDisplayValues();
   function at(r, c) { return (rows[r] && rows[r][c] !== undefined && rows[r][c] !== null) ? String(rows[r][c]).trim() : ""; }
 
-  var K = 10, L = 11;                    // K1 / first col of the table (0-indexed)
-  var FIRST_ROW = 0, LAST_ROW = 4;       // sheet rows 1..5
-  var periodName = at(FIRST_ROW, K);
+  // Task 50: table starts at sheet column E (0-indexed 4), rows 47..51.
+  // Period name: cell left of the header (D47), then above the name column
+  // (E46), then the legacy K1 position for sheets still on the old layout.
+  var L = 4;                             // first column of the table (0-indexed)
+  var FIRST_ROW = 46, LAST_ROW = 50;     // sheet rows 47..51
+  var periodName = at(FIRST_ROW, L - 1) || at(FIRST_ROW - 1, L) || at(0, 10) || "";
 
   var header = [];
-  for (var c = 0; c < 10; c++) header.push(at(FIRST_ROW, L + c));
+  for (var c = 0; c < 11; c++) header.push(at(FIRST_ROW, L + c));
 
   // Identify the special columns by header text.
   function isJunkHeader(h) { return h === "" || h === "-" || /^–+$/.test(h); }
@@ -2496,7 +2501,7 @@ function renderTargetBlock_(tb, ra) {
   return '<section class="sec"><div class="sec-head">' +
     "<h2>🎯 D1. " + esc_(title) + "</h2>" +
     '<p class="sec-sub">Every feedback response lands in a satisfaction bucket. Period name from ' +
-    '<span class="src-hint">target!K1</span>, table from <span class="src-hint">target!L1:U5</span> — ' +
+    '<span class="src-hint">target!D47</span>, table from <span class="src-hint">target!E47:O51</span> — ' +
     "cleaned and re-presented (junk columns dropped, totals verified).</p></div>" +
     table + "</section>";
 }
@@ -3266,6 +3271,136 @@ function renderMetaText_(data) {
   var generated = Utilities.formatDate(data.generatedAt, Session.getScriptTimeZone(), "dd MMM yyyy, HH:mm");
   return "Updated " + generated + " · " + data.store.totalInvoices +
     " SALES rows · " + data.store.uniqueInvoices + " unique invoices";
+}
+
+/**
+ * Task 50 — "Export to Sheets" button endpoint. Recomputes the dashboard data
+ * exactly as shown on the pages and writes it into a brand-new Google
+ * Spreadsheet the owner can keep or share. Sheets: Open Jobs (the E1 table),
+ * Bucket Aging (the 9-band summary), Walk-in Analysis, Weekly %,
+ * KPI Parameters and Store Target. Returns { name, url } as JSON.
+ * NOTE: no trailing underscore — google.script.run can only call public fns.
+ */
+function exportDashboardToSpreadsheet() {
+  var loaded = loadDashboardData_();
+  var data = loaded.data;
+  var pd = loadPerformanceData_();
+  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd-MM-yyyy HH:mm");
+  var book = SpreadsheetApp.create("Dashboard Export — " + stamp);
+  var first = book.getSheets()[0];
+
+  function grid(name, headers, rows) {
+    var sh = first || book.insertSheet();
+    sh.setName(name);
+    sh.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight("bold");
+    if (rows.length) sh.getRange(2, 1, rows.length, headers.length).setValues(rows);
+    first = null;
+    return sh;
+  }
+
+  // 1) Open Jobs — exactly the columns of the E1 "Job Management" table.
+  var now = Date.now(), jobRows = [];
+  var jobs = (pd.jobs && pd.jobs.available && pd.jobs.jobs) ? pd.jobs.jobs : [];
+  jobs.forEach(function (j) {
+    var comm = "—";
+    if (j.commTs > 0) {
+      var dfc = Math.max(0, Math.floor((now - j.commTs) / 86400000));
+      comm = dfc === 0 ? "today" : dfc + "d";
+    }
+    jobRows.push([
+      j.jobAge == null ? "" : j.jobAge,
+      j.gsxStatus || "—", j.crmRepairStatus || "—", j.repairType || "—",
+      j.caseId || "—", j.name || "—", j.mobile || "—", j.gsxId || "—",
+      j.serialNo || "—", j.product || "—", comm]);
+  });
+  grid("Open Jobs",
+    ["Aging", "GSX Repair Status", "CRM Status", "Repair Type", "Case ID", "Name", "Number", "GSX ID", "S.No", "Model", "Comm. Updated"],
+    jobRows);
+
+  // 2) Bucket Aging — the same 9 aging bands as the dashboard summary table.
+  var BANDS = [[0, 2, "0–2 d"], [3, 5, "3–5 d"], [6, 10, "6–10 d"], [11, 15, "11–15 d"],
+    [16, 30, "16–30 d"], [31, 45, "31–45 d"], [46, 60, "46–60 d"], [61, 100, "61–100 d"], [101, 1e12, "100+ d"]];
+  var bMap = {}, bOrder = [];
+  jobs.forEach(function (j) {
+    var b = (j.crmRepairStatus || "—");
+    if (!bMap[b]) { bMap[b] = { bands: BANDS.map(function () { return 0; }), noAge: 0, total: 0 }; bOrder.push(b); }
+    var rec = bMap[b]; rec.total++;
+    var age = (typeof j.jobAge === "number" && isFinite(j.jobAge) && j.jobAge >= 0) ? j.jobAge : null;
+    if (age == null) rec.noAge++;
+    else BANDS.forEach(function (bd, i) { if (age >= bd[0] && age <= bd[1]) rec.bands[i]++; });
+  });
+  bOrder.sort();
+  grid("Bucket Aging",
+    ["Repair Bucket"].concat(BANDS.map(function (bd) { return bd[2]; })).concat(["Age —", "Total"]),
+    bOrder.map(function (b) {
+      var r = bMap[b];
+      return [b].concat(r.bands).concat([r.noAge, r.total]);
+    }));
+
+  // 3) Walk-in Analysis — counts with % of total walk-ins, as on the page.
+  var wl2 = pd.walkin && pd.walkin.totals ? pd.walkin.totals : {};
+  grid("Walk-in Analysis", ["Metric", "Count", "% of total walk-ins"],
+    [
+      ["Total walk-ins", wl2.grandTotal || 0, ""],
+      ["Submitted for repair", wl2.submitted || 0, wl2.submittedPct || 0],
+      ["Attended by engineer", wl2.attended || 0, wl2.attendedPct || 0],
+      ["Care+", wl2.carePlus || 0, wl2.carePlusPct || 0],
+      ["Converted", wl2.converted || 0, wl2.convertedPct || 0],
+      ["Delays", wl2.delayed || 0, wl2.delayedPct || 0],
+      ["Follow-ups", wl2.followUps || 0, wl2.followUpsPct || 0],
+      ["Google", wl2.google || 0, wl2.googlePct || 0],
+      ["Poor feedback", wl2.poor || 0, wl2.poorPct || 0],
+      ["Others", wl2.others || 0, wl2.othersPct || 0]
+    ]);
+
+  // 4) Weekly % — the index "Weekly Achievement" table as shown.
+  var a = computeWeeklyAnalysis_(data);
+  var doneW = a.done || [], upW = a.upcoming || [];
+  var nUp = upW.length * (a.fields.length + a.sectionTargets.length);
+  var holeW = Math.max(0, a.monthTarget - a.monthTotal);
+  var shareW = nUp ? r1_((holeW / nUp) / Math.max(1, a.monthTarget) * 100) : 0;
+  var weekRows = [];
+  weekRows.push(["TOTAL (month)", "summary",
+    a.totalPct + "%", a.fieldPct["E"] + "%", a.fieldPct["F"] + "%", a.fieldPct["G"] + "%"]);
+  function weekLine(w) {
+    var f = a.a[w.idx] || {}, sec = a.sectionA[w.idx] || [];
+    var px = w.kind !== "upcoming" ? f.totalPct : shareW;
+    var pe = w.kind !== "upcoming" ? f.fieldPct["E"] : shareW;
+    var pf = w.kind !== "upcoming" ? f.fieldPct["F"] : shareW;
+    var pg = w.kind !== "upcoming" ? f.fieldPct["G"] : shareW;
+    var overall = (px != null && !isFinite(px)) ? "—" : (px != null ? px + "%" : "—");
+    return [w.label, w.kind === "upcoming" ? "upcoming (balance share)" : w.kind,
+      overall,
+      pe == null ? "—" : pe + "%",
+      pf == null ? "—" : pf + "%",
+      pg == null ? "—" : pg + "%"];
+  }
+  doneW.forEach(function (w) { weekRows.push(weekLine(w)); });
+  upW.forEach(function (w) { weekRows.push(weekLine(w)); });
+  grid("Weekly %", ["Week", "Status", "Overall %", (a.fields[0] ? a.fields[0].label : "Service") + " %",
+    (a.fields[1] ? a.fields[1].label : "Accessories") + " %", (a.fields[2] ? a.fields[2].label : "Repair") + " %"],
+    weekRows);
+
+  // 5) KPI Parameters + 6) Store Target — the index cards as shown.
+  var kpiRows = [];
+  [["AR", data.kpi.ar], ["RR", data.kpi.rr], ["SR", data.kpi.sr]].forEach(function (kv) {
+    (kv[1] || []).forEach(function (it) {
+      kpiRows.push([kv[0] + " — " + it.name, it.code || "", it.achieved, it.target, it.pct + "%"]);
+    });
+  });
+  grid("KPI Parameters", ["Parameter", "Scheme Code", "Achieved", "Target", "%"], kpiRows);
+
+  var st = data.store;
+  grid("Store Target", ["Revenue Type", "Target", "Achieved", "%", "Balance"],
+    [
+      ["Total", st.totalTarget, st.totalAchieved, fmt1_(st.totalPct) + "%", st.totalBalance],
+      ["Service", st.service.target, st.service.achieved, st.service.pct + "%", st.service.balance],
+      ["Accessories", st.accessories.target, st.accessories.achieved, st.accessories.pct + "%", st.accessories.balance],
+      ["Repair", st.repair.target, st.repair.achieved, st.repair.pct + "%", st.repair.balance],
+      ["Gross Profit", st.gp.target, st.gp.achieved, st.gp.pct + "%", st.gp.balance]
+    ]);
+
+  return JSON.stringify({ name: book.getName(), url: book.getUrl() });
 }
 
 /**
@@ -4114,6 +4249,28 @@ function buildDashboardPage_(data) {
     "    })" +
     "    .refreshDashboardSections();" +
     "}" +
+    "" +
+    "// Task 50: export-as-is to a new Google Spreadsheet; the note line links to it." +
+    "function dashExport(btn){" +
+    "  if(btn.disabled) return;" +
+    "  var t=btn.querySelector('.txt'); var old=t.textContent;" +
+    "  var n=document.getElementById('note');" +
+    "  if(!(window.google && google.script && google.script.run)){" +
+    "    n.textContent='Export is available in the live add-on only.'; return; }" +
+    "  btn.classList.add('loading'); btn.disabled=true; t.textContent='Exporting…';" +
+    "  n.textContent='Building spreadsheet…';" +
+    "  var done=function(){ btn.classList.remove('loading'); btn.disabled=false; t.textContent=old; };" +
+    "  google.script.run" +
+    "    .withSuccessHandler(function(res){" +
+    "      try{ var d=JSON.parse(res);" +
+    "        n.innerHTML='Exported as-is · <a target=\"_top\" href=\"'+d.url+'\" style=\"color:#63e6b7;font-weight:800\">open '+d.name+'</a>';" +
+    "      }catch(e){ n.textContent='Export finished.'; }" +
+    "      done(); })" +
+    "    .withFailureHandler(function(err){" +
+    "      n.textContent='Export failed: '+(err && err.message ? err.message : err);" +
+    "      done(); })" +
+    "    .exportDashboardToSpreadsheet();" +
+    "}" +
     // ---- chat bot: toggle / send / answer ----
     "function chatToggle(){" +
     "  var p=document.getElementById('chatPanel'); if(!p) return;" +
@@ -4200,6 +4357,9 @@ function buildDashboardPage_(data) {
     "</div>" +
     '<button class="refresh-btn" onclick="dashRefresh(this)">' +
     '<span class="spin"></span><span class="txt">↻ Refresh data</span></button>' +
+    // Task 50: export the dashboard data as-is into a new spreadsheet.
+    '<button class="refresh-btn" onclick="dashExport(this)" style="margin-left:8px">' +
+    '<span class="spin"></span><span class="txt">⬇ Export to Sheets</span></button>' +
     // ---- tabs: Index / GP / KPI / Walk-in / Operation / Open Jobs / Date ----
     '<div class="tabs-row"><div class="tabs tabs-wide" role="tablist">' + tabs + "</div></div>" +
     "</div></header>" +
@@ -4663,11 +4823,14 @@ function renderTechHtml_(pd) {
       emptyPerf_("service", "Add a service sheet to see the bucket, aging and communication summary.");
   }
   var t = jm.totals || {};
-  var BANDS = [[0, 7, "0–7 d"], [8, 15, "8–15 d"], [16, 30, "16–30 d"], [31, 1e12, "31+ d"]];
+  // Task 50 (owner): aging split-up 0-2 · 3-5 · 6-10 · 11-15 · 16-30 ·
+  // 31-45 · 46-60 · 61-100 · 100+ days.
+  var BANDS = [[0, 2, "0–2 d"], [3, 5, "3–5 d"], [6, 10, "6–10 d"], [11, 15, "11–15 d"],
+    [16, 30, "16–30 d"], [31, 45, "31–45 d"], [46, 60, "46–60 d"], [61, 100, "61–100 d"], [101, 1e12, "100+ d"]];
   var order = [], map = {};
   jm.jobs.forEach(function (j) {
     var b = (j.crmRepairStatus || "").trim() || "—";
-    if (!map[b]) { map[b] = { bands: [0, 0, 0, 0], noAge: 0, total: 0 }; order.push(b); }
+    if (!map[b]) { map[b] = { bands: BANDS.map(function () { return 0; }), noAge: 0, total: 0 }; order.push(b); }
     var rec = map[b];
     rec.total++;
     var age = (typeof j.jobAge === "number" && isFinite(j.jobAge) && j.jobAge >= 0) ? j.jobAge : null;
@@ -4681,18 +4844,17 @@ function renderTechHtml_(pd) {
   var rows = order.map(function (b) {
     var r = map[b];
     return "<tr><td><b>" + esc_(b) + "</b></td>" +
-      cell(r.bands[0]) + cell(r.bands[1]) + cell(r.bands[2]) + cell(r.bands[3]) + cell(r.noAge) +
+      BANDS.map(function (_, i2) { return cell(r.bands[i2]); }).join("") + cell(r.noAge) +
       '<td class="num"><b>' + r.total + "</b></td></tr>";
   }).join("");
-  var g = [0, 0, 0, 0], gNoAge = 0, gTotal = 0;
+  var g = BANDS.map(function () { return 0; }), gNoAge = 0, gTotal = 0;
   order.forEach(function (b) {
     var r = map[b];
-    g[0] += r.bands[0]; g[1] += r.bands[1]; g[2] += r.bands[2]; g[3] += r.bands[3];
+    BANDS.forEach(function (_, i2) { g[i2] += r.bands[i2]; });
     gNoAge += r.noAge; gTotal += r.total;
   });
   var tot = '<tr class="totrow"><td><b>All open jobs</b></td>' +
-    '<td class="num"><b>' + g[0] + "</b></td><td class=\"num\"><b>" + g[1] + "</b></td>" +
-    '<td class="num"><b>' + g[2] + "</b></td><td class=\"num\"><b>" + g[3] + "</b></td>" +
+    g.map(function (n) { return '<td class="num"><b>' + n + "</b></td>"; }).join("") +
     '<td class="num"><b>' + (gNoAge || 0) + "</b></td>" +
     '<td class="num"><b>' + gTotal + "</b></td></tr>";
 
@@ -4712,7 +4874,7 @@ function renderTechHtml_(pd) {
     'listed in a separate column); then communication updated vs not updated for all open jobs.</div>' +
     commCards +
     '<div class="scroll-x"><table class="ptable"><thead><tr><th>Repair Bucket</th>' +
-    '<th class="num">0–7 d</th><th class="num">8–15 d</th><th class="num">16–30 d</th><th class="num">31+ d</th>' +
+    BANDS.map(function (bd) { return '<th class="num">' + bd[2] + "</th>"; }).join("") +
     '<th class="num">Age —</th><th class="num">Total</th></tr></thead><tbody>' +
     rows + tot + "</tbody></table></div></div></section>" +
     renderJobsHtml_(pd);
@@ -5564,7 +5726,36 @@ function getDashboardCss_() {
     ".chat-input::placeholder { color:#8fa3d4; } .chat-input:focus { border-color:#4fb3f5; }" +
     ".chat-send { border:none; cursor:pointer; border-radius:999px; padding:8px 14px; color:#fff;" +
     " background:linear-gradient(135deg,#4fb3f5,#0b3672); font-size:.85rem; font-weight:800; }" +
-    "@media (max-width:640px){ .brand{font-size:1.1rem;} .card .value{font-size:1rem;} }"
+    "@media (max-width:640px){ .brand{font-size:1.1rem;} .card .value{font-size:1rem;} }" +
+
+    // ============ TASK 50 — one house look everywhere =====================
+    // Same background colour + the same table texture on every page and every
+    // module; colour now lives ONLY in the text. These end-of-file overrides
+    // neutralise the older per-module surface colours (white/light panels,
+    // per-page table tints) without touching their definitions.
+    // uniform surfaces — one deep-glass background for every panel
+    "/* ==== TASK 50 — one house look everywhere: same background + same table " +
+    "texture on every module; colour lives in the text only ==== */" +
+    ".wrap .section, .wrap .sec, .wrap .subpanel, .wrap .hl-half, .wrap .legend-card," +
+    " .wrap .card, .wrap .tile, .wrap .csat-chip, .wrap .fresh-chip, .wrap .index-hero {" +
+    " background:rgba(28,43,82,.60) !important; border:1px solid rgba(170,190,255,.28) !important; }" +
+    // uniform table texture — EVERY table everywhere, body + cells
+    ".wrap table, .wrap table th, .wrap table td," +
+    " .wrap .jobtable td, .wrap tbody tr, .wrap .deadsum td {" +
+    " background:rgba(28,43,82,.60) !important; color:#eef2ff; }" +
+    // one deeper same-hue shade for header-ish rows so head vs body still reads
+    ".wrap thead th, .wrap thead tr th, .wrap .totrow td, .wrap .bucket-cols th," +
+    " .wrap .bucket-sub-row th, .wrap .grphead td {" +
+    " background:rgba(18,28,68,.80) !important; color:#bcd0ff !important; }" +
+    // meaning stays in the TEXT colour — same semantic palette everywhere
+    ".wrap .pos, .wrap td.csat-pos, .wrap .csat-pos { color:#63e6b7 !important; }" +
+    ".wrap .neg, .wrap td.csat-neg, .wrap .csat-neg { color:#ff9da7 !important; }" +
+    ".wrap td.csat-mid, .wrap .csat-mid { color:#ffd477 !important; }" +
+    ".wrap .jobtable td.comm-neg { color:#ff9da7 !important; }" +
+    ".wrap .jobtable td.comm-pos { color:#63e6b7 !important; }" +
+    ".wrap .jobtable td.comm-warn { color:#ffd477 !important; }" +
+    ".wrap td.dead, .wrap .deadsum td { color:#ff9da7 !important; }" +
+    ".wrap .grphead td, .wrap .grphead .grphead-sub { color:#ffe08a !important; }"
   );
 }
 

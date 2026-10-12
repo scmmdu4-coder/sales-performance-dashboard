@@ -67,14 +67,17 @@ eval(fs.readFileSync(__dirname+"/../../SalesDashboard.gs","utf8"));
 getSpreadsheet_=function(){return SS_OBJ;};
 
 // ---- target layout ----
-//  Row1: C1:J1 = salesperson roster (empty cells skipped) · K1 = C-SAT period
-//        name · L1:U1 = C-SAT table header (name col + buckets + TOTAL/C-SAT/CFI)
+//  Row1: C1:J1 = salesperson roster (empty cells skipped)
+//  Task 50: C-SAT block lives at E47:O51 — D47 period name, E47:O47 header
+//        (name col + buckets + TOTAL/C-SAT/CFI), rows 48-51 data
 //  Rows: A5:D9  targets · A10:C10 google review · B13:L16 KPI grid
 //        (13=type, 14=name, 15=target count, 16=approx unit value)
-var T=[]; for(var i=0;i<20;i++) T.push(new Array(22).fill(""));
-T[0]=["Revenue Type","Store Target","SUBHA","DINESH","","","","","","",
-  "FY26P12","MDU4","VERY SATISFIED","SOMEWHAT SATISFIED","VERY DISSATISIFIED",
-  "NEITHER SATISFIED NOR DISSATISFIED","-","SOMEWHAT DISSATISFIED","TOTAL","C-SAT","CFI",""];
+var T=[]; for(var i=0;i<55;i++) T.push(new Array(22).fill(""));
+T[0]=["Revenue Type","Store Target","SUBHA","DINESH"];
+// C-SAT header row 47: D47 = period name, E47:O47 = name col + buckets.
+T[46][3]="FY26P12"; T[46][4]="MDU4"; T[46][5]="VERY SATISFIED"; T[46][6]="SOMEWHAT SATISFIED";
+T[46][7]="VERY DISSATISIFIED"; T[46][8]="NEITHER SATISFIED NOR DISSATISFIED"; T[46][9]="-";
+T[46][10]="SOMEWHAT DISSATISFIED"; T[46][11]="TOTAL"; T[46][12]="C-SAT"; T[46][13]="CFI";
 T[1]=["Service",300000,180000,120000];
 T[2]=["Accessories",150000,90000,60000];
 T[3]=["Repair",200000,120000,80000]; T[4]=["Total",650000,390000,260000];
@@ -88,11 +91,11 @@ T[15]=["Achivement",400,600,900,300,"incentive per amc",150,100,0,0,0,0,"slab le
 T[16]=["70-80%","2000","70-80%","1000","",  "1-10","₹150","",5,"₹80","","","",300];
 T[17]=["80-90%","4000","80-90%","2000","","11-25","₹250","",12,"₹120","","","",""];
 T[18]=["90-100%","6000","90-100%","3000"];
-// C-SAT data rows (L2:U5)
-T[1][11]="Subha K";      T[1][12]=1; T[1][18]=1; T[1][19]="100.00%"; T[1][20]="0.00%";
-T[2][11]="Dinesh Kumar"; T[2][12]=9; T[2][14]=1; T[2][18]=10; T[2][19]="90.00%"; T[2][20]="10.00%";
-T[3][11]="Murugan Mp";   T[3][12]=2; T[3][14]=1;
-T[4][11]="TOTAL";        T[4][12]=12; T[4][14]=2; T[4][18]=14; T[4][19]="85.71%"; T[4][20]="14.29%";
+// C-SAT data rows (sheet rows 48-51; cols E..O)
+T[47][4]="Subha K";      T[47][5]=1; T[47][11]=1; T[47][12]="100.00%"; T[47][13]="0.00%";
+T[48][4]="Dinesh Kumar"; T[48][5]=9; T[48][7]=1; T[48][11]=10; T[48][12]="90.00%"; T[48][13]="10.00%";
+T[49][4]="Murugan Mp";   T[49][5]=2; T[49][7]=1;
+T[50][4]="TOTAL";        T[50][5]=12; T[50][7]=2; T[50][11]=14; T[50][12]="85.71%"; T[50][13]="14.29%";
 
 // ---- crm ----
 var crm=[["InvoiceCode","InvoiceDate","SalesPersonName","RevenueType","ItemDescription",
@@ -348,7 +351,7 @@ check("vmatrix iPhone=1 Other=4",vmObj.prodTotals.iPhone===1&&vmObj.prodTotals.O
   JSON.stringify(vmObj.prodTotals));
 check("vmatrix coverages incl OOW-NC",vmObj.coverages.indexOf("Out Of Warranty (No Coverage)")>-1);
 check("vmatrix definition gone",page.indexOf("Definition: one table combining every repair")===-1);
-check("snr excluded note",page.indexOf('"Service Non-Repair" cases are excluded')>-1);
+check("blank + SNR repair-type exclusion note (Task 50)",page.indexOf('Blank and "Service Non-Repair" repair types are excluded')>-1);
 check("walkin rows: single flat navy (Task 31)",page.indexOf(".walkintable tbody td { background-color: rgba(34,43,90,.92) !important; }")>-1
   &&page.indexOf("--tint")===-1&&page.indexOf("background:hsl(")===-1);
 check("token table",page.indexOf("% of creation")>-1&&page.indexOf("Total tokens generated")>-1);
@@ -373,8 +376,8 @@ check("weekly status labels",page.indexOf("In progress")>-1&&page.indexOf("Upcom
 check("weekly target formula (66667 svc wk4)",page.indexOf("₹66,667")>-1);
 check("weekly svc achieved wk4 5000",page.indexOf("<b>Week 4</b>")>-1&&page.indexOf("₹5,000")>-1);
 // ---- process page: target block (F1 title + G1:P7) & walk-in summary table ----
-check("CSAT title from K1",page.indexOf("FY26P12")>-1 && page.indexOf("Customer Satisfaction")>-1);
-check("CSAT buckets from L1:U5 header",page.indexOf("VERY SATISFIED")>-1&&page.indexOf("NEITHER SATISFIED NOR DISSATISFIED")>-1);
+check("CSAT title from target!D47 (Task 50)",page.indexOf("FY26P12")>-1 && page.indexOf("Customer Satisfaction")>-1);
+check("CSAT buckets from E47:O51 header (Task 50)",page.indexOf("VERY SATISFIED")>-1&&page.indexOf("NEITHER SATISFIED NOR DISSATISFIED")>-1);
 check("CSAT junk dash col dropped",page.indexOf("<th>-</th>")===-1&&page.indexOf("<th></th>")===-1);
 check("CSAT people rows",page.indexOf("Subha K")>-1&&page.indexOf("Dinesh Kumar")>-1&&page.indexOf("Murugan Mp")>-1);
 check("CSAT total row + chips",page.indexOf("Feedback responses")>-1&&page.indexOf('cc-value">14</span>')>-1&&page.indexOf("Satisfied (VS + SS)")>-1);
@@ -992,9 +995,10 @@ console.log("== TASK 47 batch ==");
       &&seg.indexOf("D4. 🔁 Requote")>-1&&seg.indexOf("Bucket Summary")>-1
       &&seg.indexOf("E1. 🔧 Job Management — Open Jobs</h2>")>-1;
   })());
-  check("TECH bucket summary with aging bands (Task 47)",
+  check("TECH bucket summary with 9 aging bands (Task 50)",
     page.indexOf('id="sec-tech-jobs"')>-1&&page.indexOf('Bucket Summary')>-1
-    &&page.indexOf('<th class="num">0–7 d</th><th class="num">8–15 d</th><th class="num">16–30 d</th><th class="num">31+ d</th>')>-1
+    &&page.indexOf('<th class="num">0–2 d</th><th class="num">3–5 d</th><th class="num">6–10 d</th><th class="num">11–15 d</th>')>-1
+    &&page.indexOf('<th class="num">31–45 d</th><th class="num">46–60 d</th><th class="num">61–100 d</th><th class="num">100+ d</th>')>-1
     &&page.indexOf('<b>All open jobs</b></td>')>-1);
   check("TECH communication cards (Task 47)",
     page.indexOf('<div class="label">Communication updated</div><div class="value pos">'+jm.totals.communicated+'</div>')>-1
@@ -1053,5 +1057,30 @@ console.log("== TASK 49 batch ==");
   check("index weekly summary lists every week with status pill (Task 49)",
     (segW.match(/<span class="pill/g)||[]).length===wa.weeks.length);
 })();
+// ---- TASK 50 — CSAT range move, 9 aging bands, export, blank-type filter,
+// ----           one-house-look CSS -----------------------------------------
+check("CSAT range hint updated to E47:O51 (Task 50)",page.indexOf("target!E47:O51")>-1
+  &&page.indexOf("target!D47")>-1);
+check("bucket summary 9-band headers (Task 50)",page.indexOf(
+  '<th class="num">0–2 d</th><th class="num">3–5 d</th><th class="num">6–10 d</th>'
+  +'<th class="num">11–15 d</th><th class="num">16–30 d</th><th class="num">31–45 d</th>'
+  +'<th class="num">46–60 d</th><th class="num">61–100 d</th><th class="num">100+ d</th>')>-1);
+check("export-to-Sheets button + endpoint (Task 50)",
+  page.indexOf('onclick="dashExport(this)"')>-1&&page.indexOf("Export to Sheets")>-1
+  &&gsSrc.indexOf("function exportDashboardToSpreadsheet()")>-1
+  &&gsSrc.indexOf(".exportDashboardToSpreadsheet();")>-1);
+(function(){
+  var now=Date.now();
+  var ra=computeRepairAnalytics_([
+    {caseId:"BX1",caseTs:now-1000,caseMonth:"10-2026",readyTs:-1,repairType:"",product:"iPhone 14",coverage:""},
+    {caseId:"BY2",caseTs:now-2000,caseMonth:"10-2026",readyTs:-1,repairType:"Walk-In Repair",product:"iPhone 14",coverage:""}
+  ]);
+  check("blank RepairDocType excluded from Repair Type analytics (Task 50)",
+    ra.typeComp.length===1&&ra.typeComp[0].name==="Walk-In Repair"&&ra.exclRows===1);
+})();
+check("one-house-look uniform surfaces + table texture (Task 50)",
+  page.indexOf("TASK 50 — one house look everywhere")>-1
+  &&page.indexOf(".wrap table th, .wrap table td,")>-1
+  &&page.indexOf("background:rgba(28,43,82,.60) !important")>-1);
 console.log(fails?("\n"+fails+" FAILURES"):"\nALL CHECKS PASS");
 process.exit(fails?1:0);

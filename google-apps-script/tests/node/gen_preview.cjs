@@ -67,19 +67,20 @@ var wl=[["MobileNo","TokenDate","VisitPurposeDesc","CaseId","InvoiceCode","Remar
 for(var i2=0;i2<180;i2++){var dd=(i2%25)+1;if(dd%7===0)dd=1;var m="91999"+String(100000+i2).slice(-6);var pur=["Repair Submission","Collection","General/Sales Enquiry"][i2%3];var hasCase=i2%4!==0;wl.push([m,"2026-09-"+("0"+dd).slice(-2)+" 10:00:00",pur,hasCase?"C100"+(i2%26):"",i2%2?"IV"+(i2%25)+"0":"",i2%6===0?"Follow up":"",i2%3?"Subha":"Dinesh",["Walk-by","Google","Reference","Repeat Customer","Instagram"][i2%5]]);}
 var cm=[["CaseId","CreatedDate","Remark"]];for(var i3=0;i3<26;i3++){if(i3%3!==0)cm.push(["C100"+i3,daysAgoStr(i3%6,"11"),"update"]);}
 var av=[["MobileNo","AvailableBalance"]];for(var i4=0;i4<26;i4++)av.push(["9198765432"+("000000"+i4).slice(-3),(i4*137)%1500]);
-var T=[];for(var i5=0;i5<20;i5++)T.push(new Array(18).fill(""));
-T[0]=["Revenue Type","Store Target","SUBHA","DINESH","","","","","","",
-"FY26P12","MDU4","VERY SATISFIED","SOMEWHAT SATISFIED","VERY DISSATISIFIED","NEITHER SATISFIED NOR DISSATISFIED","-","SOMEWHAT DISSATISFIED","TOTAL","C-SAT","CFI",""];
+var T=[];for(var i5=0;i5<55;i5++)T.push(new Array(18).fill(""));
+T[0]=["Revenue Type","Store Target","SUBHA","DINESH"];
+// Task 50: C-SAT block moved to target!E47:O51 — D47 period + E47:O47 header.
+T[46][3]="FY26P12";T[46][4]="MDU4";T[46][5]="VERY SATISFIED";T[46][6]="SOMEWHAT SATISFIED";T[46][7]="VERY DISSATISIFIED";T[46][8]="NEITHER SATISFIED NOR DISSATISFIED";T[46][9]="-";T[46][10]="SOMEWHAT DISSATISFIED";T[46][11]="TOTAL";T[46][12]="C-SAT";T[46][13]="CFI";
 T[1]=["Service",900000,520000,380000];T[2]=["Accessories",430000,250000,180000];T[3]=["Repair",500000,300000,200000];T[4]=["Total",1830000,1070000,760000];T[5]=["Gross Profit",450000,270000,180000];
 T[8]=["Prev Month","This Month","Difference"];T[9]=[1475,1494,19];
 T[12]=["","AR","","","","RR","","","","SR","",""];T[13]=["","Care+","Protect+","AMC","Bundle","Display","Battery","Glass","Others","SRD","SHC","ARD"];
 T[14]=["",25,15,40,30,50,45,20,35,60,25,18];
 T[15]=["Achivement",400,600,900,300,"",250,150,100,0,0,0,0];T[16]=["70-80%","2000","70-80%","1000"];
 T[17]=["80-90%","4000","80-90%","2000"];T[18]=["90-100%","6000","90-100%","3000"];
-T[1][11]="Subha K";T[1][12]=9;T[1][13]=2;T[1][14]=0;T[1][15]=1;T[1][18]=12;T[1][19]="75.00%";T[1][20]="0.00%";
-T[2][11]="Dinesh Kumar";T[2][12]=14;T[2][13]=2;T[2][14]=1;T[2][15]=0;T[2][17]=1;T[2][18]=18;T[2][19]="88.89%";T[2][20]="5.56%";
-T[3][11]="Murugan Mp";T[3][12]=4;T[3][13]=1;T[3][14]=0;T[3][15]=1;T[3][18]=6;T[3][19]="83.33%";T[3][20]="0.00%";
-T[4][11]="TOTAL";T[4][12]=27;T[4][13]=5;T[4][14]=1;T[4][15]=2;T[4][17]=1;T[4][18]=36;T[4][19]="88.89%";T[4][20]="5.56%";
+T[47][4]="Subha K";T[47][5]=9;T[47][6]=2;T[47][7]=0;T[47][8]=1;T[47][11]=12;T[47][12]="75.00%";T[47][13]="0.00%";
+T[48][4]="Dinesh Kumar";T[48][5]=14;T[48][6]=2;T[48][7]=1;T[48][8]=0;T[48][10]=1;T[48][11]=18;T[48][12]="88.89%";T[48][13]="5.56%";
+T[49][4]="Murugan Mp";T[49][5]=4;T[49][6]=1;T[49][7]=0;T[49][8]=1;T[49][11]=6;T[49][12]="83.33%";T[49][13]="0.00%";
+T[50][4]="TOTAL";T[50][5]=27;T[50][6]=5;T[50][7]=1;T[50][8]=2;T[50][10]=1;T[50][11]=36;T[50][12]="88.89%";T[50][13]="5.56%";
 T[15][5]="incentive per amc";T[16][5]="1-10";T[16][6]="₹150";T[16][8]=5;T[16][9]="₹80";T[17][5]="11-25";T[17][6]="₹250";T[17][8]=12;T[17][9]="₹120";T[15][12]="slab level";T[15][13]=5;T[16][13]=300;
 // decline / quote mocks (Task 35)
 var dl=[["CaseId","GSXRepairStatusDescription","Product"],
