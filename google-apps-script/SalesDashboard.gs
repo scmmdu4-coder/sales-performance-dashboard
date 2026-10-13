@@ -2390,6 +2390,10 @@ function repairMeta_(ra, generatedAt) {
  *   target!D47    = the period name shown as the dashboard title
  *   target!E47:O51 = the C-SAT grid (11 cols × 5 rows; row 47 = headers,
  *                   rows 48-51 = one row per salesperson plus a TOTAL row)
+ * Task 58 (owner): the sheet may carry only the NARROW C-SAT report —
+ *   target!E47:F51 — name in E, C-SAT% in F. The reader auto-detects this
+ *   layout: no bucket columns, no TOTAL column, and the store C-SAT is
+ *   derived as the average of the per-CRE values when no TOTAL row exists.
  * The sheet's raw grid is NEVER dumped verbatim: junk/empty columns are
  * dropped, the TOTAL row is confirmed against the person rows, the summary
  * numbers (responses, C-SAT, CFI) become tiles, and the table gets
@@ -2418,7 +2422,7 @@ function computeTargetBlock_(ss) {
     return -1;
   }
   var totalCol = findCol(/^total$/i);
-  var csatCol = findCol(/c[-\s]?sat/i);
+  var csatCol = findCol(/c[\-\.\s]*sat/i);
   var cfiCol = findCol(/^cfi$/i);
 
   // Satisfaction categories = every column that is not name / TOTAL / C-SAT / CFI / junk.
@@ -2468,6 +2472,30 @@ function computeTargetBlock_(ss) {
     });
     totalRow.total = people.reduce(function (a, p) { return a + p.total; }, 0);
   }
+  // Task 58: the narrow C-SAT report (target!E47:F51) has no TOTAL row and
+  // no sheet-level C-SAT — derive the store C-SAT / CFI as the average of
+  // the per-person values (blank or 0 rows keep out of the average) so the
+  // summary chips still show a store number.
+  if (csatCol >= 0 && !totalRow.csat) {
+    var csSum = 0, csN = 0;
+    people.forEach(function (p) {
+      var raw = str_(p.csat);
+      if (!raw) return;
+      var v = parseMoney_(raw);
+      if (isFinite(v) && v > 0) { csSum += v; csN++; }
+    });
+    if (csN) totalRow.csat = (Math.round((csSum / csN) * 100) / 100) + "%";
+  }
+  if (cfiCol >= 0 && !totalRow.cfi) {
+    var cfSum = 0, cfN = 0;
+    people.forEach(function (p) {
+      var raw2 = str_(p.cfi);
+      if (!raw2) return;
+      var w = parseMoney_(raw2);
+      if (isFinite(w) && w > 0) { cfSum += w; cfN++; }
+    });
+    if (cfN) totalRow.cfi = (Math.round((cfSum / cfN) * 100) / 100) + "%";
+  }
   var labels = catCols.map(function (ci) { return header[ci]; });
   var kinds = catCols.map(function (ci) { return catKind(header[ci]); });
 
@@ -2491,6 +2519,7 @@ function computeTargetBlock_(ss) {
     people: people, totalRow: totalRow,
     satTotal: satisfiedCount(totalRow), disTotal: dissatisfiedCount(totalRow),
     csat: totalRow.csat, cfi: totalRow.cfi,
+    hasTotalCol: totalCol >= 0, hasCsatCol: csatCol >= 0, hasCfiCol: cfiCol >= 0,
     satisfiedCount: satisfiedCount, dissatisfiedCount: dissatisfiedCount,
   };
 }
@@ -2507,18 +2536,31 @@ function renderTargetBlock_(tb, ra) {
   }
 
   var chips = [];
-  chips.push(chip("", "Feedback responses", tb.totalRow.total,
-    tb.people.length + " salesperson" + (tb.people.length === 1 ? "" : "s") + " rated"));
-  chips.push(chip("pos", "Satisfied (VS + SS)", pctOf(tb.satTotal, tb.totalRow.total) + "%",
-    tb.satTotal + " of " + tb.totalRow.total));
-  if (tb.csat) chips.push(chip("info", "C-SAT", tb.csat, "as recorded in sheet"));
-  if (tb.cfi) chips.push(chip(tb.cfi === "0.00%" || tb.cfi === "0" ? "pos" : "warn", "CFI", tb.cfi, "as recorded in sheet"));
-  chips.push(chip(tb.disTotal > 0 ? "neg" : "pos", "Dissatisfied", pctOf(tb.disTotal, tb.totalRow.total) + "%",
-    tb.disTotal + " of " + tb.totalRow.total));
+  if (tb.labels.length) {
+    chips.push(chip("", "Feedback responses", tb.totalRow.total,
+      tb.people.length + " salesperson" + (tb.people.length === 1 ? "" : "s") + " rated"));
+    chips.push(chip("pos", "Satisfied (VS + SS)", pctOf(tb.satTotal, tb.totalRow.total) + "%",
+      tb.satTotal + " of " + tb.totalRow.total));
+    if (tb.csat) chips.push(chip("info", "C-SAT", tb.csat, "as recorded in sheet"));
+    if (tb.cfi) chips.push(chip(tb.cfi === "0.00%" || tb.cfi === "0" ? "pos" : "warn", "CFI", tb.cfi, "as recorded in sheet"));
+    chips.push(chip(tb.disTotal > 0 ? "neg" : "pos", "Dissatisfied", pctOf(tb.disTotal, tb.totalRow.total) + "%",
+      tb.disTotal + " of " + tb.totalRow.total));
+  } else {
+    // Task 58: narrow target!E47:F51 report — no satisfaction buckets; show
+    // the store C-SAT (sheet total, else average of the per-CRE values) and
+    // how many CREs were rated.
+    if (tb.csat) chips.push(chip("info", "Store C-SAT", tb.csat, "from target!F48:F51"));
+    chips.push(chip("", "CREs rated", tb.people.length, "rows from target!E48:F51"));
+    if (tb.cfi) chips.push(chip("info", "CFI", tb.cfi, "as recorded in sheet"));
+  }
 
   var thead = "<thead><tr><th>" + esc_(tb.nameHeader) + "</th>";
   tb.labels.forEach(function (h) { thead += "<th>" + esc_(h) + "</th>"; });
-  thead += "<th>Total</th><th>% Satisfied</th>" + (tb.csat ? "<th>C-SAT</th>" : "") + (tb.cfi ? "<th>CFI</th>" : "") + "</tr></thead>";
+  if (tb.labels.length || tb.hasTotalCol) thead += "<th>Total</th>";
+  if (tb.labels.length) thead += "<th>% Satisfied</th>";
+  if (tb.hasCsatCol) thead += "<th>C-SAT</th>";
+  if (tb.hasCfiCol) thead += "<th>CFI</th>";
+  thead += "</tr></thead>";
 
   function dataRow(e, isTotal) {
     var tr = "<tr" + (isTotal ? ' class="totrow"' : "") + "><td><b>" + esc_(e.name) + "</b></td>";
@@ -2526,10 +2568,10 @@ function renderTargetBlock_(tb, ra) {
       var cls = tb.kinds[i] === "pos" ? "csat-pos" : tb.kinds[i] === "neg" ? "csat-neg" : "csat-mid";
       tr += '<td class="num ' + cls + '">' + (n || "—") + "</td>";
     });
-    tr += '<td class="num"><b>' + e.total + "</b></td>";
-    tr += '<td class="num">' + pctOf(tb.satisfiedCount(e), e.total) + "%</td>";
-    if (tb.csat) tr += '<td class="num">' + esc_(isTotal ? e.csat : e.csat || "—") + "</td>";
-    if (tb.cfi) tr += '<td class="num">' + esc_(isTotal ? e.cfi : e.cfi || "—") + "</td>";
+    if (tb.labels.length || tb.hasTotalCol) tr += '<td class="num"><b>' + e.total + "</b></td>";
+    if (tb.labels.length) tr += '<td class="num">' + pctOf(tb.satisfiedCount(e), e.total) + "%</td>";
+    if (tb.hasCsatCol) tr += '<td class="num">' + esc_(e.csat || "—") + "</td>";
+    if (tb.hasCfiCol) tr += '<td class="num">' + esc_(e.cfi || "—") + "</td>";
     return tr + "</tr>";
   }
   var body = "<tbody>" + tb.people.map(function (p) { return dataRow(p, false); }).join("") +
@@ -2547,7 +2589,8 @@ function renderTargetBlock_(tb, ra) {
   return '<section class="sec"><div class="sec-head">' +
     "<h2>🎯 D1. " + esc_(title) + "</h2>" +
     '<p class="sec-sub">Every feedback response lands in a satisfaction bucket. Period name from ' +
-    '<span class="src-hint">target!D47</span>, table from <span class="src-hint">target!E47:O51</span> — ' +
+    '<span class="src-hint">target!D47</span>, table from <span class="src-hint">target!E47:F51</span> ' +
+    '(auto-extends up to <span class="src-hint">:O51</span> when the full satisfaction grid is filled) — ' +
     "cleaned and re-presented (junk columns dropped, totals verified).</p></div>" +
     table + "</section>";
 }
@@ -4593,7 +4636,7 @@ function buildDashboardPage_(data, initialPage, opts) {
   var bizMeta = (opts.metaText !== undefined) ? opts.metaText : renderMetaText_(data);
 
   return (
-    "<!-- BUILD TASK57 · all panes preload once · tabs never navigate · refresh updates values in place -->" +
+    "<!-- BUILD TASK58 · CSAT restored from target!E47:F51 · tabs never navigate · refresh updates values in place -->" +
     "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
     "<title>" + esc_(pageTitle) + "</title><style>" + css + "</style></head><body>" +
     // Task 30: plain dark-ash backdrop for EVERY page — no image at all.

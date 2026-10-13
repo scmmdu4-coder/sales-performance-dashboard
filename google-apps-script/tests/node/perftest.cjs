@@ -70,6 +70,8 @@ getSpreadsheet_=function(){return SS_OBJ;};
 //  Row1: C1:J1 = salesperson roster (empty cells skipped)
 //  Task 50: C-SAT block lives at E47:O51 — D47 period name, E47:O47 header
 //        (name col + buckets + TOTAL/C-SAT/CFI), rows 48-51 data
+//  Task 58: the reader also handles the narrow target!E47:F51 report
+//        (row 47 = CRE / C-SAT headers, rows 48-51 = per-CRE C-SAT values)
 //  Rows: A5:D9  targets · A10:C10 google review · B13:L16 KPI grid
 //        (13=type, 14=name, 15=target count, 16=approx unit value)
 var T=[]; for(var i=0;i<55;i++) T.push(new Array(22).fill(""));
@@ -383,6 +385,33 @@ check("CSAT people rows",page.indexOf("Subha K")>-1&&page.indexOf("Dinesh Kumar"
 check("CSAT total row + chips",page.indexOf("Feedback responses")>-1&&page.indexOf('cc-value">14</span>')>-1&&page.indexOf("Satisfied (VS + SS)")>-1);
 check("CSAT dissatisfied pct",page.indexOf("csat-neg")>-1&&page.indexOf("14%")>-1);
 check("CSAT CFI chip",page.indexOf("CFI")>-1&&page.indexOf("85.71%")>-1);
+
+console.log("== TASK 58: narrow C-SAT report from target!E47:F51 ==");
+var MINI58=[]; for(var mi=0;mi<55;mi++) MINI58.push(new Array(10).fill(""));
+MINI58[46][3]="FY26P12"; MINI58[46][4]="CRE"; MINI58[46][5]="C-SAT";
+MINI58[47][4]="Subha K"; MINI58[47][5]="96.00%";
+MINI58[48][4]="Dinesh Kumar"; MINI58[48][5]="89.00%";
+MINI58[49][4]="Murugan Mp"; MINI58[49][5]="91.00%";
+var tb58=computeTargetBlock_({getSheetByName:function(){return mockSheet("target",MINI58);}});
+check("narrow E47:F51 sheet read as available", tb58.available===true);
+check("3 CRE rows read from target!E48:F50", tb58.people.length===3 && tb58.people[0].name==="Subha K");
+check("per-CRE C-SAT values captured", tb58.people[0].csat==="96.00%" && tb58.people[1].csat==="89.00%"
+  && tb58.people[2].csat==="91.00%", [tb58.people.map(function(p){return p.csat})]);
+check("store C-SAT derived as per-CRE average (92%)", tb58.totalRow.csat==="92%", tb58.totalRow.csat);
+check("no bucket / total columns in narrow mode", tb58.labels.length===0 && tb58.hasTotalCol===false
+  && tb58.hasCsatCol===true && tb58.hasCfiCol===false);
+var h58=renderTargetBlock_(tb58,null);
+check("narrow render shows C-SAT column + per-CRE values", h58.indexOf("<th>C-SAT</th>")>-1
+  && h58.indexOf("96.00%")>-1 && h58.indexOf("89.00%")>-1
+  && h58.indexOf("<th>Total</th>")===-1 && h58.indexOf("<th>% Satisfied</th>")===-1);
+check("narrow render shows Store C-SAT chip + CRE count, no bucket chips",
+  h58.indexOf("Store C-SAT")>-1 && h58.indexOf("CREs rated")>-1
+  && h58.indexOf("Feedback responses")===-1 && h58.indexOf("3</span>")>-1);
+check("narrow render keeps period title + people names", h58.indexOf("FY26P12")>-1
+  && h58.indexOf("Dinesh Kumar")>-1 && h58.indexOf("Customer Satisfaction")>-1);
+check("wide E47:O51 layout still renders buckets (regression)",
+  page.indexOf("VERY SATISFIED")>-1 && page.indexOf("<th>Total</th>")>-1
+  && page.indexOf("<th>% Satisfied</th>")>-1 && page.indexOf('cc-value">14</span>')>-1);
 check("repair comparison strip removed (Task 45)", page.indexOf("Total Repairs (excl. Service Non-Repair) — this month")===-1
   &&page.indexOf("3-month monthly average")===-1);
 check("walk-in summary is a table", page.indexOf('ptable walksum')>-1 && page.indexOf("<b>Total Walk-ins</b></td>")>-1);
@@ -1059,7 +1088,7 @@ console.log("== TASK 49 batch ==");
 })();
 // ---- TASK 50 — CSAT range move, 9 aging bands, export, blank-type filter,
 // ----           one-house-look CSS -----------------------------------------
-check("CSAT range hint updated to E47:O51 (Task 50)",page.indexOf("target!E47:O51")>-1
+check("CSAT range hint shows E47:F51 base + D47 period (Task 58)",page.indexOf("target!E47:F51")>-1
   &&page.indexOf("target!D47")>-1);
 check("bucket summary 9-band headers (Task 50)",page.indexOf(
   '<th class="num">0–2 d</th><th class="num">3–5 d</th><th class="num">6–10 d</th>'
@@ -1133,8 +1162,8 @@ check("15-minute refresh interval retained (Task 56)",
   clientJS.indexOf("setInterval(function(){autoRefresh(false);},15*60*1000);")>-1);
 check("off-screen sections skip layout work (Task 55)",
   page.indexOf("content-visibility:auto")>-1);
-check("build marker comment present for deployment verification (Task 57)",
-  page.indexOf("BUILD TASK57")>-1);
+check("build marker comment present for deployment verification (Task 58)",
+  page.indexOf("BUILD TASK58")>-1);
 check("full page carries all four panes after load (Task 56)",
   page.indexOf('data-pane="index"')>-1&&page.indexOf('data-pane="cre"')>-1
   &&page.indexOf('data-pane="tech"')>-1&&page.indexOf('data-pane="sm"')>-1
