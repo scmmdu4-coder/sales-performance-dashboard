@@ -1133,20 +1133,20 @@ check("event-bound tabs + guarded clock init (Task 51)",
 check("clock shows a server-stamped time immediately (Task 51)",
   /<span class="clock-text" id="liveClock">\d{2}-\d{2}-\d{4}/.test(page)
   &&page.indexOf('id="liveClock">—<')===-1);
-check("pane-level caches make repeat loads instant (Task 51b)",
-  gsSrc.indexOf("dash_pane_v5_")>-1&&gsSrc.indexOf("dash_meta_v5")>-1
+check("pane-level caches make repeat loads instant (Task 51b, v6 namespace)",
+  gsSrc.indexOf("dash_pane_v6_")>-1&&gsSrc.indexOf("dash_meta_v6")>-1
   &&gsSrc.indexOf("function cachePanes_")>-1&&gsSrc.indexOf("cachePanes_(data,")>-1);
 check("panes cached in 90KB chunks — big SM pane never misses (Task 53)",
   gsSrc.indexOf("function paneCachePut_")>-1&&gsSrc.indexOf("function paneCacheGet_")>-1
   &&gsSrc.indexOf("PANE_CACHE_CHUNK = 90000")>-1
-  &&gsSrc.indexOf('paneCacheGet_(cache, "dash_pane_v5_" + pg)')>-1);
+  &&gsSrc.indexOf('paneCacheGet_(cache, "dash_pane_v6_" + pg)')>-1);
 check("15-minute background update loop (Task 55)",
   clientJS.indexOf("15*60*1000")>-1
   &&clientJS.indexOf("function autoRefresh(")>-1
   &&clientJS.indexOf("function applySections(")>-1);
-check("chunked page cache serves whole-page loads after first compute (Task 56)",
-  gsSrc.indexOf("dash_pg_v6_")>-1
-  &&gsSrc.indexOf('paneCachePut_(cache, "dash_pg_v6_" + page, html)')>-1
+check("chunked page cache serves whole-page loads after first compute (Task 56, v7 namespace)",
+  gsSrc.indexOf("dash_pg_v7_")>-1
+  &&gsSrc.indexOf('paneCachePut_(cache, "dash_pg_v7_" + page, html)')>-1
   &&gsSrc.indexOf("function getDashboardPane")===-1);
 check("drive-backed persistent pane cache (Task 55)",
   gsSrc.indexOf("PANE_DRIVE_FILE")>-1&&gsSrc.indexOf("function paneDriveGetAll_")>-1
@@ -1162,8 +1162,27 @@ check("15-minute refresh interval retained (Task 56)",
   clientJS.indexOf("setInterval(function(){autoRefresh(false);},15*60*1000);")>-1);
 check("off-screen sections skip layout work (Task 55)",
   page.indexOf("content-visibility:auto")>-1);
-check("build marker comment present for deployment verification (Task 60)",
-  page.indexOf("BUILD TASK60")>-1);
+check("build marker comment present for deployment verification (Task 61)",
+  page.indexOf("BUILD TASK61")>-1);
+
+console.log("== TASK 61: export keys pinned on buttons + caches rebased ==");
+var dk61=[], onk61=[], m61;
+var re61=/data-export-key="([A-Za-z]+)"[^>]*onclick="dashExportSection\('([A-Za-z]+)',this\)"/g;
+while((m61=re61.exec(page))){ dk61.push(m61[1]); onk61.push(m61[2]); }
+check("every export button carries data-export-key identical to its onclick key",
+  dk61.length===onk61.length && dk61.length>=7 && dk61.every(function(k,i){return k===onk61[i];}),
+  [dk61.length, onk61.length]);
+check("data-attr keys cover the same 7 tables", Object.keys((function(){var o={};
+  dk61.forEach(function(k){o[k]=1});return o;})()).sort().join(",")==="decline,jobs,kpi,margin,ops,repairType,store");
+check("client recovers key from data-export-key when arg is mangled (Task 61)",
+  clientJS.indexOf("getAttribute('data-export-key')")>-1
+  &&clientJS.indexOf("typeof key!=='string'")>-1);
+check("cache namespaces fully rebased (Task 61)",
+  gsSrc.indexOf("dash_pg_v7_")>-1&&gsSrc.indexOf("dash_pane_v6_")>-1
+  &&gsSrc.indexOf("dash_meta_v6")>-1
+  &&gsSrc.indexOf("SalesDashboard_paneCache_v2.json")>-1
+  &&gsSrc.indexOf("dash_pg_v6_")===-1&&gsSrc.indexOf("dash_pane_v5_")===-1
+  &&gsSrc.indexOf("dash_meta_v5")===-1&&gsSrc.indexOf("paneCache_v1.json")===-1);
 
 console.log("== TASK 60: every export-button key round-trips to a table ==");
 var keys60={}, m60, re60=/dashExportSection\('([A-Za-z]+)',this\)/g;

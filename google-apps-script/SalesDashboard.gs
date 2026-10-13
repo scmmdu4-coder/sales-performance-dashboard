@@ -20,9 +20,9 @@
  *     can only flip panes; ↻ Refresh re-reads the sheets and swaps the new
  *     values in place (refreshDashboardSections), never a page reload.
  *   • A 15-minute in-page auto-refresh re-primes the same caches silently.
- *   • Caches: chunked whole-page cache (dash_pg_v6_*), per-pane script cache
- *     (dash_pane_v5_* + dash_meta_v5) and a Drive-backed 15-minute store
- *     (SalesDashboard_paneCache_v1.json) that survives cache evictions.
+ *   • Caches: chunked whole-page cache (dash_pg_v7_*), per-pane script cache
+ *     (dash_pane_v6_* + dash_meta_v6) and a Drive-backed 15-minute store
+ *     (SalesDashboard_paneCache_v2.json) that survives cache evictions.
  *     Any pane recompute invalidates the assembled pages and Drive-merges.
  *   • No page-wide export: exactly seven tables carry an ⬇ Export button
  *     (store, ops, repairType, decline, jobs, margin, kpi) → one endpoint,
@@ -4527,7 +4527,7 @@ function buildAllPanes_(data, perfData) {
  * A click creates a NEW spreadsheet containing just that table, as shown.
  */
 function exportSectionBtn_(key) {
-  return '<button class="mini-export" onclick="dashExportSection(\'' + key + '\',this)" ' +
+  return '<button class="mini-export" data-export-key="' + key + '" onclick="dashExportSection(\'' + key + '\',this)" ' +
     'title="Export this table to a spreadsheet">⬇ Export</button>';
 }
 
@@ -5196,7 +5196,7 @@ function paneCacheGet_(cache, key) {
 // happens only when the data is genuinely due (the 15-minute cadence), never
 // because a cache entry vanished. All Drive work is best-effort: any failure
 // (e.g. scope not granted) silently falls back to CacheService-only.
-var PANE_DRIVE_FILE = "SalesDashboard_paneCache_v1.json";
+var PANE_DRIVE_FILE = "SalesDashboard_paneCache_v2.json";
 
 var PANE_DRIVE_TTL_MS = 900000; // 15 minutes, matches the auto-refresh cadence
 
@@ -5242,15 +5242,15 @@ function cachePanes_(data, panes) {
   try {
     var cache = CacheService.getScriptCache();
     ["index", "cre", "tech", "sm"].forEach(function (pg) {
-      if (panes[pg]) paneCachePut_(cache, "dash_pane_v5_" + pg, panes[pg]);
+      if (panes[pg]) paneCachePut_(cache, "dash_pane_v6_" + pg, panes[pg]);
     });
-    cache.put("dash_meta_v5", JSON.stringify({
+    cache.put("dash_meta_v6", JSON.stringify({
       storeCode: (data && data.store && data.store.storeCode) ? data.store.storeCode : "",
       metaText: renderMetaText_(data)
     }), 900);
     // Fresh panes ⇒ previously assembled pages are stale; drop them.
     try {
-      cache.removeAll(["dash_pg_v6_index", "dash_pg_v6_cre", "dash_pg_v6_tech", "dash_pg_v6_sm"]);
+      cache.removeAll(["dash_pg_v7_index", "dash_pg_v7_cre", "dash_pg_v7_tech", "dash_pg_v7_sm"]);
     } catch (e2) { /* non-fatal */ }
     // also persist to the Drive-backed store (merge, timestamped).
     paneDriveMerge_(panes, {
@@ -5451,6 +5451,7 @@ function buildDashboardPage_(data, initialPage, opts) {
     "" +
     "// Task 54: per-table export buttons call the single-table endpoint." +
     "function dashExportSection(key,btn){" +
+    "  if(btn&&btn.getAttribute){var dk=btn.getAttribute('data-export-key'); if(dk&&typeof key!=='string') key=dk;}" +
     "  if(!key){var n0=document.getElementById('note'); if(n0){n0.textContent='Nothing to export — use the ⬇ Export button on a table.'; n0.className='note err';} return;}" +
     "  if(btn.disabled) return;" +
     "  var old=btn.textContent; var n=document.getElementById('note');" +
@@ -5538,7 +5539,7 @@ function buildDashboardPage_(data, initialPage, opts) {
   var bizMeta = (opts.metaText !== undefined) ? opts.metaText : renderMetaText_(data);
 
   return (
-    "<!-- BUILD TASK60 · fresh consolidated rebuild of the whole script — same conditions & templates · prefetched panes · tabs never navigate -->" +
+    "<!-- BUILD TASK61 · export keys pinned on buttons + caches rebased · prefetched panes · tabs never navigate -->" +
     "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
     "<title>" + esc_(pageTitle) + "</title><style>" + css + "</style></head><body>" +
     // plain dark-ash backdrop for EVERY page — no image at all.
@@ -6468,14 +6469,14 @@ function doGet(e) {
   //     completes switching between pages never recomputes.
   var html = null;
   if (!wantsFresh) {
-    try { html = paneCacheGet_(cache, "dash_pg_v6_" + page); } catch (e0) { html = null; }
+    try { html = paneCacheGet_(cache, "dash_pg_v7_" + page); } catch (e0) { html = null; }
     if (!html) {
       try {
-        var metaJ = cache.get("dash_meta_v5");
+        var metaJ = cache.get("dash_meta_v6");
         if (metaJ) {
           var panes = {}, cold = false;
           ["index", "cre", "tech", "sm"].forEach(function (pg) {
-            var h = paneCacheGet_(cache, "dash_pane_v5_" + pg);
+            var h = paneCacheGet_(cache, "dash_pane_v6_" + pg);
             if (h == null) cold = true; else panes[pg] = h;
           });
           if (!cold) {
@@ -6513,7 +6514,7 @@ function doGet(e) {
     cachePanes_(data, panes2);
     html = buildDashboardPage_(data, page, { paneJson: panes2 });
   }
-  try { paneCachePut_(cache, "dash_pg_v6_" + page, html); } catch (err3) { /* skip */ }
+  try { paneCachePut_(cache, "dash_pg_v7_" + page, html); } catch (err3) { /* skip */ }
 
   return HtmlService.createHtmlOutput(html)
     .setTitle("Sales Performance Dashboard")
