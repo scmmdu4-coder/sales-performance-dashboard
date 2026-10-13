@@ -4537,6 +4537,9 @@ function insertExportBtn_(html, key) {
 
 /** Table blocks for one export key (headers + rows, exactly as shown). */
 function exportBlocksFor_(key) {
+  // Buttons send camelCase keys (e.g. 'repairType'); normalize before the
+  // comparisons below so case can never silently drop a table again.
+  key = str_(key).trim().toLowerCase();
   key = String(key || "").toLowerCase();
   var loaded = loadDashboardData_();
   var data = loaded.data;
@@ -4672,7 +4675,15 @@ function exportBlocksFor_(key) {
 /** Public endpoint called by the per-table "⬇ Export" buttons. */
 function exportDashboardSectionToSpreadsheet(key) {
   var spec = exportBlocksFor_(key);
-  if (!spec) throw new Error("Unknown export table: " + key);
+  if (!spec) {
+    if (key === null || key === undefined || str_(key).trim() === "") {
+      throw new Error("No export table was specified. This function takes a " +
+        "table name — open the dashboard page and click the ⬇ Export button " +
+        "on the table you want; running it from the editor (or a sheet " +
+        "shortcut) passes nothing.");
+    }
+    throw new Error("Unknown export table: " + key);
+  }
   var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd-MM-yyyy HH:mm");
   var book = SpreadsheetApp.create(spec.name + " — " + stamp);
   var sh = book.getSheets()[0];
@@ -5440,6 +5451,7 @@ function buildDashboardPage_(data, initialPage, opts) {
     "" +
     "// Task 54: per-table export buttons call the single-table endpoint." +
     "function dashExportSection(key,btn){" +
+    "  if(!key){var n0=document.getElementById('note'); if(n0){n0.textContent='Nothing to export — use the ⬇ Export button on a table.'; n0.className='note err';} return;}" +
     "  if(btn.disabled) return;" +
     "  var old=btn.textContent; var n=document.getElementById('note');" +
     "  if(!(window.google && google.script && google.script.run)){" +
@@ -5526,7 +5538,7 @@ function buildDashboardPage_(data, initialPage, opts) {
   var bizMeta = (opts.metaText !== undefined) ? opts.metaText : renderMetaText_(data);
 
   return (
-    "<!-- BUILD TASK59 · fresh consolidated rebuild of the whole script — same conditions & templates · prefetched panes · tabs never navigate -->" +
+    "<!-- BUILD TASK60 · fresh consolidated rebuild of the whole script — same conditions & templates · prefetched panes · tabs never navigate -->" +
     "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
     "<title>" + esc_(pageTitle) + "</title><style>" + css + "</style></head><body>" +
     // plain dark-ash backdrop for EVERY page — no image at all.

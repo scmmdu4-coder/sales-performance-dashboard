@@ -1162,8 +1162,26 @@ check("15-minute refresh interval retained (Task 56)",
   clientJS.indexOf("setInterval(function(){autoRefresh(false);},15*60*1000);")>-1);
 check("off-screen sections skip layout work (Task 55)",
   page.indexOf("content-visibility:auto")>-1);
-check("build marker comment present for deployment verification (Task 59)",
-  page.indexOf("BUILD TASK59")>-1);
+check("build marker comment present for deployment verification (Task 60)",
+  page.indexOf("BUILD TASK60")>-1);
+
+console.log("== TASK 60: every export-button key round-trips to a table ==");
+var keys60={}, m60, re60=/dashExportSection\('([A-Za-z]+)',this\)/g;
+while((m60=re60.exec(page))) keys60[m60[1]]=1;
+var ks60=Object.keys(keys60).sort();
+check("exactly the seven owner-approved export tables on the page",
+  ks60.join(",")==="decline,jobs,kpi,margin,ops,repairType,store", ks60);
+ks60.forEach(function(k){
+  var spec=exportBlocksFor_(k);
+  check("endpoint resolves table for button key '"+k+"'", !!spec && spec.blocks && spec.blocks.length>=1, k);
+});
+check("repairType camelCase resolves to the D2 table (Task 60)",
+  exportBlocksFor_("repairType").name==="Repair Type Performance");
+check("whitespace/case variants still resolve", !!exportBlocksFor_(" RepairType ")
+  &&!!exportBlocksFor_("REPAIRTYPE"));
+check("missing key yields the guidance error", (function(){try{exportDashboardSectionToSpreadsheet();
+    return false;}catch(e){return (""+e.message).indexOf("No export table was specified")>-1;}})());
+check("client defends against empty key", clientJS.indexOf("if(!key){var n0=document.getElementById('note')")>-1);
 check("full page carries all four panes after load (Task 56)",
   page.indexOf('data-pane="index"')>-1&&page.indexOf('data-pane="cre"')>-1
   &&page.indexOf('data-pane="tech"')>-1&&page.indexOf('data-pane="sm"')>-1
