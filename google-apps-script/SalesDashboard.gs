@@ -4361,15 +4361,13 @@ function buildDashboardPage_(data, initialPage, opts) {
     cachePanes_(data, { index: PAGES[0][3], cre: PAGES[1][3], tech: PAGES[2][3], sm: PAGES[3][3] });
   }
 
-  // Tabs are REAL links (?page=<id>, target _top) so switching keeps working
-  // even when the host strips inline handlers; when JS runs it intercepts the
-  // click and swaps panes in place instead (no reload).
+  // Task 57: tabs are plain <button>s — a tap can ONLY flip the panes that
+  // were prefetched into the DOM at load. There is no href at all, so a tap
+  // can never hit the server, never re-read sheet data, never reload.
   var tabs = PAGES.map(function (pg) {
     var act = (pg[1] === ACTIVE) ? " active" : "";
-    return '<a class="tab-btn' + act + '" href="' +
-      (appUrl ? appUrl + "?page=" + pg[1] : "#page-" + pg[1]) +
-      '" target="_top" data-page="' + pg[1] +
-      '" onclick="switchPage(this);return false;">' + pg[0] + "</a>";
+    return '<button type="button" class="tab-btn' + act + '" data-page="' + pg[1] +
+      '" onclick="switchPage(this);return false;">' + pg[0] + "</button>";
   }).join("");
 
   var mains = PAGES.map(function (pg) {
@@ -4401,18 +4399,23 @@ function buildDashboardPage_(data, initialPage, opts) {
     "  for(var i=0;i<mains.length;i++){mains[i].style.display=(mains[i].getAttribute('data-pane')===page)?'block':'none';}" +
     "  var active=paneEl(page);" +
     "  if(active){document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';}" +
-    "  window.scrollTo({top:0,behavior:'smooth'});" +
+    "  try{window.scrollTo(0,0);}catch(e){}" +
     "}" +
+    // Keep the address bar truthful without any navigation (best effort —
+    // sandboxed hosts may forbid it, and failure there is harmless).
+    "function syncUrl(page){try{if(window.history&&history.replaceState){history.replaceState(null,'','?page='+page);}}catch(e){}}" +
     "function switchPage(btn){" +
     "  var tabs=document.querySelectorAll('.tab-btn');" +
     "  for(var i=0;i<tabs.length;i++){tabs[i].classList.toggle('active', tabs[i]===btn);}" +
     "  showPane(btn.dataset.page);" +
+    "  syncUrl(btn.dataset.page);" +
     "}" +
     // Tile click → flip to that page (tab highlight follows automatically).
     "function gotoPage(page, el){" +
     "  var tabs=document.querySelectorAll('.tab-btn');" +
     "  for(var i=0;i<tabs.length;i++){tabs[i].classList.toggle('active', tabs[i].dataset.page===page);}" +
     "  showPane(page);" +
+    "  syncUrl(page);" +
     "}" +
     "function tickClock(){" +
     "  var el=document.getElementById('liveClock'); if(!el) return;" +
@@ -4421,13 +4424,15 @@ function buildDashboardPage_(data, initialPage, opts) {
     "  el.textContent=p(d.getDate())+'-'+p(d.getMonth()+1)+'-'+d.getFullYear()+' '+" +
     "    p(h)+':'+p(d.getMinutes())+':'+p(d.getSeconds())+' '+ap;" +
     "}" +
-    // Bind clicks via addEventListener too — some sandboxes strip inline
-    // onclick attributes; the anchor href remains the no-JS fallback.
+    // Bind clicks via addEventListener too — pure belt-and-braces, since
+    // buttons carry no href and thus cannot navigate anyway (Task 57).
     "function bindTabs(){" +
     "  var tabs=document.querySelectorAll('.tab-btn');" +
     "  for(var i=0;i<tabs.length;i++){(function(t){t.addEventListener('click',function(ev){ev.preventDefault();switchPage(t);});})(tabs[i]);}" +
     "}" +
     "try{bindTabs();}catch(e){}" +
+    // Back/forward buttons only flip the already-loaded panes — no reload.
+    "try{window.addEventListener('popstate',function(){var m=((window.location&&location.search)||'').match(/[?&]page=(index|cre|tech|sm)/);if(m)gotoPage(m[1],null);});}catch(e){}" +
     "try{tickClock(); setInterval(tickClock,1000);}catch(e){}" +
     "" +
     // Task 51b — silent background updater: right after the page paints it
@@ -4588,7 +4593,7 @@ function buildDashboardPage_(data, initialPage, opts) {
   var bizMeta = (opts.metaText !== undefined) ? opts.metaText : renderMetaText_(data);
 
   return (
-    "<!-- BUILD TASK56 · everything prefetched at load · per-table export -->" +
+    "<!-- BUILD TASK57 · all panes preload once · tabs never navigate · refresh updates values in place -->" +
     "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
     "<title>" + esc_(pageTitle) + "</title><style>" + css + "</style></head><body>" +
     // Task 30: plain dark-ash backdrop for EVERY page — no image at all.
@@ -4604,10 +4609,11 @@ function buildDashboardPage_(data, initialPage, opts) {
     '<div class="topbar-clock" role="timer">' +
     '<span class="clock-text" id="liveClock">' + esc_(clockStamp) + "</span>" +
     "</div>" +
-    // Task 52: refresh is also a real ?refresh=1 link — if inline JS were
-    // stripped, the click still forces a full fresh recompute server-side.
-    '<a class="refresh-btn" href="' + (appUrl ? appUrl + "?refresh=1" : "#") + '" target="_top" onclick="dashRefresh(this);return false;">' +
-    '<span class="spin"></span><span class="txt">↻ Refresh data</span></a>' +
+    // Task 57: refresh is a plain button — it can ONLY run dashRefresh(),
+    // which re-reads the source data server-side and swaps the new values in
+    // place. No ?refresh=1 navigation, no full page load.
+    '<button type="button" class="refresh-btn" onclick="dashRefresh(this);return false;">' +
+    '<span class="spin"></span><span class="txt">↻ Refresh data</span></button>' +
     // ---- tabs: Index / GP / KPI / Walk-in / Operation / Open Jobs / Date ----
     '<div class="tabs-row"><div class="tabs tabs-wide" role="tablist">' + tabs + "</div></div>" +
     "</div></header>" +

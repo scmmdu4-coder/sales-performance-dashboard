@@ -1088,10 +1088,16 @@ console.log("== TASK 51 batch ==");
 check("deep-linkable pages via ?page= (Task 51)",
   gsSrc.indexOf("e.parameter.page")>-1
   &&gsSrc.indexOf("function buildDashboardPage_(data, initialPage, opts)")>-1);
-check("tabs are real anchors with a no-JS fallback (Task 51)",
-  page.indexOf('class="tab-btn active" href="')>-1
-  &&page.indexOf('target="_top" data-page="cre"')>-1
-  &&page.indexOf('onclick="switchPage(this);return false;"')>-1);
+check("tabs are buttons that flip the preloaded panes — never navigate (Task 57)",
+  page.indexOf('<button type="button" class="tab-btn active" data-page="')>-1
+  &&page.indexOf('data-page="cre" onclick="switchPage(this);return false;"')>-1
+  &&page.indexOf('class="tab-btn active" href="')===-1
+  &&page.indexOf('target="_top" data-page="')===-1);
+check("tab taps only swap panes and keep URL state — no reload ever (Task 57)",
+  clientJS.indexOf("function syncUrl(page){")>-1
+  &&clientJS.indexOf("history.replaceState")>-1
+  &&clientJS.indexOf("popstate")>-1
+  &&clientJS.indexOf("try{window.scrollTo(0,0);}catch(e){}")>-1);
 check("event-bound tabs + guarded clock init (Task 51)",
   clientJS.indexOf("function bindTabs()")>-1&&clientJS.indexOf("addEventListener")>-1
   &&clientJS.indexOf("try{tickClock(); setInterval(tickClock,1000);}catch(e){}")>-1);
@@ -1127,16 +1133,16 @@ check("15-minute refresh interval retained (Task 56)",
   clientJS.indexOf("setInterval(function(){autoRefresh(false);},15*60*1000);")>-1);
 check("off-screen sections skip layout work (Task 55)",
   page.indexOf("content-visibility:auto")>-1);
-check("build marker comment present for deployment verification (Task 56)",
-  page.indexOf("BUILD TASK56")>-1);
+check("build marker comment present for deployment verification (Task 57)",
+  page.indexOf("BUILD TASK57")>-1);
 check("full page carries all four panes after load (Task 56)",
   page.indexOf('data-pane="index"')>-1&&page.indexOf('data-pane="cre"')>-1
   &&page.indexOf('data-pane="tech"')>-1&&page.indexOf('data-pane="sm"')>-1
   &&page.indexOf("This page is loading…")===-1);
-check("refresh button is a real ?refresh=1 fallback link (Task 52)",
-  page.indexOf('class="refresh-btn" href="')>-1&&page.indexOf('target="_top"')>-1
-  &&gsSrc.indexOf('"(appUrl ? appUrl + "\u003frefresh=1\u0022 : \"#\u0022)"')>-1
-  || (page.indexOf('class="refresh-btn" href="')>-1&&gsSrc.indexOf('?refresh=1')>-1));
+check("refresh is a button that updates values in place — never reloads (Task 57)",
+  page.indexOf('<button type="button" class="refresh-btn" onclick="dashRefresh(this);return false;">')>-1
+  &&page.indexOf('class="refresh-btn" href="')===-1
+  &&page.indexOf('?refresh=1')===-1);
 check("refresh stamps the server-updated line into the note (Task 52)",
   clientJS.indexOf("n.textContent=(d.meta||'Updated just now')")>-1
   &&clientJS.indexOf("n.textContent=(d.meta||'Up to date')")>-1);
