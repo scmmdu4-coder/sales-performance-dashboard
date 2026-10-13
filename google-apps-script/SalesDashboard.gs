@@ -1,56 +1,54 @@
 /**
- * ============================================================================
- *  SALES PERFORMANCE DASHBOARD — Google Apps Script
- * ============================================================================
- *  This script renders the dashboard as a real, standalone web page.
- *  (The old in-sheet "Dashboard" tab writer was removed — the script no
- *  longer creates any tab inside your spreadsheet.)
+ * SALES PERFORMANCE DASHBOARD — Google Apps Script web app
+ * =========================================================
+ * One doGet serves a single HTML page that already contains all four pane
+ * bodies; the tab bar flips between them with zero server contact.
  *
- *  HOW TO DEPLOY
- *  --------------------------------------------------------------
- *   1. Open your Google Sheet (the one with the "crm" and "target" tabs).
- *   2. Extensions → Apps Script, paste this whole file in, save.
- *   2. Click "Deploy" (top-right) → "New deployment".
- *   3. Click the gear icon next to "Select type" → choose "Web app".
- *   4. Fill in:
- *        Description:      Sales Dashboard
- *        Execute as:       Me (your account)
- *        Who has access:   Anyone with the link (or "Anyone within your
- *                           organization" if you're on Google Workspace)
- *   5. Click "Deploy" → authorize when prompted.
- *   6. Copy the "Web app URL" you're given — open it in any browser to see
- *      a live, colorful, auto-refreshing dashboard page (no login into the
- *      spreadsheet required for viewers who have the link).
- *   7. Whenever you edit crm/target data, just reload that URL — it always
- *      recomputes live from the current sheet contents.
- *   NOTE: if you edit the script later, repeat Deploy → "Manage deployments"
- *   → pencil icon → "New version" → Deploy, so the URL picks up the change.
+ * PAGES (tabs)
+ *   INDEX  A1 store cards · A2 store table · A6 working days · weekly plan
+ *   CRE    A1/A2/A6 + B KPI target · B1 incentive · B2 salesperson · B3 AR
+ *          · C/C1 walk-in analysis · D1 customer satisfaction
+ *   TECH   D2 repair type · D3 decline repair · D4 requote & win-back
+ *          · E1 job buckets (9 aging bands) · communication · open jobs
+ *   SM     the full master report, groups A–G
  *
- *  WHAT IT COMPUTES (same for both modes)
- *  ---------------------------------------
- *   1. Store target vs achievement vs balance, per revenue type
- *   2. Working days: total / consumed / balance for the current month
- *   3. Salesperson performance per revenue type (every name found in "crm")
- *   4. Incentive valuation — AMC & Bundle slabs, per salesperson
- *   5. Store KPI parameters — target / achieved / balance / achieved
- *      value / achieved GP, from the "target" KPI grid
- *   6. Invoice valuation — total & unique invoices, per revenue type
- *   7. Date-wise sales revenue analysis with per-revenue-type daily target
- *      (= balance for that type ÷ balance working days)
+ * THE STANDING RULES THIS FILE IMPLEMENTS
+ *   • Everything is prefetched during the load itself: a cold doGet computes
+ *     and embeds all four panes in one pass (buildAllPanes_ + cachePanes_).
+ *     Once loading completes, no tab tap ever reads sheet data or reloads.
+ *   • Tabs and the refresh button are plain <button>s with no href — a tap
+ *     can only flip panes; ↻ Refresh re-reads the sheets and swaps the new
+ *     values in place (refreshDashboardSections), never a page reload.
+ *   • A 15-minute in-page auto-refresh re-primes the same caches silently.
+ *   • Caches: chunked whole-page cache (dash_pg_v6_*), per-pane script cache
+ *     (dash_pane_v5_* + dash_meta_v5) and a Drive-backed 15-minute store
+ *     (SalesDashboard_paneCache_v1.json) that survives cache evictions.
+ *     Any pane recompute invalidates the assembled pages and Drive-merges.
+ *   • No page-wide export: exactly seven tables carry an ⬇ Export button
+ *     (store, ops, repairType, decline, jobs, margin, kpi) → one endpoint,
+ *     exportDashboardSectionToSpreadsheet(key).
+ *   • C-SAT reads target!E47:F51 (name + C-SAT per CRE, store average
+ *     derived) and auto-extends to the full satisfaction grid up to
+ *     target!E47:O51 when the sheet carries one; period name from D47.
+ *   • CRE page manifest: A1 A2 A6 B B1 B2 B3 C(C1) D1 · TECH: D2 D3 D4 + E1
+ *     · INDEX weekly is % only · salesperson performance shows % only.
+ *   • Topbar, brand, digital clock, refresh button, data-updated stamp and
+ *     text colors/sizes are fixed — never restyle them.
+ *   • The first line of the served page is a <!-- BUILD TASK… --> marker so
+ *     the live deployment can be verified against this build.
  *
- *  DATA RULES APPLIED (fixed, per your spec)
- *  ------------------------------------------
- *   • Only rows where TranType (case-insensitive) = "SALES" are counted.
- *   • TaxableAmount = achieved value. GrossProfit = gross profit metric.
- *   • ItemDescription "Display"/"Battery"/"Glass" categories require BOTH
- *     the part keyword AND "iphone" in the same description.
- *   • SubCategory containing "AMC" = an AMC row (unique invoices counted).
- *   • SchemeCode starting with "DISC" (case-insensitive) = a bundle row
- *     (unique invoices counted).
+ * TOP-LEVEL FLOW
+ *   sheets → loaders/parsers → compute* models → render* pane HTML
+ *   → composers → cache layers → doGet / refreshDashboardSections
  *
- *  CONFIG — edit these to match your sheet names / calendar if needed.
- * ============================================================================
+ * The sheet-search chat assistant (ask me anything) lives in module 13 and
+ * answers from the same source sheets. All external sheet reads happen in
+ * the loaders only; renderers work purely from computed models.
  */
+
+/* ==========================================================================
+ * 01 · CONFIGURATION                                                      *
+ * ======================================================================== */
 
 var CONFIG = {
   CRM_SHEET_NAME: "crm",
@@ -114,22 +112,26 @@ var CONFIG = {
   DATE_ORDER: "DMY",
 };
 
-/* ============================================================================
- * MENU
- * ========================================================================= */
-
-
-
-
-
-/* ============================================================================
- * ENTRY POINTS
- * ========================================================================= */
+/* ==========================================================================
+ * 02 · SPREADSHEET ACCESS, DATE & ROW PARSING                             *
+ * ======================================================================== */
 
 /** Resolves the spreadsheet regardless of whether we're in a UI context (Mode A) or an HTTP request (Mode B). */
 function getSpreadsheet_() {
   if (CONFIG.SPREADSHEET_ID) return SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   return SpreadsheetApp.getActiveSpreadsheet();
+}
+
+/** Finds a sheet by any of several acceptable names (case-insensitive). */
+function getSheetByNames_(ss, names) {
+  var all = ss.getSheets();
+  var lookup = {};
+  all.forEach(function (sh) { lookup[sh.getName().trim().toLowerCase()] = sh; });
+  for (var i = 0; i < names.length; i++) {
+    var hit = lookup[String(names[i]).trim().toLowerCase()];
+    if (hit) return hit;
+  }
+  return null;
 }
 
 /**
@@ -157,22 +159,6 @@ function mergeDisplayDates_(crmSheet) {
     if (shown) values[r][dateCol] = shown;
   }
   return values;
-}
-
-/* ============================================================================
- * PERFORMANCE PAGE — shared sheet helpers
- * ========================================================================= */
-
-/** Finds a sheet by any of several acceptable names (case-insensitive). */
-function getSheetByNames_(ss, names) {
-  var all = ss.getSheets();
-  var lookup = {};
-  all.forEach(function (sh) { lookup[sh.getName().trim().toLowerCase()] = sh; });
-  for (var i = 0; i < names.length; i++) {
-    var hit = lookup[String(names[i]).trim().toLowerCase()];
-    if (hit) return hit;
-  }
-  return null;
 }
 
 /**
@@ -293,139 +279,86 @@ function mobileKey_(v) {
   return digits;
 }
 
-/** Shared pipeline: read crm + target sheets, parse, and compute the dashboard data object. */
-function loadDashboardData_() {
-  // Deployment hardening: if this helper ever goes missing from the project
-  // (stale/partial paste), fall back to the bound spreadsheet directly.
-  var ss = (typeof getSpreadsheet_ === "function") ? getSpreadsheet_()
-    : SpreadsheetApp.getActiveSpreadsheet();
-  var crmSheet = ss.getSheetByName(CONFIG.CRM_SHEET_NAME);
-  var targetSheet = ss.getSheetByName(CONFIG.TARGET_SHEET_NAME);
+function parseCrmRows(values) {
+  if (!values || values.length < 2) return [];
+  var header = values[0];
 
-  if (!crmSheet) throw new Error('Sheet "' + CONFIG.CRM_SHEET_NAME + '" not found.');
-  if (!targetSheet) throw new Error('Sheet "' + CONFIG.TARGET_SHEET_NAME + '" not found.');
+  var col = {
+    invoiceCode: findColumn_(header, [/invoice.*(code|no\.?|number|id)/i]),
+    invoiceDate: findColumn_(header, [/invoice.*date/i]),
+    salesPerson: findColumn_(header, [/sales.*person/i]),
+    revenueType: findColumn_(header, [/revenue.*type/i]),
+    itemDescription: findColumn_(header, [/item.*desc/i]),
+    subCategory: findColumn_(header, [/sub.*categ/i]),
+    schemeCode: findColumn_(header, [/scheme.*code/i]),
+    taxableAmount: findColumn_(header, [/taxable.*amount/i]),
+    grossProfit: findColumn_(header, [/gross.*profit/i]),
+    tranType: findColumn_(header, [/tran.*type/i]),
+    itemCode: findColumn_(header, [/item.*code/i]),
+    orderCode: findColumn_(header, [/^ordercode$/i, /^order\s*code$/i, /order.*(code|no|num)/i]),
+    partType: findColumn_(header, [/part.*type/i]),
+    // optional discount column feeding the GP "Discounted Cases" tile.
+    discountAmount: findColumn_(header, [/^discount\s*(amount|amt|value)?$/i, /disc.*(amount|amt|value)/i, /^discount/i]),
+  };
 
-  // getDisplayValues() returns what the cell SHOWS, so an InvoiceDate that
-  // Google Sheets auto-converted to a real date under a month-first locale is
-  // read back as text and re-parsed with CONFIG.DATE_ORDER. Values are merged
-  // so only the date column uses display text; everything else keeps its
-  // native type (numbers stay numbers).
-  var crmValues = mergeDisplayDates_(crmSheet);
-  var targetValues = targetSheet.getDataRange().getValues();
-
-  var allRows = parseCrmRows(crmValues);
-  var target = parseTargetSheet(targetValues);
-  var result = { ss: ss, data: computeDashboard(allRows, target) };
-  // Task 36-D — the deck numbers ride on the same parse, current month only.
-  result.data.deckAnalysis = computeDeckAnalysis_(ss, allRows);
-
-  // Store name for the page title — Task 43: taken verbatim from crm!F2;
-  // the "iPlanetcare" prefix is no longer glued on.
-  result.data.store.storeCode =
-    (crmValues[1] && crmValues[1].length > 5) ? str_(crmValues[1][5]) : "";
-
-  // Average revenue per unique walk-in — the walkin sheet is optional, so a
-  // missing tab simply leaves this metric blank instead of failing the page.
-  try {
-    var wi = countWalkins_(ss);
-    if (wi.unique > 0) {
-      result.data.store.uniqueWalkins = wi.unique;
-      result.data.store.avgPerWalkin = Math.round(result.data.store.total.achieved / wi.unique);
-    }
-  } catch (e) { /* walk-in stats are best-effort */ }
-
-  return result;
-}
-
-/** MODE A: writes/refreshes the "Dashboard" tab inside the spreadsheet. */
-
-
-/**
- * MODE B: the Web App entry point. Apps Script calls this automatically
- * whenever someone opens the deployed Web App URL (see the setup steps in
- * the header comment above — Deploy → New deployment → Web app).
- *
- * Fast path: the fully-rendered HTML is cached for CONFIG.CACHE_SECONDS so
- * repeat visits are near-instant. Opening the URL with "?refresh=1" (what
- * the on-page Refresh button does) skips the cache and recomputes.
- */
-function doGet(e) {
-  var wantsFresh = !!(e && e.parameter && e.parameter.refresh);
-  // Task 51 — deep-linkable tabs: "?page=cre" serves the CRE pane already
-  // visible, so navigation keeps working even where inline JS is stripped.
-  var page = (e && e.parameter && e.parameter.page) ? String(e.parameter.page).toLowerCase() : "index";
-  if (["index", "cre", "tech", "sm"].indexOf(page) === -1) page = "index";
-  var cache = CacheService.getScriptCache();
-
-  // ---- fast page loads, three tiers --------------------------------------
-  // (a) whole-page cache, chunked per page — zero compute, all panes embedded.
-  // (b) pane caches (script + Drive) + frame record warm → cheap rebuild.
-  // (c) cold → the load itself PREFETCHES everything: all four panes are
-  //     computed, embedded and cached in one pass (Task 56), so once loading
-  //     completes switching between pages never recomputes.
-  var html = null;
-  if (!wantsFresh) {
-    try { html = paneCacheGet_(cache, "dash_pg_v6_" + page); } catch (e0) { html = null; }
-    if (!html) {
-      try {
-        var metaJ = cache.get("dash_meta_v5");
-        if (metaJ) {
-          var panes = {}, cold = false;
-          ["index", "cre", "tech", "sm"].forEach(function (pg) {
-            var h = paneCacheGet_(cache, "dash_pane_v5_" + pg);
-            if (h == null) cold = true; else panes[pg] = h;
-          });
-          if (!cold) {
-            var meta = JSON.parse(metaJ);
-            html = buildDashboardPage_(null, page, {
-              storeCode: meta.storeCode, metaText: meta.metaText, paneJson: panes
-            });
-          }
-        }
-      } catch (err) { html = null; }
-    }
-    if (!html) {
-      // (b2) Task 55 — persistent Drive-backed pane store: survives cache
-      // evictions, so warm loads stay warm between taps.
-      try {
-        var d = paneDriveState_();
-        if (d) {
-          html = buildDashboardPage_(null, page, {
-            storeCode: d.meta ? d.meta.storeCode : "", metaText: d.meta ? d.meta.metaText : "",
-            paneJson: d.panes
-          });
-        }
-      } catch (err2) { html = null; }
-    }
+  var missing = [];
+  ["invoiceDate", "salesPerson", "revenueType", "itemDescription", "subCategory", "schemeCode", "taxableAmount", "grossProfit", "tranType"].forEach(
+    function (k) { if (col[k] === -1) missing.push(k); },
+  );
+  if (missing.length) {
+    throw new Error(
+      'Could not find these required columns in "' + CONFIG.CRM_SHEET_NAME + '": ' + missing.join(", ") +
+        ". Check the header row spelling.",
+    );
   }
 
-  if (!html) {
-    var loaded = loadDashboardData_();
-    var perfData = loadPerformanceData_();
-    var data = loaded.data;
-    // Task 56 (owner's call): everything is prefetched DURING the load itself —
-    // the cold load computes and embeds all four panes in one pass and caches
-    // them, so once loading completes no tab tap ever touches the sheets again.
-    var panes2 = {
-      index: renderIndexHtml_(data, perfData),
-      cre: renderCreHtml_(data, perfData),
-      tech: renderTechHtml_(perfData),
-      sm: renderSmHtml_(data, perfData)
-    };
-    cachePanes_(data, panes2);
-    html = buildDashboardPage_(data, page, { paneJson: panes2 });
-  }
-  try { paneCachePut_(cache, "dash_pg_v6_" + page, html); } catch (err3) { /* skip */ }
+  var out = [];
+  for (var r = 1; r < values.length; r++) {
+    var row = values[r];
+    var invoiceDateRaw = row[col.invoiceDate];
+    if (!invoiceDateRaw && col.invoiceCode === -1) continue; // nothing to key this row on
+    var parsedDate = parseInvoiceDate_(invoiceDateRaw);
+    var invoiceCode =
+      col.invoiceCode !== -1 && str_(row[col.invoiceCode])
+        ? str_(row[col.invoiceCode])
+        : parsedDate.dayKey + "#" + str_(row[col.salesPerson]) + "#" + r; // best-effort fallback key
 
-  return HtmlService.createHtmlOutput(html)
-    .setTitle("Sales Performance Dashboard")
-    .addMetaTag("viewport", "width=device-width, initial-scale=1")
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    out.push({
+      invoiceCode: invoiceCode,
+      day: parsedDate.day,
+      month: parsedDate.month,
+      year: parsedDate.year,
+      minutes: parsedDate.minutes,
+      dayKey: parsedDate.dayKey,
+      salesPerson: str_(row[col.salesPerson]),
+      revenueType: str_(row[col.revenueType]),
+      itemDescription: str_(row[col.itemDescription]),
+      subCategory: str_(row[col.subCategory]),
+      schemeCode: str_(row[col.schemeCode]),
+      taxableAmount: num_(row[col.taxableAmount]),
+      grossProfit: num_(row[col.grossProfit]),
+      tranType: str_(row[col.tranType]),
+      itemCode: col.itemCode !== -1 ? str_(row[col.itemCode]) : "",
+      orderCode: col.orderCode !== -1 ? str_(row[col.orderCode]) : "",
+      partType: col.partType !== -1 ? str_(row[col.partType]) : "",
+      discountAmount: col.discountAmount !== -1 ? Math.abs(num_(row[col.discountAmount])) : 0,
+    });
+  }
+  return out;
 }
 
-/* ============================================================================
- * SMALL HELPERS
- * ========================================================================= */
+function daysInCurrentMonth_() {
+  var now = new Date();
+  return new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+}
+
+function isWorkingDay_(day) {
+  return CONFIG.HOLIDAYS.indexOf(day) === -1;
+}
+
+/* ==========================================================================
+ * 03 · CORE VALUE & TEXT UTILITIES                                        *
+ * ======================================================================== */
 
 function num_(v) {
   if (v === null || v === undefined || v === "") return 0;
@@ -447,6 +380,15 @@ function pct_(part, whole) {
 function safeDiv_(a, b) {
   return b > 0 ? a / b : 0;
 }
+
+function esc_(s) {
+  return String(s === null || s === undefined ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function money_(n) { return "₹" + Math.round(n || 0).toLocaleString("en-IN"); }
 
 function titleCase_(key) {
   return String(key)
@@ -571,89 +513,9 @@ function findColumn_(header, patterns) {
   return -1;
 }
 
-/* ============================================================================
- * CRM ROW PARSING  (columns looked up by header name — order-independent)
- * Required headers (case-insensitive, partial match ok):
- *   InvoiceDate, SalesPersonName, RevenueType, ItemDescription, SubCategory,
- *   SchemeCode, TaxableAmount, GrossProfit, TranType
- * Optional (used for extra KPI breakdowns if present):
- *   InvoiceCode/InvoiceNo/InvoiceNumber, ItemCode, PartType
- * ========================================================================= */
-
-function parseCrmRows(values) {
-  if (!values || values.length < 2) return [];
-  var header = values[0];
-
-  var col = {
-    invoiceCode: findColumn_(header, [/invoice.*(code|no\.?|number|id)/i]),
-    invoiceDate: findColumn_(header, [/invoice.*date/i]),
-    salesPerson: findColumn_(header, [/sales.*person/i]),
-    revenueType: findColumn_(header, [/revenue.*type/i]),
-    itemDescription: findColumn_(header, [/item.*desc/i]),
-    subCategory: findColumn_(header, [/sub.*categ/i]),
-    schemeCode: findColumn_(header, [/scheme.*code/i]),
-    taxableAmount: findColumn_(header, [/taxable.*amount/i]),
-    grossProfit: findColumn_(header, [/gross.*profit/i]),
-    tranType: findColumn_(header, [/tran.*type/i]),
-    itemCode: findColumn_(header, [/item.*code/i]),
-    orderCode: findColumn_(header, [/^ordercode$/i, /^order\s*code$/i, /order.*(code|no|num)/i]),
-    partType: findColumn_(header, [/part.*type/i]),
-    // Task 42 — optional discount column feeding the GP "Discounted Cases" tile.
-    discountAmount: findColumn_(header, [/^discount\s*(amount|amt|value)?$/i, /disc.*(amount|amt|value)/i, /^discount/i]),
-  };
-
-  var missing = [];
-  ["invoiceDate", "salesPerson", "revenueType", "itemDescription", "subCategory", "schemeCode", "taxableAmount", "grossProfit", "tranType"].forEach(
-    function (k) { if (col[k] === -1) missing.push(k); },
-  );
-  if (missing.length) {
-    throw new Error(
-      'Could not find these required columns in "' + CONFIG.CRM_SHEET_NAME + '": ' + missing.join(", ") +
-        ". Check the header row spelling.",
-    );
-  }
-
-  var out = [];
-  for (var r = 1; r < values.length; r++) {
-    var row = values[r];
-    var invoiceDateRaw = row[col.invoiceDate];
-    if (!invoiceDateRaw && col.invoiceCode === -1) continue; // nothing to key this row on
-    var parsedDate = parseInvoiceDate_(invoiceDateRaw);
-    var invoiceCode =
-      col.invoiceCode !== -1 && str_(row[col.invoiceCode])
-        ? str_(row[col.invoiceCode])
-        : parsedDate.dayKey + "#" + str_(row[col.salesPerson]) + "#" + r; // best-effort fallback key
-
-    out.push({
-      invoiceCode: invoiceCode,
-      day: parsedDate.day,
-      month: parsedDate.month,
-      year: parsedDate.year,
-      minutes: parsedDate.minutes,
-      dayKey: parsedDate.dayKey,
-      salesPerson: str_(row[col.salesPerson]),
-      revenueType: str_(row[col.revenueType]),
-      itemDescription: str_(row[col.itemDescription]),
-      subCategory: str_(row[col.subCategory]),
-      schemeCode: str_(row[col.schemeCode]),
-      taxableAmount: num_(row[col.taxableAmount]),
-      grossProfit: num_(row[col.grossProfit]),
-      tranType: str_(row[col.tranType]),
-      itemCode: col.itemCode !== -1 ? str_(row[col.itemCode]) : "",
-      orderCode: col.orderCode !== -1 ? str_(row[col.orderCode]) : "",
-      partType: col.partType !== -1 ? str_(row[col.partType]) : "",
-      discountAmount: col.discountAmount !== -1 ? Math.abs(num_(row[col.discountAmount])) : 0,
-    });
-  }
-  return out;
-}
-
-/* ============================================================================
- * TARGET SHEET PARSING
- * Grid anchors (matches the layout used by the companion web dashboard for
- * this same spreadsheet). If your target sheet layout differs, adjust the
- * row/column numbers below — search for "ANCHOR" comments.
- * ========================================================================= */
+/* ==========================================================================
+ * 04 · TARGET SHEET & INCENTIVE PARSING                                   *
+ * ======================================================================== */
 
 var OPEN_ENDED = 9999;
 
@@ -709,28 +571,11 @@ function parsePctSlabs_(cells) {
   return slabs;
 }
 
-function slabForPct_(slabs, pctVal) {
-  for (var i = 0; i < slabs.length; i++) {
-    if (pctVal >= slabs[i].minPct && pctVal <= slabs[i].maxPct) return slabs[i];
-  }
-  return null;
-}
+// Chase tiers (ascending) for the "next slab" balance lines on person cards.
+var SVC_INC_TIERS33 = [71, 81, 91, 100, 110];
 
-function incentiveForPct_(slabs, pctVal) {
-  var s = slabForPct_(slabs, pctVal);
-  return s ? s.value : 0;
-}
+var ACC_INC_TIERS33 = [51, 61, 71, 81, 110];
 
-/* ============================================================================
- * TASK 33 — PERSONAL REVENUE INCENTIVE (owner's IFS formula structure).
- * p = achieved % of the salesperson's OWN monthly target, expressed as a
- * 0-100 number. Payouts are pro-rata: base × p / band-reference.
- *   Service   : >110%: 12000·p/110 · ≤109%: 11000·p/101 · 100-110: 10000·p/100
- *               91+: 8000·p/99 · 81+: 7000·p/90 · 71+: 6000·p/80
- *   Accessory : >110%: 8000·p/110 · 81+: 6000·p/100 · 71+: 4000·p/80
- *               61+: 3000·p/70 · 51+: 2500·p/60
- * Bands below the floor pay nothing ("TRUE → empty").
- * ==========================================================================*/
 function serviceIncentiveForPct33_(pctVal) {
   var p = (pctVal || 0) / 100;
   if (p > 1.10) return 12000 * p / 1.10;
@@ -741,6 +586,7 @@ function serviceIncentiveForPct33_(pctVal) {
   if (p >= 0.71) return 6000 * p / 0.80;
   return 0;
 }
+
 function accessoryIncentiveForPct33_(pctVal) {
   var p = (pctVal || 0) / 100;
   if (p > 1.10) return 8000 * p / 1.10;
@@ -750,9 +596,7 @@ function accessoryIncentiveForPct33_(pctVal) {
   if (p >= 0.51) return 2500 * p / 0.60;
   return 0;
 }
-// Chase tiers (ascending) for the "next slab" balance lines on person cards.
-var SVC_INC_TIERS33 = [71, 81, 91, 100, 110];
-var ACC_INC_TIERS33 = [51, 61, 71, 81, 110];
+
 function nextIncentiveSlab33_(tiers, formulaFn, pctVal, tgt, achVal) {
   if (!tiers || !tiers.length || tgt <= 0) return null;
   for (var i = 0; i < tiers.length; i++) {
@@ -1006,17 +850,52 @@ function parseTargetSheet(rows) {
   };
 }
 
-/* ============================================================================
- * DASHBOARD COMPUTATION  (mirrors metrics.ts computeDashboard / computeKpis)
- * ========================================================================= */
+/* ==========================================================================
+ * 05 · BUSINESS DATA MODEL                                                *
+ * ======================================================================== */
 
-function daysInCurrentMonth_() {
-  var now = new Date();
-  return new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-}
+/** Shared pipeline: read crm + target sheets, parse, and compute the dashboard data object. */
+function loadDashboardData_() {
+  // Deployment hardening: if this helper ever goes missing from the project
+  // (stale/partial paste), fall back to the bound spreadsheet directly.
+  var ss = (typeof getSpreadsheet_ === "function") ? getSpreadsheet_()
+    : SpreadsheetApp.getActiveSpreadsheet();
+  var crmSheet = ss.getSheetByName(CONFIG.CRM_SHEET_NAME);
+  var targetSheet = ss.getSheetByName(CONFIG.TARGET_SHEET_NAME);
 
-function isWorkingDay_(day) {
-  return CONFIG.HOLIDAYS.indexOf(day) === -1;
+  if (!crmSheet) throw new Error('Sheet "' + CONFIG.CRM_SHEET_NAME + '" not found.');
+  if (!targetSheet) throw new Error('Sheet "' + CONFIG.TARGET_SHEET_NAME + '" not found.');
+
+  // getDisplayValues() returns what the cell SHOWS, so an InvoiceDate that
+  // Google Sheets auto-converted to a real date under a month-first locale is
+  // read back as text and re-parsed with CONFIG.DATE_ORDER. Values are merged
+  // so only the date column uses display text; everything else keeps its
+  // native type (numbers stay numbers).
+  var crmValues = mergeDisplayDates_(crmSheet);
+  var targetValues = targetSheet.getDataRange().getValues();
+
+  var allRows = parseCrmRows(crmValues);
+  var target = parseTargetSheet(targetValues);
+  var result = { ss: ss, data: computeDashboard(allRows, target) };
+  // D — the deck numbers ride on the same parse, current month only.
+  result.data.deckAnalysis = computeDeckAnalysis_(ss, allRows);
+
+  // Store name for the page title — Task 43: taken verbatim from crm!F2;
+  // the "iPlanetcare" prefix is no longer glued on.
+  result.data.store.storeCode =
+    (crmValues[1] && crmValues[1].length > 5) ? str_(crmValues[1][5]) : "";
+
+  // Average revenue per unique walk-in — the walkin sheet is optional, so a
+  // missing tab simply leaves this metric blank instead of failing the page.
+  try {
+    var wi = countWalkins_(ss);
+    if (wi.unique > 0) {
+      result.data.store.uniqueWalkins = wi.unique;
+      result.data.store.avgPerWalkin = Math.round(result.data.store.total.achieved / wi.unique);
+    }
+  } catch (e) { /* walk-in stats are best-effort */ }
+
+  return result;
 }
 
 function computeDashboard(allRows, target) {
@@ -1488,7 +1367,7 @@ function computeDashboard(allRows, target) {
 }
 
 /**
- * Task 44 — compact part description for the GP tiles. Owner examples:
+ * compact part description for the GP tiles. Owner examples:
  *   "Battery, iPhone 14 Plus, India" → "battery"
  *   "Protect+withAppleCareServicesforiPhone17ProMax" → "protect+"
  *   "MCL TG 2.5D 2ND GEN-APPL-IPH 17PRMAX-BLK" → "temper"
@@ -1510,7 +1389,7 @@ function shortPart_(desc) {
 }
 
 /**
- * Task 42 — GP-page extras.
+ * GP-page extras.
  *  • High / Low margin leaders: margin % = Σ crm!GrossProfit ÷ Σ crm!TaxableAmount
  *    computed per unique invoice code (SALES rows only; invoices with a zero
  *    or negative taxable base are skipped — their % is meaningless). The top
@@ -1531,7 +1410,7 @@ function computeGpExtras_(rows) {
     var b = byInv[k];
     b.taxable += r.taxableAmount;
     b.gp += r.grossProfit;
-    // Task 44: short part label(s) of this invoice's lines (no invoice number
+    // short part label(s) of this invoice's lines (no invoice number
     // is shown on the GP tiles anymore).
     b.parts[shortPart_(r.itemDescription)] = true;
     var tk = revenueTypeKey_(r.revenueType);
@@ -1591,10 +1470,6 @@ function computeGpExtras_(rows) {
 
   return { marginHigh: high, marginLow: low, discount: disc };
 }
-
-/* ============================================================================
- * KPI RULE ENGINE
- * ========================================================================= */
 
 function computeKpis(crmRows, target, remainingWorkingDays) {
   var kpiByKey = {};
@@ -1693,9 +1568,9 @@ function computeKpis(crmRows, target, remainingWorkingDays) {
   };
 }
 
-/* ============================================================================
- * PERFORMANCE PAGE — WALK-IN ANALYSIS
- * ========================================================================= */
+/* ==========================================================================
+ * 06 · PROCESS DATA MODEL (walk-in, jobs, repair, C-SAT, ops)             *
+ * ======================================================================== */
 
 var WALKIN_SPEC = {
   mobile: [/mobile.*no/i, /^mobile$/i, /phone/i],
@@ -1706,7 +1581,7 @@ var WALKIN_SPEC = {
   remark: [/remark/i, /comment/i, /note/i],
   // Who generated the token. Optional — auto-detected from common spellings.
   createdBy: [/token.*creat.*by/i, /creat.*by/i, /token.*user/i, /user.*id/i, /^user.*name$/i, /staff/i, /employee/i],
-  // Task 37: customer source for the source-analysis pivot (walkin!CustomerVisitSource).
+  // customer source for the source-analysis pivot (walkin!CustomerVisitSource).
   visitSource: [/customer.*visit.*source/i, /visit.*source.*desc/i, /customer.*source/i, /how.*did.*(you|they).*find/i],
 };
 
@@ -1795,7 +1670,7 @@ function computeWalkinAnalysis_(ss) {
       creatorTotals[by] = (creatorTotals[by] || 0) + 1;
     }
 
-    // Task 37: customer source pivot — walkin!CustomerVisitSource, against the
+    // customer source pivot — walkin!CustomerVisitSource, against the
     // total number of walk-ins. Kept EXACTLY as written in the sheet.
     if (hasSource) {
       var srcv = str_(r.visitSource) || "Not specified";
@@ -1821,7 +1696,7 @@ function computeWalkinAnalysis_(ss) {
     c.share = pct_(c.count, totals.walkins);
     return c;
   });
-  // Task 37: source pivot descending, share of total walk-ins.
+  // source pivot descending, share of total walk-ins.
   var sources = toSortedList(sourceTotals).map(function (s) {
     s.share = pct_(s.count, totals.walkins);
     return s;
@@ -1872,10 +1747,6 @@ function computeWalkinAnalysis_(ss) {
   };
 }
 
-/* ============================================================================
- * PERFORMANCE PAGE — JOB MANAGEMENT (open jobs)
- * ========================================================================= */
-
 var SERVICE_SPEC = {
   caseId: [/^caseid$/i, /case.*id/i, /^case$/i],
   firstName: [/^firstname$/i, /first.*name/i, /customer.*name/i, /^name$/i],
@@ -1903,10 +1774,10 @@ var SERVICE_SPEC = {
   // Ready-for-pickup date — service!Ready_For_Pickup_Date_CRM (average
   // days from CaseDate to pickup-ready on the Performance page).
   readyPickup: [/^ready_for_pickup_date_crm$/i, /ready.*for.*pickup/i, /ready.*pickup/i, /pickup.*date/i],
-  // Task 34 — GSX ID and device serial shown on the Open Jobs table.
+  // GSX ID and device serial shown on the Open Jobs table.
   gsxCode: [/^gsxcode$/i, /^gsx.*(code|id|no\.?|number)$/i, /gsx.*(job|case).*id/i],
   serialNo1: [/^serialno1$/i, /serial.*no\.?1/i, /serial.*number/i, /^serial/i, /device.*serial/i, /imei/i],
-  // Task 36 — replaced part for coverage split (battery / display buckets).
+  // replaced part for coverage split (battery / display buckets).
   partDescription: [/^partdescription$/i, /^partdesc$/i, /^part\s*description$/i],
   // Task 40 (Coverage v2): battery/display from service!IssueDescription and
   // the W/NW split from service!ProductWarrantyDesc — owner's final columns.
@@ -2197,7 +2068,7 @@ function computeRepairAnalytics_(serviceRows) {
   });
   all = order.map(function (k) { return bestByCase[k]; });
   // Service Non-Repair cases are excluded from every analytic on this page.
-  // Task 50 (owner): rows with a blank service!RepairDocType are excluded too.
+  // rows with a blank service!RepairDocType are excluded too.
   var rows = all.filter(function (r) { return str_(r.repairType) !== "" && !isSNRType_(r.repairType); });
 
   var now = new Date();
@@ -2325,72 +2196,13 @@ function computeRepairAnalytics_(serviceRows) {
   };
 }
 
-/** Renders the repair-type & coverage analytics sections (Operation page). */
-function renderRepairAnalyticsInner_(ra) {
-  if (!ra.available) {
-    return '<div class="section"><h2 class="section-title">🔧 Repair Analytics</h2>' +
-      '<div class="empty-state">No service data available yet.</div></div>';
-  }
-  var out = [];
-
-  // Task 45: no 3-month average pills anywhere — current month only.
-  function daysCell(avg) { return avg == null ? "—" : avg + " d"; }
-
-  function bucketSection(icon, title, labelCol, comp, note) {
-    if (!comp.length) return "";
-    var o = ['<div class="section">' +
-      '<h2 class="section-title">' + icon + " " + esc_(title) + " · <em>" + esc_(ra.curLabel) + "</em></h2>" +
-      '<div class="section-sub">' + esc_(note) + ' Counts are whole numbers. Blank and "Service Non-Repair" repair types are excluded.</div>' +
-      '<div class="tile-grid">'];
-    comp.forEach(function (c) {
-      o.push('<div class="tile"><div class="label">' + esc_(c.name) + "</div>" +
-        '<div class="value">' + c.cur + "</div></div>");
-    });
-    o.push('</div><div class="table-wrap"><table aria-label="' + esc_(title) + '"><thead><tr>' +
-      "<th>" + esc_(labelCol) + "</th>" +
-      '<th class="num">This Month</th><th class="num">Avg Days · Now</th>' +
-      "</tr></thead><tbody>");
-    comp.forEach(function (c) {
-      o.push("<tr><td><strong>" + esc_(c.name) + "</strong></td>" +
-        '<td class="num">' + c.cur + "</td>" +
-        '<td class="num">' + daysCell(c.curDaysAvg) + "</td></tr>");
-    });
-    o.push("</tbody></table></div></div>");
-    return o.join("");
-  }
-
-  var typeSec = bucketSection("📈", "D2. Repair Type Performance", "Repair Type", ra.typeComp,
-    "Case counts in " + ra.curLabel + " (month to date).");
-  typeSec = insertExportBtn_(typeSec, "repairType");
-
-  out.push(typeSec);
-
-  // The "Repair Types — Till Date" composition table was retired on the
-  // owner's request; the Repair Type Performance block above already carries
-  // the month-to-date counts per type.
-  return out.join("");
-}
-
-/** Kept for backward-compatible references: the same sections, wrapped. */
-function renderRepairAnalytics_(ra) {
-  return '<div id="performance" class="tab-page active">' +
-    renderRepairAnalyticsInner_(ra) + "</div>";
-}
-
-function repairMeta_(ra, generatedAt) {
-  var m = ra && ra.available ? ra.monthRepairsTotal : 0;
-  var types = ra && ra.typeComp ? ra.typeComp.filter(function (c) { return c.cur > 0; }).length : 0;
-  return m + " repairs this month · " + types + " repair types · updated " +
-    Utilities.formatDate(generatedAt, Session.getScriptTimeZone(), "dd-MM-yyyy HH:mm");
-}
-
 /**
  * Process-page C-SAT block — read from the target sheet, presented cleanly:
- * Task 50 (owner): the block moved within the same sheet:
+ * the block moved within the same sheet:
  *   target!D47    = the period name shown as the dashboard title
  *   target!E47:O51 = the C-SAT grid (11 cols × 5 rows; row 47 = headers,
  *                   rows 48-51 = one row per salesperson plus a TOTAL row)
- * Task 58 (owner): the sheet may carry only the NARROW C-SAT report —
+ * the sheet may carry only the NARROW C-SAT report —
  *   target!E47:F51 — name in E, C-SAT% in F. The reader auto-detects this
  *   layout: no bucket columns, no TOTAL column, and the store C-SAT is
  *   derived as the average of the per-CRE values when no TOTAL row exists.
@@ -2405,7 +2217,7 @@ function computeTargetBlock_(ss) {
   var rows = sheet.getDataRange().getDisplayValues();
   function at(r, c) { return (rows[r] && rows[r][c] !== undefined && rows[r][c] !== null) ? String(rows[r][c]).trim() : ""; }
 
-  // Task 50: table starts at sheet column E (0-indexed 4), rows 47..51.
+  // table starts at sheet column E (0-indexed 4), rows 47..51.
   // Period name: cell left of the header (D47), then above the name column
   // (E46), then the legacy K1 position for sheets still on the old layout.
   var L = 4;                             // first column of the table (0-indexed)
@@ -2472,7 +2284,7 @@ function computeTargetBlock_(ss) {
     });
     totalRow.total = people.reduce(function (a, p) { return a + p.total; }, 0);
   }
-  // Task 58: the narrow C-SAT report (target!E47:F51) has no TOTAL row and
+  // the narrow C-SAT report (target!E47:F51) has no TOTAL row and
   // no sheet-level C-SAT — derive the store C-SAT / CFI as the average of
   // the per-person values (blank or 0 rows keep out of the average) so the
   // summary chips still show a store number.
@@ -2522,175 +2334,6 @@ function computeTargetBlock_(ss) {
     hasTotalCol: totalCol >= 0, hasCsatCol: csatCol >= 0, hasCfiCol: cfiCol >= 0,
     satisfiedCount: satisfiedCount, dissatisfiedCount: dissatisfiedCount,
   };
-}
-
-/** Renders the C-SAT block: summary tiles + styled table + repair strip. */
-function renderTargetBlock_(tb, ra) {
-  if (!tb.available) return "";
-  var title = "Customer Satisfaction — " + (tb.periodName || "current period");
-
-  function pctOf(part, whole) { return whole > 0 ? Math.round((part / whole) * 100) : 0; }
-  function chip(cls, label, value, sub) {
-    return '<div class="csat-chip ' + cls + '"><span class="cc-label">' + esc_(label) + '</span>' +
-      '<span class="cc-value">' + esc_(value) + '</span><span class="cc-sub">' + esc_(sub || "") + '</span></div>';
-  }
-
-  var chips = [];
-  if (tb.labels.length) {
-    chips.push(chip("", "Feedback responses", tb.totalRow.total,
-      tb.people.length + " salesperson" + (tb.people.length === 1 ? "" : "s") + " rated"));
-    chips.push(chip("pos", "Satisfied (VS + SS)", pctOf(tb.satTotal, tb.totalRow.total) + "%",
-      tb.satTotal + " of " + tb.totalRow.total));
-    if (tb.csat) chips.push(chip("info", "C-SAT", tb.csat, "as recorded in sheet"));
-    if (tb.cfi) chips.push(chip(tb.cfi === "0.00%" || tb.cfi === "0" ? "pos" : "warn", "CFI", tb.cfi, "as recorded in sheet"));
-    chips.push(chip(tb.disTotal > 0 ? "neg" : "pos", "Dissatisfied", pctOf(tb.disTotal, tb.totalRow.total) + "%",
-      tb.disTotal + " of " + tb.totalRow.total));
-  } else {
-    // Task 58: narrow target!E47:F51 report — no satisfaction buckets; show
-    // the store C-SAT (sheet total, else average of the per-CRE values) and
-    // how many CREs were rated.
-    if (tb.csat) chips.push(chip("info", "Store C-SAT", tb.csat, "from target!F48:F51"));
-    chips.push(chip("", "CREs rated", tb.people.length, "rows from target!E48:F51"));
-    if (tb.cfi) chips.push(chip("info", "CFI", tb.cfi, "as recorded in sheet"));
-  }
-
-  var thead = "<thead><tr><th>" + esc_(tb.nameHeader) + "</th>";
-  tb.labels.forEach(function (h) { thead += "<th>" + esc_(h) + "</th>"; });
-  if (tb.labels.length || tb.hasTotalCol) thead += "<th>Total</th>";
-  if (tb.labels.length) thead += "<th>% Satisfied</th>";
-  if (tb.hasCsatCol) thead += "<th>C-SAT</th>";
-  if (tb.hasCfiCol) thead += "<th>CFI</th>";
-  thead += "</tr></thead>";
-
-  function dataRow(e, isTotal) {
-    var tr = "<tr" + (isTotal ? ' class="totrow"' : "") + "><td><b>" + esc_(e.name) + "</b></td>";
-    e.cats.forEach(function (n, i) {
-      var cls = tb.kinds[i] === "pos" ? "csat-pos" : tb.kinds[i] === "neg" ? "csat-neg" : "csat-mid";
-      tr += '<td class="num ' + cls + '">' + (n || "—") + "</td>";
-    });
-    if (tb.labels.length || tb.hasTotalCol) tr += '<td class="num"><b>' + e.total + "</b></td>";
-    if (tb.labels.length) tr += '<td class="num">' + pctOf(tb.satisfiedCount(e), e.total) + "%</td>";
-    if (tb.hasCsatCol) tr += '<td class="num">' + esc_(e.csat || "—") + "</td>";
-    if (tb.hasCfiCol) tr += '<td class="num">' + esc_(e.cfi || "—") + "</td>";
-    return tr + "</tr>";
-  }
-  var body = "<tbody>" + tb.people.map(function (p) { return dataRow(p, false); }).join("") +
-    dataRow(tb.totalRow, true) + "</tbody>";
-
-  // Owner layout: table shrunk and left-aligned; the summary chips stack in a
-  // column immediately to the table's right.
-  // Task 40: chips sit BELOW the table in one horizontal band (owner's layout).
-  var table = '<div class="scroll-x csat-left"><table class="ptable csat-table">' + thead + body +
-    '</table></div><div class="csat-brow">' + chips.join("") + "</div>";
-
-  // Task 45: the repairs 3-month comparison strip was removed (owner: no
-  // last-3-month average comparisons anywhere on the dashboards).
-
-  return '<section class="sec"><div class="sec-head">' +
-    "<h2>🎯 D1. " + esc_(title) + "</h2>" +
-    '<p class="sec-sub">Every feedback response lands in a satisfaction bucket. Period name from ' +
-    '<span class="src-hint">target!D47</span>, table from <span class="src-hint">target!E47:F51</span> ' +
-    '(auto-extends up to <span class="src-hint">:O51</span> when the full satisfaction grid is filled) — ' +
-    "cleaned and re-presented (junk columns dropped, totals verified).</p></div>" +
-    table + "</section>";
-}
-
-/** Loads everything the Performance & Process pages need. */
-function loadPerformanceData_() {
-  // Deployment hardening: if this helper ever goes missing from the project
-  // (stale/partial paste), fall back to the bound spreadsheet directly.
-  var ss = (typeof getSpreadsheet_ === "function") ? getSpreadsheet_()
-    : SpreadsheetApp.getActiveSpreadsheet();
-  var jm = computeJobManagement_(ss);
-  var ra = computeRepairAnalytics_(jm.serviceRows || []);
-  // Task 35: stamp EVERY tab with the refresh timestamp — whenever the
-  // dashboard is (re)loaded the owning sheets carry the "updated at" time.
-  var refreshStamp = stampSheetsRefreshed_(ss);
-  var opsExtras = computeOperationExtras_(ss);
-
-  // Freshness: the newest dated row of each sheet, surfaced on the index page.
-  function latestDateKey_(names, spec, field) {
-    var sheet = getSheetByNames_(ss, names);
-    if (!sheet) return null;
-    var rd = readSheetRows_(sheet, spec, [field]);
-    var ts = 0, key = "";
-    rd.rows.forEach(function (r) {
-      var d = parseAnyDate_(r[field]);
-      if (d.valid && d.ts > ts) { ts = d.ts; key = d.dayKey; }
-    });
-    return key || "no rows";
-  }
-  // Task 39: the freshness line also shows the TIME of the last record.
-  function latestStamp_(names, spec, field) {
-    var sheet = getSheetByNames_(ss, names);
-    if (!sheet) return null;
-    var rd = readSheetRows_(sheet, spec, [field]);
-    var ts = 0, lab = "";
-    rd.rows.forEach(function (r) {
-      var d = parseAnyDate_(r[field]);
-      if (d.valid && d.ts > ts) {
-        ts = d.ts;
-        var hh = Math.floor(d.minutes / 60), mi = d.minutes % 60;
-        lab = d.dayKey + (d.minutes ? " " + (hh < 10 ? "0" + hh : hh) + ":" + (mi < 10 ? "0" + mi : mi) : "");
-      }
-    });
-    return ts ? lab : null;
-  }
-  var freshness = {
-    crm: latestStamp_([CONFIG.CRM_SHEET_NAME], { invoiceDate: [/invoice.*date/i, /^inv.*date/i] }, "invoiceDate") || "no rows",
-    walkin: latestStamp_(CONFIG.WALKIN_SHEET_NAMES, { tokenDate: WALKIN_SPEC.tokenDate }, "tokenDate") || "no rows",
-    service: latestStamp_(CONFIG.SERVICE_SHEET_NAMES, { caseDate: SERVICE_SPEC.caseDate }, "caseDate") || "no rows",
-    comm: latestStamp_(CONFIG.COMM_SHEET_NAMES, { createdDate: COMM_SPEC.createdDate }, "createdDate") || "no comm sheet",
-    advance: "no date column",
-  };
-
-  return {
-    walkin: computeWalkinAnalysis_(ss),
-    jobs: jm,
-    repair: ra,
-    targetBlock: computeTargetBlock_(ss),
-    freshness: freshness,
-    opsExtras: opsExtras,
-    refreshStamp: refreshStamp,
-    generatedAt: new Date(),
-  };
-}
-
-/**
- * TASK 35 — write the dashboard-refresh timestamp into EVERY sheet tab so
- * anyone opening the Google sheet can see when the dashboard last refreshed.
- * The stamp sits one column to the right of the last used column in row 1,
- * as a single-cell label: "⟳ Dashboard refresh · dd-MM-yyyy HH:mm".
- * The same cell is located by its prefix on later refreshes and overwritten,
- * so the sheet never grows extra columns. Returns the stamp string shown on
- * the index page, or "" when the sheet service is unavailable (tests).
- */
-function stampSheetsRefreshed_(ss) {
-  try {
-    var now = new Date();
-    function p(n) { return (n < 10 ? "0" : "") + n; }
-    var stamp = "⟳ Dashboard refresh · " +
-      p(now.getDate()) + "-" + p(now.getMonth() + 1) + "-" + now.getFullYear() +
-      " " + p(now.getHours()) + ":" + p(now.getMinutes());
-    var PREFIX = "⟳ Dashboard refresh";
-    ss.getSheets().forEach(function (sh) {
-      try {
-        var lastCol = Math.max(1, sh.getLastColumn ? sh.getLastColumn() : 1);
-        var target = 1;
-        // Look for our previous stamp anywhere in row 1 to overwrite it.
-        var hdr = sh.getRange(1, 1, 1, lastCol).getValues()[0];
-        var found = 0;
-        for (var c = 0; c < hdr.length; c++) {
-          if (String(hdr[c]).indexOf(PREFIX) === 0) { found = c + 1; break; }
-        }
-        target = found || (lastCol + 1);
-        sh.getRange(1, target).setValue(stamp);
-      } catch (e1) { /* a locked/derived tab is skipped, not fatal */ }
-    });
-    return stamp;
-  } catch (e) {
-    return "";
-  }
 }
 
 /**
@@ -2780,224 +2423,190 @@ function computeOperationExtras_(ss) {
   return out;
 }
 
+/** Loads everything the Performance & Process pages need. */
+function loadPerformanceData_() {
+  // Deployment hardening: if this helper ever goes missing from the project
+  // (stale/partial paste), fall back to the bound spreadsheet directly.
+  var ss = (typeof getSpreadsheet_ === "function") ? getSpreadsheet_()
+    : SpreadsheetApp.getActiveSpreadsheet();
+  var jm = computeJobManagement_(ss);
+  var ra = computeRepairAnalytics_(jm.serviceRows || []);
+  // stamp EVERY tab with the refresh timestamp — whenever the
+  // dashboard is (re)loaded the owning sheets carry the "updated at" time.
+  var refreshStamp = stampSheetsRefreshed_(ss);
+  var opsExtras = computeOperationExtras_(ss);
 
-
-function money_(n) { return "₹" + Math.round(n || 0).toLocaleString("en-IN"); }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-/* ============================================================================
- * WEB APP HTML RENDERER  (Mode B — the standalone "script page")
- * Pure server-side string templating — no client-side calls back into
- * Apps Script are needed, so the page works even for anonymous / link
- * viewers. Reload the URL to recompute from the latest sheet data.
- * ========================================================================= */
-
-function esc_(s) {
-  return String(s === null || s === undefined ? "" : s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-function pctBadgeHtml_(pctVal) {
-  var cls = pctVal >= 100 ? "good" : pctVal >= 70 ? "info" : pctVal >= 40 ? "warn" : "bad";
-  return '<span class="badge ' + cls + '">' + pctVal.toFixed(1) + "%</span>";
-}
-
-function barHtml_(pctVal) {
-  var clamped = Math.max(0, Math.min(100, pctVal));
-  var cls = pctVal >= 100 ? "good" : pctVal >= 70 ? "info" : pctVal >= 40 ? "warn" : "bad";
-  return '<div class="bar"><div class="bar-fill ' + cls + '" style="width:' + clamped + '%"></div></div>';
-}
-
-/** Builds just the dashboard sections (used for both first paint and refresh). */
-function renderSectionsHtml_(data) {
-  // Full Business content (kept for compatibility); pages render only their
-  // own slice via renderPageHtml_ below.
-  return renderGpHtml_(data) + renderKpiHtml_(data) + renderDateHtml_(data);
-}
-
-/** GP page: Store target · Weekly Revenue Analysis · Invoice valuation. */
-function renderGpHtml_(data) {
-  var body = "";
-  body += renderStoreCards_(data);
-  body += renderStoreTable_(data);
-  body += renderWorkingDaysCard_(data);
-  body += renderInvoiceValuation_(data);
-  body += renderGpExtras_(data.gpExtras);
-  body += renderWeeklyAnalysis_(data);
-  return body;
-}
-
-/** Task 42 — the two GP tiles: high/low margin + discounted cases. */
-function renderGpExtras_(x) {
-  x = x || {};
-  var discount = x.discount || { count: 0, value: 0, gp: 0, pct: 0, byType: {}, byTypeValue: {} };
-  var hi = x.marginHigh || [], lo = x.marginLow || [];
-  function money0(v) { return money_(v || 0); }
-
-  function marginTable(rows) {
-    var body = rows.map(function (m) {
-      // Task 45: invoice number back under the short part (owner wants both);
-      // the cell carries a tooltip since the column is width-capped.
-      return '<td title="' + esc_(m.partLabel + " · " + m.invoice) + '"><b>' + esc_(m.partLabel) +
-        '</b><span class="cell-sub">' + esc_(m.invoice) + "</span></td>" +
-        "<td>" + esc_(m.typeLabel) + "</td>" +
-        '<td class="num">' + money0(m.taxable) + "</td>" +
-        '<td class="num"><span class="' + (m.gp >= 0 ? "pos" : "neg") + '">' + money0(m.gp) + "</span></td>" +
-        '<td class="num"><span class="' + (m.margin >= 0 ? "pos" : "neg") + '">' + m.margin.toFixed(1) + "%</span></td></tr>";
-    }).join("");
-    if (!rows.length) body = '<tr><td colspan="5"><span class="muted">no invoice valuation rows</span></td></tr>';
-    return '<table class="ptable"><thead><tr><th>Part</th><th>Revenue Type</th>' +
-      '<th class="num">Taxable</th><th class="num">Gross Profit</th><th class="num">Margin %</th></tr></thead>' +
-      "<tbody>" + body + "</tbody></table>";
+  // Freshness: the newest dated row of each sheet, surfaced on the index page.
+  function latestDateKey_(names, spec, field) {
+    var sheet = getSheetByNames_(ss, names);
+    if (!sheet) return null;
+    var rd = readSheetRows_(sheet, spec, [field]);
+    var ts = 0, key = "";
+    rd.rows.forEach(function (r) {
+      var d = parseAnyDate_(r[field]);
+      if (d.valid && d.ts > ts) { ts = d.ts; key = d.dayKey; }
+    });
+    return key || "no rows";
   }
+  // the freshness line also shows the TIME of the last record.
+  function latestStamp_(names, spec, field) {
+    var sheet = getSheetByNames_(ss, names);
+    if (!sheet) return null;
+    var rd = readSheetRows_(sheet, spec, [field]);
+    var ts = 0, lab = "";
+    rd.rows.forEach(function (r) {
+      var d = parseAnyDate_(r[field]);
+      if (d.valid && d.ts > ts) {
+        ts = d.ts;
+        var hh = Math.floor(d.minutes / 60), mi = d.minutes % 60;
+        lab = d.dayKey + (d.minutes ? " " + (hh < 10 ? "0" + hh : hh) + ":" + (mi < 10 ? "0" + mi : mi) : "");
+      }
+    });
+    return ts ? lab : null;
+  }
+  var freshness = {
+    crm: latestStamp_([CONFIG.CRM_SHEET_NAME], { invoiceDate: [/invoice.*date/i, /^inv.*date/i] }, "invoiceDate") || "no rows",
+    walkin: latestStamp_(CONFIG.WALKIN_SHEET_NAMES, { tokenDate: WALKIN_SPEC.tokenDate }, "tokenDate") || "no rows",
+    service: latestStamp_(CONFIG.SERVICE_SHEET_NAMES, { caseDate: SERVICE_SPEC.caseDate }, "caseDate") || "no rows",
+    comm: latestStamp_(CONFIG.COMM_SHEET_NAMES, { createdDate: COMM_SPEC.createdDate }, "createdDate") || "no comm sheet",
+    advance: "no date column",
+  };
 
-  var TYPE_LBL = [["repair", "Repair Revenue"], ["accessory", "Accessory Revenue"], ["service", "Service Revenue"]];
-  var dRows = TYPE_LBL.map(function (t) {
-    var top = discount.byTypeTop && discount.byTypeTop[t[0]];
-    return "<tr><td>" + t[1] + '</td><td class="num">' + (discount.byType[t[0]] || 0) +
-      '</td><td class="num">' + money0(discount.byTypeValue[t[0]]) +
-      "</td><td>" + (top ? esc_(top.label) + (top.n > 1 ? " ×" + top.n : "") : '<span class="muted">—</span>') + "</td></tr>";
-  }).join("");
-  var dTotal = '<tr class="totrow"><td><b>Total</b></td><td class="num"><b>' + discount.count +
-    '</b></td><td class="num"><b>' + money0(discount.value) + "</b></td><td></td></tr>";
-
-  var marginPanel =
-    '<section class="section" id="sec-gpmargin"><h2>A4. 📈 High / Low Margin ' + exportSectionBtn_("margin") + '</h2><div class="body">' +
-    '<div class="sec-desc">margin % = crm!GrossProfit ÷ crm!TaxableAmount per unique invoice (SALES only; ' +
-    "zero-base invoices skipped). Top 5 at each end, across all revenue types.</div>" +
-    '<div class="hl-pair">' +
-    '<div class="hl-half"><div class="subpanel-head">Top 5 — High Margin</div><div class="scroll-x">' + marginTable(hi) + "</div></div>" +
-    '<div class="hl-half"><div class="subpanel-head">Top 5 — Low Margin</div><div class="scroll-x">' + marginTable(lo) + "</div></div>" +
-    "</div></div></section>";
-
-  var discPanel =
-    '<section class="section" id="sec-discount"><h2>A5. 🏷 Discounted Cases</h2><div class="body">' +
-    '<div class="sec-desc">crm!DiscountAmount &gt; 0 rows (SALES only); cases counted once per unique invoice code.</div>' +
-    '<div class="cards" style="margin-bottom:12px">' +
-    '<div class="card"><div class="label">Discounted Invoices</div><div class="value">' + discount.count +
-    '</div><div class="sub">unique invoice codes</div></div>' +
-    '<div class="card"><div class="label">Total Discount Value</div><div class="value neg">' + money0(discount.value) +
-    '</div><div class="sub">Σ crm!DiscountAmount</div></div>' +
-    '<div class="card"><div class="label">Discount ÷ Gross Profit</div><div class="value">' + discount.pct +
-    '%</div><div class="sub">vs GP of the discounted lines</div></div>' +
-    "</div>" +
-    '<div class="scroll-x"><table class="ptable"><thead><tr><th>Revenue Type</th><th class="num">Cases</th>' +
-    '<th class="num">Discount Value</th><th>Top Part</th></tr></thead><tbody>' +
-    dRows + dTotal + "</tbody></table></div>" +
-    "</div></section>";
-
-  // Task 46: stacked vertically (each panel gets the full page width) with
-  // High / Low Margin ABOVE Discounted Cases — no more side-by-side pair.
-  return '<div class="gp-stack">' + marginPanel + discPanel + "</div>";
+  return {
+    walkin: computeWalkinAnalysis_(ss),
+    jobs: jm,
+    repair: ra,
+    targetBlock: computeTargetBlock_(ss),
+    freshness: freshness,
+    opsExtras: opsExtras,
+    refreshStamp: refreshStamp,
+    generatedAt: new Date(),
+  };
 }
 
-/** KPI page: KPI target · Incentive · Salesperson performance · AR attachment. */
-function renderKpiHtml_(data) {
-  // KPI table sizes to its CONTENT, and the incentive tables compress into
-  // the free space on its right instead of leaving a wide empty band.
-  var body = '<div class="kpi-pair"><div class="kp-left">' + renderKpiSection_(data) + "</div>" +
-    '<div class="kp-right">' + renderIncentiveTable_(data) + "</div></div>";
-  body += renderSalespersonCards_(data);
-  body += renderArSection_(data);
-  return body;
+/**
+ * TASK 35 — write the dashboard-refresh timestamp into EVERY sheet tab so
+ * anyone opening the Google sheet can see when the dashboard last refreshed.
+ * The stamp sits one column to the right of the last used column in row 1,
+ * as a single-cell label: "⟳ Dashboard refresh · dd-MM-yyyy HH:mm".
+ * The same cell is located by its prefix on later refreshes and overwritten,
+ * so the sheet never grows extra columns. Returns the stamp string shown on
+ * the index page, or "" when the sheet service is unavailable (tests).
+ */
+function stampSheetsRefreshed_(ss) {
+  try {
+    var now = new Date();
+    function p(n) { return (n < 10 ? "0" : "") + n; }
+    var stamp = "⟳ Dashboard refresh · " +
+      p(now.getDate()) + "-" + p(now.getMonth() + 1) + "-" + now.getFullYear() +
+      " " + p(now.getHours()) + ":" + p(now.getMinutes());
+    var PREFIX = "⟳ Dashboard refresh";
+    ss.getSheets().forEach(function (sh) {
+      try {
+        var lastCol = Math.max(1, sh.getLastColumn ? sh.getLastColumn() : 1);
+        var target = 1;
+        // Look for our previous stamp anywhere in row 1 to overwrite it.
+        var hdr = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+        var found = 0;
+        for (var c = 0; c < hdr.length; c++) {
+          if (String(hdr[c]).indexOf(PREFIX) === 0) { found = c + 1; break; }
+        }
+        target = found || (lastCol + 1);
+        sh.getRange(1, target).setValue(stamp);
+      } catch (e1) { /* a locked/derived tab is skipped, not fatal */ }
+    });
+    return stamp;
+  } catch (e) {
+    return "";
+  }
 }
 
-/** DATE page: date-wise sales revenue analysis (by salesperson). */
-function renderDateHtml_(data) {
-  return renderDateWiseTable_(data);
+/* ==========================================================================
+ * 07 · PERIOD ANALYSIS (weekly & date-wise)                               *
+ * ======================================================================== */
+
+/**
+ * Section 7 — a date-by-date matrix.
+ *
+ * One row per date. Each salesperson owns a group of columns, and within
+ * that group every revenue type (Service / Accessory / Repair) gets its own
+ * cell showing "achieved / day-target". A cell is green when the achieved
+ * value meets or beats that person's daily target for that revenue type,
+ * red when it falls short. Each salesperson's column group is tinted so the
+ * blocks stay visually distinct.
+ *
+ * The date column itself keeps the original rule: the STORE total for that
+ * day, green when it meets or beats the store daily target, red when not.
+ */
+/** Weekly revenue analysis — weeks of the current month, per revenue type. */
+function computeWeeklyAnalysis_(data) {
+  var now = new Date();
+  var curMonth = now.getMonth() + 1, curYear = now.getFullYear();
+  var monthName = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][curMonth - 1] +
+    " " + curYear;
+  var daysInMonth = daysInCurrentMonth_();
+  var TYPES = [
+    { key: "service", label: "Service", monthTarget: data.store.service.target },
+    { key: "accessory", label: "Accessory", monthTarget: data.store.accessory.target },
+    { key: "repair", label: "Repair", monthTarget: data.store.repair.target },
+    { key: "grossProfit", label: "Gross Profit", monthTarget: data.store.grossProfit.target },
+  ];
+  // one soft colour per revenue type so the groups read apart.
+  var WCLASS = { service: "wt-svc", accessory: "wt-acc", repair: "wt-rep", grossProfit: "wt-gp" };
+  TYPES.forEach(function (t) { t.wc = WCLASS[t.key]; });
+
+  // Week chunks of the month: 1–7, 8–14, 15–21, 22–28, 29–end.
+  var weeks = [];
+  for (var start = 1; start <= daysInMonth; start += 7) {
+    var end = Math.min(daysInMonth, start + 6);
+    var w = { start: start, end: end, workingDays: 0, achieved: {}, tgt: {}, idx: weeks.length + 1 };
+    for (var d = start; d <= end; d++) if (isWorkingDay_(d)) w.workingDays++;
+    TYPES.forEach(function (t) { w.achieved[t.key] = 0; });
+    weeks.push(w);
+  }
+  var totalWorkingDays = 0;
+  weeks.forEach(function (w) { totalWorkingDays += w.workingDays; });
+
+  // Weekly target plan (owner's formula): split the month target by the
+  // month's ACTUAL working days to get a per-working-day rate, then multiply
+  // back by this week's working days.
+  //   week target = month target ÷ actual working days × week working days
+  weeks.forEach(function (w) {
+    TYPES.forEach(function (t) {
+      var perDay = t.monthTarget / Math.max(1, totalWorkingDays);
+      w.tgt[t.key] = Math.round(perDay * w.workingDays);
+    });
+  });
+
+  // Achieved per week: only current-month CRM dates count.
+  (data.days || []).forEach(function (d) {
+    if (d.undated || d.month !== curMonth || d.year !== curYear || !d.day) return;
+    var w = weeks[Math.floor((d.day - 1) / 7)];
+    if (!w) return;
+    w.achieved.service += d.serviceRevenue || 0;
+    w.achieved.accessory += d.accessoryRevenue || 0;
+    w.achieved.repair += d.repairRevenue || 0;
+    w.achieved.grossProfit += d.grossProfit || 0;
+  });
+
+  var monthTotals = {};
+  TYPES.forEach(function (t) {
+    monthTotals[t.key] = 0;
+    weeks.forEach(function (w) {
+      w.achieved[t.key] = Math.round(w.achieved[t.key]);
+      monthTotals[t.key] += w.achieved[t.key];
+    });
+  });
+
+  var daysElapsed = data.store.daysElapsed;
+  weeks.forEach(function (w) {
+    w.status = daysElapsed > w.end ? "Completed"
+      : (daysElapsed >= w.start ? "In progress" : "Upcoming");
+  });
+
+  return { monthName: monthName, weeks: weeks, totalWorkingDays: totalWorkingDays,
+    types: TYPES, monthTotals: monthTotals };
 }
-
-/** WALK-IN page: walk-in analysis + token creation side by side. */
-function renderWalkinHtml_(pd) {
-  var wl = pd.walkin;
-  var head =
-    '<section class="section" id="sec-walkin"><h2>C. 🚶 Walk-in Analysis &amp; Token Creation</h2><div class="body">' +
-    '<div class="sec-desc">source: ' + esc_(wl.sheetName) +
-    ". Every row is one walk-in — MobileNo identifies the visitor (Unique = distinct mobiles); a row with a CaseId counts as a case, a row with an InvoiceCode as a completed sale. The token table pins which user created each token.</div>" +
-    '<div class="walkin-pair">';
-
-  // Matching heads keep 🚶 Walk-in Analysis and 🎟 Token Creation aligned on
-  // ONE line; the wide day-wise table gets the full page width below the pair.
-  var left =
-    '<div class="wp-left"><div class="wp-head">C1. 🚶 Walk-in Analysis</div>' +
-    '<p class="sec-desc" style="margin:-2px 0 10px">month-to-date walk-in summary — visitors, cases, invoices, remarks and dead leads.</p>' +
-    renderWalkinAnalysis_(wl) + "</div>";
-  var mid =
-    '<div class="wp-mid"><div class="wp-head">C2. 🧭 Customer Source Analysis</div>' +
-    '<p class="sec-desc" style="margin:-2px 0 10px">pivot on walkin!CustomerVisitSource against the total number of walk-ins.</p>' +
-    renderCustomerSource_(wl) + "</div>";
-  var right =
-    '<div class="wp-right"><div class="wp-head">C3. 🎟 Token Creation</div>' +
-    '<p class="sec-desc" style="margin:-2px 0 10px">how many walk-in tokens each user created, and their share of the month&rsquo;s tokens.</p>' +
-    renderTokenCreation_(wl) + "</div>";
-
-  return head + left + mid + right + "</div>" +
-    '<div class="wp-daytable"><div class="wp-head">C4. 📅 Day-wise Walk-in &amp; Token Details</div>' +
-    renderWalkinDayTable_(wl) + "</div></div></section>";
-}
-
-/** Task 49: decline / win-back card pair — shared by the OPERATION
- * group (SM page) and the TECH page. */
-function renderOpsPairHtml_(ex) {
-  return (
-    '<div class="ops-pair"><section class="sec"><div class="sec-head"><h2>D3. 🚫 Decline Repair ' + exportSectionBtn_("decline") + '</h2>' +
-    '<p class="sec-sub">Unique CaseIDs in <b>decline</b> where GSXRepairStatusDescription is ' +
-    '"Declined - Rejected by Local Approver".</p></div>' +
-    '<div class="cards">' +
-    '<div class="card"><div class="label">Declined repairs</div><div class="value">' +
-      (ex.decline.count || 0) + '</div>' +
-      '<div class="sub">' + (ex.decline.sheetName ? "unique CaseIDs · from " + esc_(ex.decline.sheetName) : "no decline sheet found") + '</div></div>' +
-    "</div></section>" +
-  // Task 41 — Requote & Win-back: eligible cases are carry-in / mail-in
-  // parts repairs, OUT of warranty (service!ProductWarrantyDesc); a win-back
-  // is a serial whose Repair-Revenue quote was rejected and later approved.
-    '<section class="sec"><div class="sec-head"><h2>D4. 🔁 Requote &amp; Win-back</h2>' +
-    '<p class="sec-sub">Serials (service!SerialNo1) of out-of-warranty carry-in / mail-in cases whose ' +
-    '<b>quote</b> rows (RevenueType "Repair Revenue") show lastAction rejected and later approved for the same serial.</p></div>' +
-    '<div class="cards">' +
-    '<div class="card"><div class="label">Win-backs</div><div class="value">' +
-      (ex.winback.count || 0) + '</div>' +
-      '<div class="sub">' + (ex.winback.sheetName ? "rejected → approved · unique serials · from " + esc_(ex.winback.sheetName) : "no quote sheet found") + '</div></div>' +
-    "</div></section></div>");
-}
-
-/** OPERATION page: customer satisfaction + repair ops + sub-modules. */
-function renderOperationHtml_(pd) {
-  var out = [];
-  out.push(renderTargetBlock_(pd.targetBlock, pd.repair));
-  out.push(renderRepairAnalyticsInner_(pd.repair));
-  var ex = pd.opsExtras || { decline: {}, winback: {} };
-  // Task 35 — Decline Repair: unique decline!CaseId whose GSX status is
-  // "Declined - Rejected by Local Approver".
-  out.push(renderOpsPairHtml_(ex));
-
-  return out.join("");
-}
-
-
 
 /** TASK 36-D: DECK numbers. Everything is CURRENT MONTH only (the owner keeps
  *  previous months manually). crm!TranType == "SALESRETURN" is excluded at the
@@ -3067,7 +2676,7 @@ function computeDeckAnalysis_(ss, crmRows) {
       allCases.push(b.row);
       if (b.ts && mkeyTs(b.ts) === curMKey) caseMonth.push(b.row);
     });
-    // Task 38: at month change the service export still holds last month's
+    // at month change the service export still holds last month's
     // cases — mirror the CRM fallback above so the two case-driven tables
     // (Repair Revenue & Coverage) never sit at zero on a stale sheet.
     if (!caseMonth.length) caseMonth = allCases;
@@ -3095,7 +2704,7 @@ function computeDeckAnalysis_(ss, crmRows) {
     var cid = str_(r.caseId);
     famSerial[f][sn || ("#" + cid)] = true;                     // unique count, deduped
   });
-  // Task 40: the value join must run over the SAME population the count is
+  // the value join must run over the SAME population the count is
   // taken from (the month-window repair set; caseMonth already carries the
   // stale-sheet fallback). Linking to a wider set printed values beside a
   // zero count — the owner's "0 counts but value shows" bug.
@@ -3220,7 +2829,7 @@ function computeDeckAnalysis_(ss, crmRows) {
   covCases.forEach(function (r) {
     var c = cov[covBucket_(r.product, r.issue)];
     c.count++;
-    // Task 41: product-warranty text first, legacy coverage-code text as the
+    // product-warranty text first, legacy coverage-code text as the
     // fallback when the product column is empty — mixed exports under-counted
     // the W side before.
     var wtxt = (str_(r.productWarranty) || str_(r.warranty)).toLowerCase();
@@ -3238,122 +2847,31 @@ function computeDeckAnalysis_(ss, crmRows) {
   return out;
 }
 
-/** DECK page (Task 36): full rework — the owner's 8 tables, current month
- *  only, in the given order. All values come from computeDeckAnalysis_. */
-function renderDeckHtml_(data, pd) {
-  var d = (data && data.deckAnalysis) || {};
-  var month = d.monthLabel || "";
-  var stamp = month ? '<span class="fresh-chip fresh-stamp"><i>current month</i><b>' + esc_(month) + "</b></span>" : "";
+/* ==========================================================================
+ * 08 · RENDER PRIMITIVES                                                  *
+ * ======================================================================== */
 
-  function th(cells) {
-    return "<thead><tr>" + cells.map(function (c, i) {
-      return "<th" + (i > 0 ? ' class="num"' : "") + ">" + esc_(c) + "</th>";
-    }).join("") + "</tr></thead>";
-  }
-  function tr(cells, total) {
-    return "<tr" + (total ? ' class="totrow"' : "") + ">" + cells.map(function (c, i) {
-      return "<td" + (i === 0 ? ">" : ' class="num">') + c + "</td>";
-    }).join("") + "</tr>";
-  }
-  function money0(v) { return money_(v || 0); }
-  function table(id, icon, title, sub, head, body, foot) {
-    return '<section class="section" id="' + id + '"><h2>' + icon + " " + esc_(title) + "</h2>" +
-      '<div class="body">' +
-      '<div class="scroll-x"><table class="ptable decktable">' + th(head) + "<tbody>" +
-      body + (foot || "") + "</tbody></table></div></div></section>";
-  }
-
-  var sections = [];
-
-  // ---- 1) Sales Revenue Analysis (revenue details) ----
-  var sr = d.salesRev || { rows: [] };
-  sections.push(table("deck-sales", "📊", "G1. Sales Revenue Analysis",
-    "Revenue details — count & value per crm!RevenueType · crm!TaxableAmount. " +
-    "crm!TranType = SALESRETURN is excluded from every valuation on this page.",
-    ["Revenue Type", "Count", "Value"],
-    sr.rows.map(function (r) { return tr([esc_(r.label), r.count, money0(r.value)]); }).join(""),
-    tr(["<b>Total</b>", "<b>" + (sr.totalCount || 0) + "</b>", "<b>" + money0(sr.totalValue) + "</b>"], true)));
-
-  // ---- 2) Walk-in details ----
-  var w = d.walkins || {};
-  sections.push(table("deck-walkin", "🚶", "G2. Walk-in Details",
-    "Total unique walk-in count from walkin!MobileNo · unique invoice count from crm!InvoiceCode.",
-    ["Metric", "Count"],
-    tr(["No. Of Walkin (unique)", w.unique || 0]) +
-    tr(["Unique Invoice", w.uniqBills || 0])));
-
-  // ---- 3) Repair Revenue Analysis ----
-  var rr = d.repairRev || { rows: [] };
-  sections.push(table("deck-repair", "🔧", "G3. Repair Revenue Analysis",
-    "Product families by service!ProductDescription · unique count from service!SerialNo1 · " +
-    "value = crm!TaxableAmount where service!CaseId = crm!OrderCode. Service Non-Repair excluded.",
-    ["Product", "Count", "Value"],
-    rr.rows.map(function (r) { return tr([esc_(r.label), r.count, money0(r.value)]); }).join(""),
-    tr(["<b>Total</b>", "<b>" + (rr.totalCount || 0) + "</b>", "<b>" + money0(rr.totalValue) + "</b>"], true)));
-
-  // ---- 4) Accessories Revenue Analysis ----
-  var ar = d.accessoriesRev || { rows: [] };
-  sections.push(table("deck-accessories", "📱", "G4. Accessories Revenue Analysis",
-    "Buckets from crm!ItemDescription — tg / temper(ed) glass / tamper → Tempered Glass; " +
-    "Case; Adapter & Cable; AppleCare+/AC+; Protect Plus; AMC; rest → Others. Value = crm!TaxableAmount.",
-    ["Product", "Count", "Value"],
-    ar.rows.map(function (r) { return tr([esc_(r.label), r.count, money0(r.value)]); }).join(""),
-    tr(["<b>Total</b>", "<b>" + (ar.totalCount || 0) + "</b>", "<b>" + money0(ar.totalValue) + "</b>"], true)));
-
-  // ---- 5) Service Revenue Analysis ----
-  var sv = d.serviceRev || { rows: [] };
-  sections.push(table("deck-service", "🧾", "G5. Service Revenue Analysis",
-    "Pivot on crm!ItemCode — Service Revenue only; crm!TranType = SALESRETURN excluded.",
-    ["Item Code", "Count", "Value"],
-    sv.rows.map(function (r) { return tr([esc_(r.label), r.count, money0(r.value)]); }).join("") ||
-      tr(['<span class="muted">no Service Revenue rows this month</span>', "0", money0(0)]),
-    tr(["<b>Total</b>", "<b>" + (sv.totalCount || 0) + "</b>", "<b>" + money0(sv.totalValue) + "</b>"], true)));
-
-  // ---- 6) Gross Profit Analysis — Value ----
-  var gp = d.gpValue || { rows: [] };
-  sections.push(table("deck-gp", "💰", "G6. Gross Profit Analysis — Value",
-    "Invoice value = Σ crm!TaxableAmount · GP value = Σ crm!GrossProfit · GP% = GP ÷ invoice value.",
-    ["Revenue Type", "Invoice Value", "GP Value", "GP %"],
-    gp.rows.map(function (r) {
-      return tr([esc_(r.label), money0(r.value), money0(r.gp), r.pct.toFixed(1) + "%"]);
-    }).join(""),
-    (gp.total ? tr(["<b>Total</b>", "<b>" + money0(gp.total.value) + "</b>",
-      "<b>" + money0(gp.total.gp) + "</b>", "<b>" + gp.total.pct.toFixed(1) + "%</b>"], true) : "")));
-
-  // ---- 7) Walk-in Analysis (rank: most important) ----
-  var wa = d.walkinAnalysis || [];
-  sections.push(table("deck-walkin-analysis", "📈", "G7. Walk-in Analysis",
-    "No. Of Walkin = unique walkin!MobileNo · Unique Bill = unique crm!InvoiceCode · Bills = total invoices · " +
-    "AR/RR/SR = unique invoice count per crm!RevenueType · Walkin to Bills % = unique bills ÷ walk-ins · Enquiry = walk-ins − unique bills.",
-    ["Metric", "Count"],
-    wa.map(function (r) { return tr([esc_(r.label), r.value]); }).join("")));
-
-  // ---- 8) Coverage Analysis | LOB ----
-  var cov = d.coverage || { rows: [] };
-  sections.push(table("deck-coverage", "🛡", "G8. Coverage Analysis | LOB",
-    "Product + battery/display from service!ProductDescription & service!PartDescription (must match) · " +
-    "W / NW from service!CoverageCodeDescription.",
-    ["Product", "Cases", "W", "NW"],
-    cov.rows.map(function (r) { return tr([esc_(r.label), r.count, r.w, r.nw]); }).join(""),
-    (cov.total ? tr(["<b>Total</b>", "<b>" + cov.total.count + "</b>",
-      "<b>" + cov.total.w + "</b>", "<b>" + cov.total.nw + "</b>"], true) : "")));
-
-  // Task 39: same owner order, laid out as four side-by-side pairs.
-  var grid = "";
-  for (var pi = 0; pi < sections.length; pi += 2) {
-    grid += '<div class="deck-pair">' + sections[pi] + (sections[pi + 1] || "") + "</div>";
-  }
-  return '<section class="sec"><div class="sec-head"><h2>G. 🗂 Deck — ' + esc_(month || "Current Month") + " " + stamp + '</h2>' +
-    '<p class="sec-sub">Owner order — revenue · walk-in · repair · accessories · service · GP · walk-in analysis · coverage. ' +
-    "Current month only; previous months are kept manually by the owner. SALESRETURN is excluded everywhere.</p></div></section>" +
-    grid;
+function pctBadgeHtml_(pctVal) {
+  var cls = pctVal >= 100 ? "good" : pctVal >= 70 ? "info" : pctVal >= 40 ? "warn" : "bad";
+  return '<span class="badge ' + cls + '">' + pctVal.toFixed(1) + "%</span>";
 }
 
-/** OPEN JOBS page: job management. */
-function renderJobsHtml_(pd) {
-  return renderJobsSection_(pd);
+function barHtml_(pctVal) {
+  var clamped = Math.max(0, Math.min(100, pctVal));
+  var cls = pctVal >= 100 ? "good" : pctVal >= 70 ? "info" : pctVal >= 40 ? "warn" : "bad";
+  return '<div class="bar"><div class="bar-fill ' + cls + '" style="width:' + clamped + '%"></div></div>';
 }
 
+/** Task 47 — group banner separating the master's A-G groups on the SM page. */
+function roleBanner_(letter, name) {
+  return '<div class="group-banner"><span class="gb-letter">' + esc_(letter) + "</span>" +
+    '<span class="gb-name">' + esc_(name) + "</span></div>";
+}
+
+function emptyPerf_(sheetName, msg) {
+  return '<div class="empty-perf">📁 No <b>' + esc_(sheetName) + '</b> sheet was found in this spreadsheet.<br>' +
+    '<span class="muted">' + esc_(msg) + "</span></div>";
+}
 
 /** The "Updated ... · N rows · N invoices" line under the title. */
 function renderMetaText_(data) {
@@ -3362,1355 +2880,710 @@ function renderMetaText_(data) {
     " SALES rows · " + data.store.uniqueInvoices + " unique invoices";
 }
 
-/**
- * Task 54 — per-table export. The page-wide "Export to Sheets" is gone; a
- * small "⬇ Export" button sits on each owner-listed table only:
- *   A1 Store Target — Performance · Repairs & Jobs — counts ·
- *   D2 Repair Type Performance · D3 Decline Repair ·
- *   E1 Job Management — Open Jobs · A4 High / Low Margin ·
- *   B KPI Target — Store KPI Parameters
- * A click creates a NEW spreadsheet containing just that table, as shown.
- */
-function exportSectionBtn_(key) {
-  return '<button class="mini-export" onclick="dashExportSection(\'' + key + '\',this)" ' +
-    'title="Export this table to a spreadsheet">⬇ Export</button>';
-}
-function insertExportBtn_(html, key) {
-  return html.replace(/<h2[^>]*>/, function (m) { return m + exportSectionBtn_(key); });
-}
+/* ==========================================================================
+ * 09 · RENDER — STORE & SALES BLOCKS                                      *
+ * ======================================================================== */
 
-/** Table blocks for one export key (headers + rows, exactly as shown). */
-function exportBlocksFor_(key) {
-  key = String(key || "").toLowerCase();
-  var loaded = loadDashboardData_();
-  var data = loaded.data;
-  var pd = loadPerformanceData_();
-
-  function storePerfRows_() {
-    var st = data.store;
-    function tile(title, b) {
-      var pct = b.target > 0 ? (100 * b.achieved / b.target) : 0;
-      var complete = b.target > 0 && pct >= 100;
-      var signedBalance = b.target - b.achieved;
-      return [title, complete ? "Completed" : "In Progress",
-        b.target, b.achieved, (Math.round(pct * 10) / 10) + "%",
-        b.target > 0 ? signedBalance : 0,
-        complete ? signedBalance : b.requiredPerDay];
-    }
-    return [tile("Service Revenue", st.service), tile("Accessory Revenue", st.accessory),
-      tile("Repair Revenue", st.repair), tile("Total Revenue", st.total),
-      tile("Gross Profit", st.grossProfit)];
-  }
-  function opsCountRows_() {
-    var ex = pd.opsExtras || {};
-    var t = (pd.jobs && pd.jobs.totals) || {};
-    return [
-      ["Declined Repairs — unique decline!CaseId · local approver rejected",
-        ex.decline ? ex.decline.count || 0 : 0],
-      ["Requote Win-backs — serials rejected → approved",
-        ex.winback ? ex.winback.count || 0 : 0],
-      ["Open Jobs", t.openJobs || 0],
-      ["Communication updated", t.communicated || 0],
-      ["Update pending", t.notCommunicated || 0]];
-  }
-  function repairTypeRows_() {
-    var ra = pd.repair || {};
-    return (ra.typeComp || []).map(function (c) {
-      return [c.name, c.cur, c.curDaysAvg == null ? "—" : c.curDaysAvg + " d"];
-    });
-  }
-  function declineRows_() {
-    var ex = pd.opsExtras || {}, d = ex.decline || {};
-    return [
-      ["Declined repairs — unique CaseIDs · 'Declined - Rejected by Local Approver'",
-        d.count || 0, d.sheetName || ""],
-      ["Decline rows matched (all statuses)", d.matched || 0, d.sheetName || ""]];
-  }
-  var JOB_HEADERS = ["Aging", "GSX Repair Status", "CRM Status", "Repair Type",
-    "Case ID", "Name", "Number", "GSX ID", "S.No", "Model", "Comm. Updated"];
-  function jobRows_() {
-    var now = Date.now(), rows = [];
-    var jobs = (pd.jobs && pd.jobs.available && pd.jobs.jobs) ? pd.jobs.jobs : [];
-    jobs.forEach(function (j) {
-      var comm = "—";
-      if (j.commTs > 0) {
-        var dfc = Math.max(0, Math.floor((now - j.commTs) / 86400000));
-        comm = dfc === 0 ? "today" : dfc + "d";
-      }
-      rows.push([j.jobAge == null ? "" : j.jobAge,
-        j.gsxStatus || "—", j.crmRepairStatus || "—", j.repairType || "—",
-        j.caseId || "—", j.name || "—", j.mobile || "—", j.gsxId || "—",
-        j.serialNo || "—", j.product || "—", comm]);
-    });
-    return rows;
-  }
-  var BANDS = [[0, 2, "0–2 d"], [3, 5, "3–5 d"], [6, 10, "6–10 d"], [11, 15, "11–15 d"],
-    [16, 30, "16–30 d"], [31, 45, "31–45 d"], [46, 60, "46–60 d"], [61, 100, "61–100 d"], [101, 1e12, "100+ d"]];
-  function bucketHeaders_() {
-    return ["Repair Bucket"].concat(BANDS.map(function (bd) { return bd[2]; })).concat(["Age —", "Total"]);
-  }
-  function bucketRows_() {
-    var jobs = (pd.jobs && pd.jobs.available && pd.jobs.jobs) ? pd.jobs.jobs : [];
-    var bMap = {}, bOrder = [];
-    jobs.forEach(function (j) {
-      var b = (j.crmRepairStatus || "—");
-      if (!bMap[b]) { bMap[b] = { bands: BANDS.map(function () { return 0; }), noAge: 0, total: 0 }; bOrder.push(b); }
-      var rec = bMap[b]; rec.total++;
-      var age = (typeof j.jobAge === "number" && isFinite(j.jobAge) && j.jobAge >= 0) ? j.jobAge : null;
-      if (age == null) rec.noAge++;
-      else BANDS.forEach(function (bd, i) { if (age >= bd[0] && age <= bd[1]) rec.bands[i]++; });
-    });
-    bOrder.sort();
-    return bOrder.map(function (b) {
-      var r = bMap[b];
-      return [b].concat(r.bands).concat([r.noAge, r.total]);
-    });
-  }
-  function marginRows_(mk) {
-    var x = data.gpExtras || {};
-    return (x[mk] || []).map(function (m) {
-      return [m.partLabel || "—", m.invoice || "—", m.typeLabel || "—",
-        Math.round(m.taxable || 0), Math.round(m.gp || 0),
-        (Math.round((m.margin || 0) * 10) / 10) + "%"];
-    });
-  }
-  var MARGIN_HEADERS = ["Part", "Invoice", "Revenue Type", "Taxable", "Gross Profit", "Margin %"];
-  function kpiTargetRows_() {
-    var allKpis = data.kpi.ar.concat(data.kpi.rr, data.kpi.sr);
-    return allKpis.map(function (k) {
-      var pctVal = k.target > 0 ? pct_(k.achieved, k.target) : 0;
-      var approxBal = k.approxAmount > 0 && k.target > 0 ? k.balance * k.approxAmount : "—";
-      return [k.label || k.name, k.category || "",
-        k.target > 0 ? k.target : "—", k.achieved,
-        k.target > 0 ? pctVal + "%" : "—",
-        k.target > 0 ? k.balance : "—",
-        approxBal === "—" ? "—" : Math.round(approxBal),
-        Math.round(k.achievedValue || 0), Math.round(k.achievedGp || 0)];
-    });
-  }
-
-  if (key === "store") return { name: "Store Target — Performance", blocks: [
-    { title: "A1. Store Target — Performance",
-      headers: ["Revenue Type", "Status", "Target", "Achievement", "Achievement %", "Balance (Target − Achievement)", "Per Day Requirement / Excess"],
-      rows: storePerfRows_() }] };
-  if (key === "ops") return { name: "Repairs & Jobs — counts", blocks: [
-    { title: "Repairs & Jobs — counts", headers: ["Metric", "Count"], rows: opsCountRows_() }] };
-  if (key === "repairtype") return { name: "Repair Type Performance", blocks: [
-    { title: "D2. Repair Type Performance · " + ((pd.repair && pd.repair.curLabel) || "current month"),
-      headers: ["Repair Type", "This Month", "Avg Days · Now"], rows: repairTypeRows_() }] };
-  if (key === "decline") return { name: "Decline Repair", blocks: [
-    { title: "D3. Decline Repair", headers: ["Metric", "Count", "Source sheet"], rows: declineRows_() }] };
-  if (key === "jobs") return { name: "Job Management — Open Jobs", blocks: [
-    { title: "Bucket Summary — 9 aging bands", headers: bucketHeaders_(), rows: bucketRows_() },
-    { title: "E1. Job Management — Open Jobs", headers: JOB_HEADERS, rows: jobRows_() }] };
-  if (key === "margin") return { name: "High Low Margin", blocks: [
-    { title: "A4. High Margin — top 5", headers: MARGIN_HEADERS, rows: marginRows_("marginHigh") },
-    { title: "A4. Low Margin — top 5", headers: MARGIN_HEADERS, rows: marginRows_("marginLow") }] };
-  if (key === "kpi") return { name: "KPI Target — Store KPI Parameters", blocks: [
-    { title: "B. KPI Target — Store KPI Parameters",
-      headers: ["KPI", "Category", "Target", "Achieved", "%", "Balance", "Approx Balance Value", "Achieved Value", "Achieved GP"],
-      rows: kpiTargetRows_() }] };
-  return null;
-}
-
-/** Public endpoint called by the per-table "⬇ Export" buttons. */
-function exportDashboardSectionToSpreadsheet(key) {
-  var spec = exportBlocksFor_(key);
-  if (!spec) throw new Error("Unknown export table: " + key);
-  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd-MM-yyyy HH:mm");
-  var book = SpreadsheetApp.create(spec.name + " — " + stamp);
-  var sh = book.getSheets()[0];
-  sh.setName(spec.name.replace(/[\[\]:*?/\\]/g, " ").slice(0, 31));
-  var r = 1;
-  spec.blocks.forEach(function (b) {
-    sh.getRange(r, 1).setValue(b.title).setFontWeight("bold");
-    sh.getRange(r + 1, 1, 1, b.headers.length).setValues([b.headers]).setFontWeight("bold");
-    if (b.rows.length) sh.getRange(r + 2, 1, b.rows.length, b.headers.length).setValues(b.rows);
-    r += 2 + b.rows.length + 1;
-  });
-  return JSON.stringify({ name: book.getName(), url: book.getUrl() });
-}
-
-/**
- * Task 51b — best-effort pane cache: stores each rendered dashboard pane
- * (skipping any over the 100 KB CacheService cap) plus the small frame
- * record (store code + meta line) so doGet can serve repeat loads without a
- * single sheet read. TTL matches the 15-minute background refresh cadence.
- */
-// CacheService caps each value at 100 KB — the SM pane alone can be larger
-// than that with real data. Every pane is therefore stored as 90 KB chunks:
-// key_n = chunk count, key_0 .. key_{n-1} = the pieces. Without this the
-// whole-pane cache missed EVERY load, which is why each tab tap recomputed.
-var PANE_CACHE_CHUNK = 90000;
-function paneCachePut_(cache, key, html) {
-  try {
-    if (!html) return;
-    var n = Math.ceil(html.length / PANE_CACHE_CHUNK);
-    if (n > 40) return; // pathological size — serve without caching
-    for (var i = 0; i < n; i++) {
-      cache.put(key + "_" + i, html.substr(i * PANE_CACHE_CHUNK, PANE_CACHE_CHUNK), 900);
-    }
-    cache.put(key + "_n", String(n), 900);
-  } catch (err) { /* best-effort */ }
-}
-function paneCacheGet_(cache, key) {
-  try {
-    var nS = cache.get(key + "_n");
-    if (!nS) return null;
-    var n = parseInt(nS, 10) || 0, out = "";
-    for (var i = 0; i < n; i++) {
-      var part = cache.get(key + "_" + i);
-      if (part == null) return null;
-      out += part;
-    }
-    return out;
-  } catch (err) { return null; }
-}
-// Task 55 — CacheService alone proved unreliable live (entries can be evicted
-// at any moment; the whole SM pane is large). The panes + frame record are
-// therefore ALSO persisted to a small Drive file: a "cold" recompute then
-// happens only when the data is genuinely due (the 15-minute cadence), never
-// because a cache entry vanished. All Drive work is best-effort: any failure
-// (e.g. scope not granted) silently falls back to CacheService-only.
-var PANE_DRIVE_FILE = "SalesDashboard_paneCache_v1.json";
-var PANE_DRIVE_TTL_MS = 900000; // 15 minutes, matches the auto-refresh cadence
-
-function paneDriveGetAll_() {
-  try {
-    var files = DriveApp.getFilesByName(PANE_DRIVE_FILE);
-    if (!files.hasNext()) return null;
-    var d = JSON.parse(files.next().getBlob().getDataAsString() || "{}");
-    if (!d || !d.t || (Date.now() - d.t) > PANE_DRIVE_TTL_MS) return null;
-    return d;
-  } catch (err) { return null; }
-}
-function paneDriveMerge_(single, meta) {
-  try {
-    var files = DriveApp.getFilesByName(PANE_DRIVE_FILE);
-    var d = null;
-    if (files.hasNext()) {
-      try { d = JSON.parse(files.next().getBlob().getDataAsString() || "{}"); } catch (e1) { d = null; }
-    }
-    if (!d || typeof d !== "object") d = {};
-    d.t = Date.now();
-    d.panes = d.panes || {};
-    if (single) for (var k in single) if (single[k]) d.panes[k] = single[k];
-    if (meta) d.meta = meta;
-    var body = JSON.stringify(d);
-    var write = files ? null : null;
-    files = DriveApp.getFilesByName(PANE_DRIVE_FILE);
-    if (files.hasNext()) files.next().setContent(body);
-    else DriveApp.createFile(PANE_DRIVE_FILE, body, MimeType.PLAIN_TEXT);
-  } catch (err) { /* best-effort */ }
-}
-/** Read all warm panes + frame meta from the persistent store (or null). */
-function paneDriveState_() {
-  var d = paneDriveGetAll_();
-  if (!d || !d.panes) return null;
-  var all = ["index", "cre", "tech", "sm"].every(function (pg) { return !!d.panes[pg]; });
-  return all ? d : null;
-}
-
-function cachePanes_(data, panes) {
-  try {
-    var cache = CacheService.getScriptCache();
-    ["index", "cre", "tech", "sm"].forEach(function (pg) {
-      if (panes[pg]) paneCachePut_(cache, "dash_pane_v5_" + pg, panes[pg]);
-    });
-    cache.put("dash_meta_v5", JSON.stringify({
-      storeCode: (data && data.store && data.store.storeCode) ? data.store.storeCode : "",
-      metaText: renderMetaText_(data)
-    }), 900);
-    // Fresh panes ⇒ previously assembled pages are stale; drop them.
-    try {
-      cache.removeAll(["dash_pg_v6_index", "dash_pg_v6_cre", "dash_pg_v6_tech", "dash_pg_v6_sm"]);
-    } catch (e2) { /* non-fatal */ }
-    // Task 55: also persist to the Drive-backed store (merge, timestamped).
-    paneDriveMerge_(panes, {
-      storeCode: (data && data.store && data.store.storeCode) ? data.store.storeCode : "",
-      metaText: renderMetaText_(data)
-    });
-  } catch (err) { /* caching is best-effort only */ }
-}
-
-
-
-/**
- * Server endpoint for the Refresh button.
- *
- * Called from the page via google.script.run, which works inside the Apps
- * Script iframe sandbox. It recomputes from the sheet, refreshes the cached
- * page, and hands back only the markup that changed — so refreshing swaps
- * content in place instead of reloading the whole document.
- *
- * NOTE: must stay a public (no trailing underscore) top-level function,
- * otherwise google.script.run cannot see it.
- */
-function refreshDashboardSections() {
-  var loaded = loadDashboardData_();
-  var data = loaded.data;
-
-  var perfData = loadPerformanceData_();
-  var panes = {
-    index: renderIndexHtml_(data, perfData),
-    cre: renderCreHtml_(data, perfData),
-    tech: renderTechHtml_(perfData),
-    sm: renderSmHtml_(data, perfData)
-  };
-  // Task 51b: refill the per-pane caches, so the next page load (or tab
-  // navigation via anchors) is served with zero sheet reads.
-  cachePanes_(data, panes);
-
-  return JSON.stringify({
-    meta: renderMetaText_(data),
-    index: panes.index,
-    cre: panes.cre,
-    tech: panes.tech,
-    sm: panes.sm
-  });
-}
-
-/* ============================================================================
- * SHEET-SEARCH CHAT BOT — floating assistant on every page
- *
- * serverQuery(q) answers natural-language questions from the SOURCE sheets:
- *   • "sale date from 15.09.26"          → invoices that day on, revenue +
- *                                           salesperson-wise gross profit
- *   • "part number for iphone 3 display" → matching item codes / part rows
- *   • "9791994639"                       → mobile matched across walk-in,
- *                                           service, advance & CRM sheets
- * ========================================================================= */
-
-/**
- * Public endpoint for the chat widget. No trailing underscore — the Apps
- * Script editor would treat `serverQuery_` as private and google.script.run
- * would not reach it.
- */
-function serverQuery(q) {
-  var result = { title: "Sheet search", rows: [], note: "" };
-  try {
-    var query = str_(q).trim();
-    if (!query) {
-      result.title = "Say something first";
-      result.note = "Try a customer mobile number or a Case ID.";
-      return JSON.stringify(result);
-    }
-
-    var c = chatQuery(query);
-    result.title = c.title;
-    result.rows = c.rows || [];
-    result.note = c.note || "";
-    return JSON.stringify(result);
-  } catch (err) {
-    try {
-      return JSON.stringify({
-        title: "Search failed",
-        rows: [],
-        note: esc_(str_(err && err.message ? err.message : err)),
-      });
-    } catch (e2) {
-      return '{"title":"Search failed","rows":[],"note":"unknown error"}';
-    }
-  }
-}
-
-/**
- * Small table-cell formatting helpers for chat answers. Returns rows as
- * arrays of cells [[td-html,...] ...], so HTML stays simple and safe.
- */
-function chatNum(n) { return '<td class="num">' + Math.round(n || 0).toLocaleString("en-IN") + "</td>"; }
-function chatMoneyCell(n) { return '<td class="num">₹' + Math.round(n || 0).toLocaleString("en-IN") + "</td>"; }
-// chatTxt is HTML-raw: call sites esc_() sheet data themselves; chatPlain wraps + escapes.
-function chatTxt(t) { return "<td>" + t + "</td>"; }
-function chatPlain(t) { return "<td>" + esc_(t) + "</td>"; }
-function chatBlank() { return '<td class="num muted">—</td>'; }
-
-/** Canonical 10-digit mobile (strip +91 / leading 0). */
-function chatDig(q) {
-  var d = str_(q).replace(/\D/g, "");
-  if (d.length > 10) d = d.slice(-10);
-  return d.length === 10 ? d : "";
-}
-
-/**
- * Route the free-text question to the right search.
- * Returns { title, rows, note } where rows are table-cell arrays.
- */
-/**
- * Task 30 hard limit: the bot answers ONLY two kinds of lookups —
- *   1. a customer mobile number  → service!MobileNo → case ID, CRM repair
- *      status (CRM_JobStatusDesc), customer name, product, plus the rest of
- *      the 360 (walk-in visits, advance balance, CRM invoices).
- *   2. a Case ID                 → service!CaseId  → the full case detail.
- * Anything else gets a gentle guidance reply instead of a fuzzy search.
- */
-function chatQuery(q) {
-  // 1) A contiguous 10+ digit run (a real phone number) — dates never match.
-  var phoneMatch = str_(q).match(/[\d+][\d\s().\-]{8,}\d/);
-  var mobile = phoneMatch ? chatDig(phoneMatch[0]) : "";
-  if (mobile) return chatMobileQuery(mobile, q);
-
-  // 2) A case-id shaped token (optionally letters + 3+ digits): C1001,
-  // CS-200145, or a bare 6+ digit job number.
-  var tok = null;
-  var tokens = (str_(q).toLowerCase().replace(/[^a-z0-9\- ]/g, " ").split(/\s+/));
-  for (var i = 0; i < tokens.length; i++) {
-    var t = tokens[i];
-    if (t === "case" || t === "caseid" || t === "id" || t === "job" || t === "status") continue;
-    if (/^[a-z]{0,4}\d{3,}[a-z0-9\-]*$/.test(t)) { tok = t; break; }
-  }
-  if (tok) {
-    var hit = chatCaseQuery(tok);
-    if (hit) return hit;
-  }
-
-  // 3) Task 35 — universal search: every other query is scanned across ALL
-  //    sheets of this spreadsheet (never external sources). Exact token
-  //    matches only — no fuzzy/similar suggestions are ever offered.
-  var uni = chatUniversalQuery_(q);
-  if (uni) return uni;
-  return {
-    title: "No matches for “" + str_(q).trim() + "”",
-    rows: [[chatTxt('<span class="muted">Nothing in any sheet contains all those words. ' +
-      "Numbers, names, case IDs, products, statuses and dates are searched exactly as typed.</span>")]],
-    note: "Searched every tab of this spreadsheet.",
-    wide: false,
-  };
-}
-
-/**
- * TASK 35 — universal cross-sheet search. A data row matches when EVERY
- * query token (case-insensitive, 1-char tokens ignored) appears somewhere in
- * that row. Results are grouped by sheet (tab order), identical rows are
- * de-duplicated, and output is capped so the panel stays readable.
- */
-function chatUniversalQuery_(q) {
-  var query = str_(q).trim();
-  if (query.length < 2) return null;
-  var tokens = query.toLowerCase().split(/\s+/).filter(function (t) { return t.length >= 2; });
-  if (!tokens.length) return null;
-  // Deployment hardening: if this helper ever goes missing from the project
-  // (stale/partial paste), fall back to the bound spreadsheet directly.
-  var ss = (typeof getSpreadsheet_ === "function") ? getSpreadsheet_()
-    : SpreadsheetApp.getActiveSpreadsheet();
-  var rows = [];
-  var totalHits = 0, hitSheets = 0;
-  var MAX_PER_SHEET = 4, MAX_ROWS = 18;
-  ss.getSheets().forEach(function (sh) {
-    if (rows.length >= MAX_ROWS) return;
-    var values;
-    try { values = chatSheetData(sh); } catch (e) { return; }
-    var header = values.header;
-    var seenRows = {};
-    var sheetRows = [];
-    for (var i = 0; i < values.rows.length && sheetRows.length < MAX_PER_SHEET; i++) {
-      var r = values.rows[i];
-      var cells = r.map(function (v) { return str_(v).toLowerCase(); });
-      var joined = " " + cells.join(" │ ") + " ";
-      var all = tokens.every(function (t) {
-        var tn = t.replace(/[.\/\-]/g, " ");
-        return joined.indexOf(t) > -1 ||
-          (tn !== t && (" " + joined.replace(/[.\/\-]/g, " ") + " ").indexOf(" " + tn + " ") > -1);
-      });
-      if (!all) continue;
-      var sig = r.join("|").toLowerCase();
-      if (seenRows[sig]) continue;
-      seenRows[sig] = true;
-      var pairs = [];
-      for (var c = 0; c < r.length && pairs.length < 8; c++) {
-        var v = str_(r[c]);
-        if (!v) continue;
-        var h = (header[c] !== undefined && str_(header[c])) ? str_(header[c]) : "col " + (c + 1);
-        pairs.push(h.length > 26 ? h.slice(0, 24) + "…" : h);
-        pairs.push(v.length > 60 ? v.slice(0, 58) + "…" : v);
-      }
-      if (pairs.length) sheetRows.push({ rowNo: i + 2, pairs: pairs });
-    }
-    if (sheetRows.length) {
-      hitSheets++;
-      rows.push([chatTxt("<b>📄 " + esc_(sh.getName()) + "</b>"),
-        chatTxt('<span class="muted">' + sheetRows.length + " match" + (sheetRows.length === 1 ? "" : "es") + "</span>")]);
-      sheetRows.forEach(function (m) {
-        if (rows.length >= MAX_ROWS + 2) return;
-        rows.push([chatTxt('<span class="muted">row ' + m.rowNo + "</span>"),
-          chatPlain(chatPairsInline_(m.pairs))]);
-        totalHits++;
-      });
-    }
-  });
-  if (!totalHits) return null;
-  return {
-    title: "🔍 “" + query + "” → " + totalHits + " row" + (totalHits === 1 ? "" : "s") +
-      " in " + hitSheets + " sheet" + (hitSheets === 1 ? "" : "s"),
-    rows: rows,
-    note: "Exact matches only — nothing similar/related is included.",
-    wide: true,
-  };
-}
-
-/** header/value pairs → "H: V · H: V" single-line text. */
-function chatPairsInline_(pairs) {
-  var out = [];
-  for (var i = 0; i + 1 < pairs.length; i += 2) out.push(pairs[i] + ": " + pairs[i + 1]);
-  return out.join(" · ");
-}
-
-
-/** Chat answer for a mobile number — the 360 customer profile. */
-function chatMobileQuery(mobile, origQ) {
-  // Deployment hardening: if this helper ever goes missing from the project
-  // (stale/partial paste), fall back to the bound spreadsheet directly.
-  var ss = (typeof getSpreadsheet_ === "function") ? getSpreadsheet_()
-    : SpreadsheetApp.getActiveSpreadsheet();
-  var last4 = mobile.slice(-4);
-
-  // crm — invoice rows billed to this mobile (via walkin InvoiceCode links)
-  var crm = chatInvoiceRowsForMobile(ss, mobile);
-
-  // walkin — token history
-  var walkin = chatWalkinRowsForMobile(ss, mobile);
-
-  // service — open/closed cases
-  var service = chatServiceRowsForMobile(ss, mobile);
-
-  // advance — balances
-  var advance = chatAdvanceRowsForMobile(ss, mobile);
-
-  var rows = [];
-  var title = "📱 Mobile …" + last4;
-
-  // Customer name
-  var name = "";
-  if (service.length && (service[0].first || service[0].last)) name = (service[0].first + " " + service[0].last).trim();
-  if (!name && crm.length) name = "customer";
-  if (name) rows.push([chatTxt("<b>Customer</b>"), chatPlain(name)]);
-  rows.push([chatTxt("<b>Mobile</b>"), chatTxt(mobile)]);
-
-  // Cases (service sheet, then walkin case ids not in service)
-  var caseIds = {};
-  service.forEach(function (s) {
-    if (s.caseId) caseIds[s.caseId] = s;
-  });
-  var caseArr = Object.keys(caseIds);
-  // Task 33: one diagnostic block per case — Case ID, customer, product,
-  // CRM case status, GSX case status, CRM bucket, case date and the most
-  // recent communication-update date.
-  caseArr.forEach(function (c) {
-    var s = caseIds[c];
-    rows.push([chatTxt("<b>&#128736;&#65039; " + c + "</b>")]);
-    rows.push([chatTxt("Case ID"), chatTxt(c)]);
-    if (name) rows.push([chatTxt("Customer"), chatPlain(name)]);
-    rows.push([chatTxt("Product"), chatPlain(s.product || "—")]);
-    rows.push([chatTxt("CRM case status"), chatPlain(s.caseStatus || "—")]);
-    rows.push([chatTxt("GSX case status"), chatPlain(s.gsx || "—")]);
-    rows.push([chatTxt("CRM bucket"), chatPlain(s.status || "—")]);
-    rows.push([chatTxt("Case date"), chatPlain(s.caseDate || "—")]);
-    var commD = chatCommDateForCase_(ss, c);
-    rows.push([chatTxt("Comm updated"), chatPlain(commD || "no updates logged")]);
-  });
-
-  // Invoices (walkin InvoiceCode joined to crm value)
-  if (crm.invoices.length) {
-    rows.push([chatTxt("<b>Invoices</b>"), chatPlain(crm.invoices.map(function (i) {
-      return i.code + " (₹" + Math.round(i.total).toLocaleString("en-IN") + ")";
-    }).join(" · "))]);
-  }
-  if (crm.total) {
-    rows.push([chatTxt("<b>Invoice value</b>"), chatMoneyCell(crm.total)]);
-    rows.push([chatTxt("<b>Gross profit</b>"), chatMoneyCell(crm.gp)]);
-  }
-  if (walkin.length) {
-    rows.push([chatTxt("<b>Visits</b>"), chatTxt(String(walkin.length) + " visit" + (walkin.length === 1 ? "" : "s"))]);
-  }
-  if (advance && advance.total) {
-    rows.push([chatTxt("<b>Adv. balance</b>"), chatMoneyCell(advance.total)]);
-  }
-  if (!crm.invoices.length && !caseArr.length && !service.length && !(advance && advance.count) && !walkin.length) {
-    return {
-      title: title,
-      rows: [[chatTxt('<span class="muted">No records found for this number in any sheet.</span>')]],
-      note: "Check the number, or try a Case ID instead.",
-      wide: true,
-    };
-  }
-  return { title: title, rows: rows, note: "criss-crossed through walk-in, service, advance and CRM sheets.", wide: true };
-}
-
-/** crm rows that reference this mobile (via the invoice-code link from walk-in). */
-function chatInvoiceRowsForMobile(ss, mobile) {
-  var out = { invoices: [], lines: [], total: 0, gp: 0 };
-  var codes = {};
-  // First: which invoice codes belong to this mobile? From walk-in sheet.
-  var ws = getSheetByNames_(ss, CONFIG.WALKIN_SHEET_NAMES);
-  if (ws) {
-    var values = chatSheetData(ws);
-    var col = {
-      mobile: findColumn_(values.header, [/mobile/i, /number/i, /phone/i]),
-      invoiceCode: findColumn_(values.header, [/invoice.*(code|no\.?|number|id)/i]),
-      caseId: findColumn_(values.header, [/case.*id/i]),
-    };
-    values.rows.forEach(function (row) {
-      var m = chatDig(row[col.mobile]);
-      if (m === mobile && col.invoiceCode !== -1 && str_(row[col.invoiceCode]))
-        codes[str_(row[col.invoiceCode])] = true;
-    });
-  }
-  // Also: invoices whose TranType is INVOICE and InvoiceCode appears in walkin service sheets — but for a pure mobile answer we only need the codes we just found.
-  var crmSheet = getSheetByNames_(ss, [CONFIG.CRM_SHEET_NAME]);
-  if (crmSheet) {
-    var values = parseCrmRows(chatSheetData(crmSheet).allValues);
-    var found = {};
-    values.forEach(function (r) {
-      if (codes[r.invoiceCode]) {
-        if (!found[r.invoiceCode]) {
-          found[r.invoiceCode] = { code: r.invoiceCode, total: 0, gp: 0 };
-          out.invoices.push(found[r.invoiceCode]);
-        }
-        found[r.invoiceCode].total += r.taxableAmount;
-        found[r.invoiceCode].gp += r.grossProfit;
-        out.lines.push(r);
-        out.total += r.taxableAmount;
-        out.gp += r.grossProfit;
-      }
-    });
-  }
-  return out;
-}
-
-/** All walk-in rows for this mobile. */
-function chatWalkinRowsForMobile(ss, mobile) {
-  var ws = getSheetByNames_(ss, CONFIG.WALKIN_SHEET_NAMES);
-  if (!ws) return [];
-  var values = chatSheetData(ws);
-  var cMobile = findColumn_(values.header, [/mobile/i, /number/i, /phone/i]);
-  var cDate = findColumn_(values.header, [/token.*date/i, /visit.*date/i, /date/i]);
-  var cCase = findColumn_(values.header, [/case.*id/i]);
-  var cInvoice = findColumn_(values.header, [/invoice.*(code|no\.?|number|id)/i]);
-  var cPurpose = findColumn_(values.header, [/purpose/i]);
-  var cRemark = findColumn_(values.header, [/remark/i]);
-  var out = [];
-  values.rows.forEach(function (r) {
-    if (chatDig(r[cMobile]) === mobile) {
-      out.push({
-        date: cDate !== -1 ? str_(r[cDate]) : "",
-        caseId: cCase !== -1 ? str_(r[cCase]) : "",
-        invoiceCode: cInvoice !== -1 ? str_(r[cInvoice]) : "",
-        purpose: cPurpose !== -1 ? str_(r[cPurpose]) : "",
-        remark: cRemark !== -1 ? str_(r[cRemark]) : "",
-      });
-    }
-  });
-  return out;
-}
-
-/** Service rows for this mobile. */
-function chatServiceRowsForMobile(ss, mobile) {
-  var sh = getSheetByNames_(ss, CONFIG.SERVICE_SHEET_NAMES);
-  if (!sh) return [];
-  var values = chatSheetData(sh);
-  var cMobile = findColumn_(values.header, [/mobile/i, /number/i, /phone/i]);
-  var cFirst = findColumn_(values.header, [/first.*name/i, /name/i]);
-  var cLast = findColumn_(values.header, [/last.*name/i]);
-  var cCase = findColumn_(values.header, [/case.*id/i]);
-  var cStatus = findColumn_(values.header, [/^crm_?jobstatusdesc$/i, /crm.*status/i, /job.*status.*desc/i]);
-  var cGsx = findColumn_(values.header, [/gsx/i, /repair.*status/i]);
-  var cProd = findColumn_(values.header, [/product.*desc/i, /^product/i, /model/i]);
-  // Task 33: case status (service!Status), the CRM bucket and the case date
-  // ride along so the answer can list the full per-case diagnostic block.
-  var cCaseStatus = findColumn_(values.header, [/^status$/i, /^jobstatus$/i, /case.*status/i]);
-  var cCaseDate = findColumn_(values.header, [/^casedate$/i, /case.*date/i]);
-  var out = [];
-  values.rows.forEach(function (r) {
-    if (chatDig(r[cMobile]) === mobile) {
-      out.push({
-        first: cFirst !== -1 ? str_(r[cFirst]) : "",
-        last: cLast !== -1 ? str_(r[cLast]) : "",
-        caseId: cCase !== -1 ? str_(r[cCase]) : "",
-        status: cStatus !== -1 ? str_(r[cStatus]) : "",
-        caseStatus: cCaseStatus !== -1 ? str_(r[cCaseStatus]) : "",
-        caseDate: cCaseDate !== -1 ? str_(r[cCaseDate]) : "",
-        gsx: cGsx !== -1 ? str_(r[cGsx]) : "",
-        product: cProd !== -1 ? str_(r[cProd]) : "",
-      });
-    }
-  });
-  return out;
-}
-
-/**
- * Latest communication-created date for a Case ID (Task 33). Reads the
- * chat-display values of the communication sheet and keeps the newest
- * parseable stamp; the day key comes back as dd-MM-yyyy for display.
- */
-function chatCommDateForCase_(ss, caseId) {
-  var sh = getSheetByNames_(ss, CONFIG.COMM_SHEET_NAMES);
-  if (!sh) return "";
-  var values = chatSheetData(sh);
-  var cCase = findColumn_(values.header, COMM_SPEC.caseId);
-  var cDate = findColumn_(values.header, COMM_SPEC.createdDate);
-  if (cCase === -1 || cDate === -1) return "";
-  var want = str_(caseId).toLowerCase();
-  var best = null;
-  values.rows.forEach(function (r) {
-    if (str_(r[cCase]).toLowerCase() === want) {
-      var p = parseAnyDate_(r[cDate]);
-      if (p.valid && (!best || p.ts > best.ts)) best = p;
-    }
-  });
-  return best ? best.dayKey : "";
-}
-
-/**
- * Direct Case-ID lookup against service!CaseId (Task 30). Returns null when
- * the ID isn't on the sheet so the router can fall back to the guidance text.
- */
-function chatCaseQuery(caseId) {
-  // Deployment hardening: if this helper ever goes missing from the project
-  // (stale/partial paste), fall back to the bound spreadsheet directly.
-  var ss = (typeof getSpreadsheet_ === "function") ? getSpreadsheet_()
-    : SpreadsheetApp.getActiveSpreadsheet();
-  var sh = getSheetByNames_(ss, CONFIG.SERVICE_SHEET_NAMES);
-  if (!sh) return null;
-  var values = chatSheetData(sh);
-  var cCase = findColumn_(values.header, [/^caseid$/i, /^case.*id/i]);
-  if (cCase === -1) return null;
-  function col(patterns) { return findColumn_(values.header, patterns); }
-  var cFirst = col([/first.*name/i, /name/i]);
-  var cLast = col([/last.*name/i]);
-  var cMobile = col([/mobile/i, /number/i, /phone/i]);
-  var cProd = col([/product.*desc/i, /^product/i, /model/i]);
-  var cStatus = col([/^jobstatus$/i, /^status$/i, /case.*status/i]);
-  var cGsx = col([/gsx/i, /repair.*status/i]);
-  var cCrm = col([/^crm_?jobstatusdesc$/i, /crm.*status/i, /crm.*job/i]);
-  var cDoc = col([/^repairdoctype$/i, /repair.*doc.*type/i, /doc.*type/i]);
-  var cAge = col([/^jobage$/i, /job.*age/i, /^age$/i]);
-  var cDate = col([/^casedate$/i, /case.*date/i]);
-  var rows = [];
-  var want = str_(caseId).toLowerCase();
-  values.rows.forEach(function (r) {
-    if (str_(r[cCase]).toLowerCase() === want) rows.push(r);
-  });
-  if (!rows.length) return null;
-  var outRows = [];
-  outRows.push([chatTxt("<b>Case ID</b>"), chatTxt(str_(rows[0][cCase]).toUpperCase())]);
-  var name = ((cFirst !== -1 ? str_(rows[0][cFirst]) : "") + " " + (cLast !== -1 ? str_(rows[0][cLast]) : "")).trim();
-  if (name) outRows.push([chatTxt("<b>Customer</b>"), chatPlain(name)]);
-  if (cMobile !== -1 && rows[0][cMobile]) outRows.push([chatTxt("<b>Mobile</b>"), chatTxt(str_(rows[0][cMobile]))]);
-  if (cProd !== -1) outRows.push([chatTxt("<b>Product</b>"), chatPlain(str_(rows[0][cProd]) || "—")]);
-  if (cCrm !== -1) outRows.push([chatTxt("<b>CRM repair status</b>"), chatPlain(str_(rows[0][cCrm]) || "—")]);
-  if (cGsx !== -1) outRows.push([chatTxt("<b>GSX repair status</b>"), chatPlain(str_(rows[0][cGsx]) || "—")]);
-  if (cDoc !== -1 && rows[0][cDoc]) outRows.push([chatTxt("<b>Repair type</b>"), chatPlain(str_(rows[0][cDoc]))]);
-  if (cStatus !== -1 && rows[0][cStatus]) outRows.push([chatTxt("<b>Case status</b>"), chatPlain(str_(rows[0][cStatus]))]);
-  if (cAge !== -1 && rows[0][cAge] !== "") outRows.push([chatTxt("<b>Job age</b>"), chatTxt(String(rows[0][cAge]) + " days")]);
-  if (cDate !== -1 && rows[0][cDate]) outRows.push([chatTxt("<b>Case opened</b>"), chatPlain(str_(rows[0][cDate]))]);
-  var commD = chatCommDateForCase_(ss, caseId);
-  outRows.push([chatTxt("<b>Comm updated</b>"), chatPlain(commD || "no updates logged")]);
-  if (rows.length > 1) outRows.push([chatTxt('<span class="muted">' + rows.length + " rows carry this Case ID on the service sheet.</span>")]);
-  return { title: "🧰 Case " + str_(caseId).toUpperCase(), rows: outRows, note: "From service!CaseId.", wide: true };
-}
-
-/** Advance-balance rows for this mobile. */
-function chatAdvanceRowsForMobile(ss, mobile) {
-  var sh = getSheetByNames_(ss, CONFIG.ADVANCE_SHEET_NAMES);
-  if (!sh) return null;
-  var values = chatSheetData(sh);
-  var cMobile = findColumn_(values.header, [/mobile/i, /number/i, /phone/i]);
-  var cBal = findColumn_(values.header, [/balance/i, /advance/i, /amount/i, /value/i]);
-  var total = 0, count = 0;
-  values.rows.forEach(function (r) {
-    if (chatDig(r[cMobile]) === mobile) { total += num_(r[cBal]); count++; }
-  });
-  return { total: total, count: count };
-}
-
-/**
- * Read a sheet's values once, returning { allValues, header, rows }.
- * allValues is the raw grid (header + rows), header/lrows are split views.
- */
-function chatSheetData(sheet) {
-  var all = sheet.getDataRange().getDisplayValues();
-  return { allValues: all, header: all[0] || [], rows: all.slice(1) };
-}
-
-
-/** Merge crm lines into one row per invoice, preserving invoice order. */
-function matchOrderInvoices_(rows) {
-  var order = [], byCode = {};
-  rows.forEach(function (r) {
-    if (!byCode[r.invoiceCode]) {
-      byCode[r.invoiceCode] = { code: r.invoiceCode, date: r.dayKey, person: r.salesPerson, total: 0, gp: 0 };
-      order.push(byCode[r.invoiceCode]);
-    }
-    byCode[r.invoiceCode] && (byCode[r.invoiceCode].total += r.taxableAmount, byCode[r.invoiceCode].gp += r.grossProfit);
-  });
-  return order;
-}
-
-
-
-
-/** Escape for the chat's HTML table cells (plain text variants live above). */
-
-/* ============================================================================
- * INDEX LANDING PAGE — neon liquid-glass tiles
- *
- * One translucent tile per dashboard. Hovering makes the tile opaque and
- * reveals a handful of key numbers; clicking jumps straight to the pane that
- * holds the content. Groups below follow the owner's page split:
- *   GP / KPI / WALKIN / Operation / OPEN JOBS / DATE.
- * ========================================================================= */
-
-/* ---------------------------------------------------------------------------
- * Small horizontal bar chart used under each index group title — one bar row
- * per sub-title value, combining the group's numbers into a skimmable graph.
- * segments: [[label, value, color], ...]
- * ------------------------------------------------------------------------- */
-var PIE_PALETTE = ["#3f5ce0","#63e6b7","#ffd477","#ff9da7","#8fc7ff","#dfb2ff"];
-function barBlockHtml_(title, segments) {
-  var max = 1;
-  (segments || []).forEach(function (sg) { if (sg[1] > max) max = sg[1]; });
-  var rows = (segments || []).map(function (sg) {
-    var w = Math.max(2, Math.round((sg[1] / max) * 100));
-    return '<div class="gbar-row"><span class="gbar-lbl">' + esc_(sg[0]) + "</span>" +
-      '<span class="gbar-track"><i class="gbar-fill" style="width:' + w + "%;background:" + sg[2] + '"></i></span>' +
-      '<b class="gbar-val">' + esc_(String(sg[1])) + "</b></div>";
-  }).join("");
-  if (!(segments || []).length) rows = '<div class="gpie-empty">no data yet</div>';
-  return '<div class="gpie-wrap"><div class="gpie-title">' + esc_(title) + "</div>" +
-    '<div class="gbar-group">' + rows + "</div></div>";
-}
-function pieSvgHtml_(segments, cx, cy, radius, thick) {
-  cx = cx || 60; cy = cy || 60; radius = radius || 44; thick = thick || 16;
-  var segs = (segments || []).filter(function (sg) { return sg[1] > 0; });
-  var total = 0;
-  segs.forEach(function (sg) { total += sg[1]; });
-  if (total <= 0) {
-    return '<div class="gpie gpie-empty"><span class="gpie-note">no data yet</span></div>';
-  }
-  var k = { "cx": cx, "cy": cy, "r": radius, "fill": "none", "stroke-width": thick };
-  var circ = 2 * Math.PI * radius;
-  var acc = -circ / 4; // start at 12 o'clock
-  var parts = ['<svg class="gpie" width="' + (cx * 2) + '" height="' + (cy * 2) +
-    '" viewBox="0 0 ' + (cx * 2) + " " + (cy * 2) + '" role="img">'];
-  parts.push('<circle cx="' + cx + '" cy="' + cy + '" r="' + (radius - thick / 2 - 2) +
-    '" fill="rgba(12,29,53,.92)" />');
-  segs.forEach(function (sg) {
-    var frac = sg[1] / total;
-    var len = Math.max(0.01, frac * (circ - segs.length * 2));
-    parts.push('<circle cx="' + cx + '" cy="' + cy + '" r="' + radius +
-      '" fill="none" stroke="' + sg[2] + '" stroke-width="' + thick +
-      '" stroke-dasharray="' + len.toFixed(2) + " " + (circ - len).toFixed(2) +
-      '" stroke-dashoffset="' + (-acc).toFixed(2) +
-      '" stroke-linecap="butt" transform="rotate(0 ' + cx + " " + cy + ')" />');
-    acc += frac * circ;
-  });
-  parts.push("</svg>");
-  return parts.join("");
-}
-
-/* ============================================================================
- * INDEX LANDING PAGE — liquid-glass tiles laid out HORIZONTALLY by group,
- * each group's sub-title tiles stacked one below the other, and a horizontal
- * bar chart under every group title combining that group's sub-title numbers.
- * Hover: the glass brightens and the golden glitter video plays over it.
- * ========================================================================= */
-
-function renderIndexHtml_(data, perfData) {
+function renderStoreCards_(data) {
   var s = data.store;
-  var inv = data.invoiceValuation || {};
-  var wlT = perfData && perfData.walkin && perfData.walkin.available ? perfData.walkin.totals : null;
-  var jbT = perfData && perfData.jobs && perfData.jobs.available ? perfData.jobs.totals : null;
-  var ex = perfData && perfData.opsExtras ? perfData.opsExtras : { decline: {}, winback: {} };
-  function m0(v) { return money_(v || 0); }
-
-  function statCard(label, value, sub, cls) {
-    return '<div class="card"><div class="label">' + esc_(label) + "</div>" +
-      '<div class="value' + (cls ? " " + cls : "") + '">' + value + "</div>" +
-      (sub ? '<div class="sub">' + sub + "</div>" : "") + "</div>";
+  function card(label, value, sub) {
+    return '<div class="card"><div class="label">' + esc_(label) + '</div><div class="value">' +
+      esc_(value) + '</div><div class="sub">' + esc_(sub || "") + "</div></div>";
   }
-  function idxSection(id, h2, desc, body) {
-    return '<section class="section" id="' + id + '"><h2>' + h2 + "</h2><div class=\"body\">" +
-      (desc ? '<div class="sec-desc">' + desc + "</div>" : "") + body + "</div></section>";
-  }
-
-  // ---- 1) Store performance -------------------------------------------------
-  function storeCard(label, b) {
-    return statCard(label, "<b>" + m0(b.achieved) + "</b>",
-      "target " + m0(b.target) + " · <b>" + b.pct + "%</b> achieved");
-  }
-  var storeSec = idxSection("idx-store", "🎯 Store Performance",
-    "month-to-date achievement against the store revenue targets (crm vs target!store).",
-    '<div class="cards">' +
-      storeCard("Total Revenue", s.total) + storeCard("Service Revenue", s.service) +
-      storeCard("Accessories Revenue", s.accessory) + storeCard("Repair Revenue", s.repair) +
-    "</div>");
-
-  // ---- 2) Total walk-ins  +  3) invoices in each revenue type ---------------
-  var types = inv.byType || [];
-  var typeRows = types.map(function (t) {
-    return "<tr><td><b>" + esc_(t.label) + "</b></td>" +
-      '<td class="num"><b>' + t.uniqueInvoices + "</b></td>" +
-      '<td class="num">' + t.invoiceLines + "</td>" +
-      '<td class="num">' + m0(t.revenue) + "</td>" +
-      '<td class="num">' + m0(t.gp) + "</td></tr>";
-  }).join("");
-  var totLines = 0, totRev = 0, totGp = 0;
-  types.forEach(function (t) { totLines += t.invoiceLines; totRev += t.revenue; totGp += t.gp; });
-  typeRows += '<tr class="totrow"><td><b>Total</b></td>' +
-    '<td class="num"><b>' + s.uniqueInvoices + "</b></td>" +
-    '<td class="num"><b>' + totLines + "</b></td>" +
-    '<td class="num"><b>' + m0(s.total.achieved) + "</b></td>" +
-    '<td class="num"><b>' + m0(s.grossProfit.achieved) + "</b></td></tr>";
-  var walkinSec = idxSection("idx-walkin", "🚶 Total Walk-ins · 🧾 Invoices — each Revenue Type",
-    "walk-in tokens from the walkin sheet; invoice counts are unique crm!InvoiceCode per crm!RevenueType (TranType = SALESRETURN excluded).",
-    '<div class="cards" style="margin-bottom:12px">' +
-      statCard("Total Walk-ins", "<b>" + (wlT ? wlT.walkins : 0) + "</b>",
-        wlT ? (wlT.unique + " unique visitors · " + wlT.cases + " jobs · " + wlT.invoices + " invoices") : "walkin sheet not found") +
-    "</div>" +
-    '<div class="scroll-x"><table class="ptable"><thead><tr><th>Revenue Type</th>' +
-    '<th class="num">Total Invoices</th><th class="num">Invoice Lines</th>' +
-    '<th class="num">Revenue</th><th class="num">Gross Profit</th></tr></thead><tbody>' +
-    typeRows + "</tbody></table></div>");
-
-  // ---- 4) Weekly Revenue Analysis — INDEX shows the % summary, not the
-  // detailed table (Task 49): completed/in-progress achieved %, upcoming weeks
-  // the balance % each must contribute to close the month.
-  var weeklySec = renderWeeklySummary_(data);
-
-  // ---- 5) KPI Target — overall achieved % ------------------------------------
-  var kAch = 0, kTgt = 0;
-  var catChips = [["AR", data.kpi.ar], ["RR", data.kpi.rr], ["SR", data.kpi.sr]].map(function (c) {
-    var a = 0, t = 0;
-    c[1].forEach(function (k) { a += k.achieved || 0; t += k.target || 0; });
-    kAch += a; kTgt += t;
-    return statCard(c[0] + " KPIs", "<b>" + pct_(a, t) + "%</b>", a + " of " + t + " achieved");
-  }).join("");
-  var kpiSec = idxSection("idx-kpi", "📊 KPI Target — Store KPI Parameters",
-    "overall achievement across every KPI parameter (AR + RR + SR · Σ achieved ÷ Σ target).",
-    '<div class="cards">' +
-      statCard("Overall KPI Achievement", "<b>" + pct_(kAch, kTgt) + "%</b>", kAch + " of " + kTgt + " parameters achieved", "headline") +
-      catChips +
-    "</div>");
-
-  // ---- 6) AR Attachment — total count ----------------------------------------
-  var aa = inv.arAttachment || {};
-  var arSec = idxSection("idx-ar", "🔗 AR Attachment",
-    "invoices that carried an accessory together with a service / repair.",
-    '<div class="cards">' +
-      statCard("AR Attachments", "<b>" + (aa.attachedInvoices || 0) + "</b>",
-        "of " + (aa.attachableInvoices || 0) + " service / repair invoices · " + (aa.attachRate || 0) + "% attach rate") +
-    "</div>");
-
-  // ---- 7) Sales Person Performance — % of achievement only --------------------
-  var spRows = (data.salespeople || []).map(function (p) {
-    function pc(seg) { return '<td class="num">' + seg.pct + "%</td>"; }
-    return "<tr><td><b>" + esc_(p.name) + "</b></td>" +
-      pc(p.service) + pc(p.accessory) + pc(p.repair) + pc(p.grossProfit) +
-      '<td class="num"><b>' + p.total.pct + "%</b></td></tr>";
-  }).join("");
-  var personSec = idxSection("idx-person", "👤 Sales Person Performance",
-    "% of achievement in each segment — percentages only, no values (repair % is judged on the store repair target).",
-    '<div class="scroll-x"><table class="ptable"><thead><tr><th>Salesperson</th>' +
-    '<th class="num">Service %</th><th class="num">Accessory %</th><th class="num">Repair %</th>' +
-    '<th class="num">Gross Profit %</th><th class="num">Total %</th></tr></thead><tbody>' +
-    spRows + "</tbody></table></div>");
-
-  // ---- 8/9/10) decline repairs · win-backs · open jobs ------------------------
-  var opsSec = idxSection("idx-ops", "📉 Repairs & Jobs — counts",
-    "headline counts from the service / decline / quote / job sources (details on the SM and TECH pages).",
-    '<div class="cards">' +
-      statCard("Declined Repairs", "<b>" + (ex.decline.count || 0) + "</b>", "unique decline!CaseId · local approver rejected", "neg") +
-      statCard("Requote Win-backs", "<b>" + (ex.winback.count || 0) + "</b>", "rejected → approved · unique serials", "pos") +
-      statCard("Open Jobs", "<b>" + (jbT ? jbT.openJobs : 0) + "</b>",
-        jbT ? ("communication updated " + jbT.communicated + " · pending " + jbT.notCommunicated) : "service sheet not found") +
-    "</div>");
-  opsSec = insertExportBtn_(opsSec, "ops");
-
-  // ---- 11) Working Days (Current Month) — the master A2 module, moved to the
-  // top of the page directly below 🎯 Store Performance (Task 49).
-  var wdSec = renderWorkingDaysCard_(data).replace('id="sec-workdays"', 'id="idx-workdays"');
+  var gr = data.kpi.googleReview;
+  // Google review tile — REVERSED emphasis: the gained review count is the
+  // big bold number; the current and previous counts sit small beneath it.
+  var diffCls = gr.difference > 0 ? "pos" : gr.difference < 0 ? "neg" : "muted";
+  var grTile =
+    '<div class="card"><div class="label">Google Reviews</div>' +
+    '<div class="value ' + diffCls + '">' + (gr.difference >= 0 ? "+" : "") + gr.difference + "</div>" +
+    '<div class="sub">' + gr.currentMonth + " this month &middot; previous " + gr.previousMonth + "</div></div>";
 
   return (
-    '<section class="index-hero"><h2>Store Performance Dashboard</h2></section>' +
-    storeSec + wdSec + walkinSec + weeklySec + kpiSec + arSec + personSec + opsSec +
-    freshnessLineHtml_(data, perfData)
+    '<div class="cards">' +
+    card("Month Progress", s.daysElapsed + " / " + s.daysInMonth + " days", s.daysRemaining + " remaining") +
+    card("Total Invoices", s.totalInvoices, "invoice lines (SALES only)") +
+    card("Unique Invoices", s.uniqueInvoices, "deduped invoice codes") +
+    card("Total Revenue", money_(s.total.achieved), s.total.pct + "% of target") +
+    card("Gross Profit", money_(s.grossProfit.achieved), s.grossProfit.pct + "% of target") +
+    grTile +
+    "</div>"
   );
 }
 
-/** Bottom line on the index: latest dated record seen in each sheet. */
-function freshnessLineHtml_(data, perfData) {
-  var bits = [];
-  // Task 39: every chip reads the sheet's own LAST record date AND time.
-  var fr = perfData && perfData.freshness ? perfData.freshness : {};
-  bits.push(["crm (sales)", fr.crm || "no rows"]);
-  bits.push(["target (plan)", "refreshed " +
-    Utilities.formatDate(data.generatedAt, Session.getScriptTimeZone(), "dd-MM-yyyy HH:mm" )]);
-  bits.push(["walkin", fr.walkin || "no rows"]);
-  bits.push(["service", fr.service || "no rows"]);
-  bits.push(["advance", fr.advance || "—"]);
-  bits.push(["comm", fr.comm || "—"]);
-  var li = bits.map(function (b) {
-    return '<span class="fresh-chip"><i>' + esc_(b[0]) + "</i><b>" + esc_(b[1]) + "</b></span>";
-  }).join("");
-  // Task 35: every tab is stamped with the dashboard-refresh time — show it.
-  var stamp = (perfData && perfData.refreshStamp)
-    ? '<span class="fresh-chip fresh-stamp"><i>all sheets</i><b>' +
-      esc_(perfData.refreshStamp.replace("⟳ Dashboard refresh · ", "")) + "</b></span>"
-    : "";
-  return '<div class="fresh-line"><div class="fresh-line-head">⏱ Latest records per sheet</div>' +
-    '<div class="fresh-row">' + stamp + li + "</div></div>";
-}
-
-/** Assembles the complete HTML document. */
-function buildDashboardPage_(data, initialPage, opts) {
-  opts = opts || {};
-  var css = getDashboardCss_();
-  var storeCode = (opts.storeCode !== undefined) ? opts.storeCode :
-    ((data && data.store && data.store.storeCode) ? data.store.storeCode : "");
-  // Task 35/43: brand line 1 = the crm!F2 store name verbatim; generic title
-  // moves to a second line but stays the page header.
-  var pageTitle = (storeCode ? storeCode : "iPlanetcare") + " — Store Performance Dashboard";
-
-  var perfData = opts.paneJson ? null : loadPerformanceData_();
-
-  // Task 51: ?page=… deep links — resolve which tab shows first, build the
-  // anchor-fallback URL (blank outside the live Apps Script env), and stamp
-  // the digital clock with the server time so it is never blank.
-  var ACTIVE = "index";
-  PAGES_ACTIVE: {
-    var rq = String(initialPage || "index").toLowerCase();
-    if (["index", "cre", "tech", "sm"].indexOf(rq) !== -1) ACTIVE = rq;
-  }
-  var appUrl = "";
-  try { appUrl = ScriptApp.getService().getUrl() || ""; } catch (eUrl) { appUrl = ""; }
-  var clockStamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd-MM-yyyy hh:mm:ss a");
-
-  // Task 47: the eight legacy pages are replaced by four ROLE pages.
-  // INDEX - overall store performance at a glance; CRE - minimum basic
-  // details; TECH - job management basics only; SM - the full master report
-  // (groups A-G). Fine-grained per-role gating per target!X1:Y50 follows in
-  // the next iteration.
-  var cached = opts.paneJson || null;
-  var PAGES = [
-    // [tab label, data-page id, main id, html, meta-subtitle]
-    ["INDEX", "index", "pageIndex", cached ? cached.index : renderIndexHtml_(data, perfData), "Overall store performance — every dashboard at a glance"],
-    ["CRE",   "cre",   "pageCre",   cached ? cached.cre : renderCreHtml_(data, perfData),     "CRE — walk-in tokens · jobs & invoices created · C-SAT summary"],
-    ["TECH",  "tech",  "pageTech",  cached ? cached.tech : renderTechHtml_(perfData),         "TECH — job buckets · bucket aging · communication status"],
-    ["SM",    "sm",    "pageSm",    cached ? cached.sm : renderSmHtml_(data, perfData),       "SM — full & detailed master report (groups A-G)"],
-  ];
-  // Full renders also warm the pane caches (Task 51b) so repeat page loads
-  // and tab clicks skip all server compute.
-  if (!cached && data) {
-    cachePanes_(data, { index: PAGES[0][3], cre: PAGES[1][3], tech: PAGES[2][3], sm: PAGES[3][3] });
-  }
-
-  // Task 57: tabs are plain <button>s — a tap can ONLY flip the panes that
-  // were prefetched into the DOM at load. There is no href at all, so a tap
-  // can never hit the server, never re-read sheet data, never reload.
-  var tabs = PAGES.map(function (pg) {
-    var act = (pg[1] === ACTIVE) ? " active" : "";
-    return '<button type="button" class="tab-btn' + act + '" data-page="' + pg[1] +
-      '" onclick="switchPage(this);return false;">' + pg[0] + "</button>";
-  }).join("");
-
-  var mains = PAGES.map(function (pg) {
-    return '<main class="wrap" id="' + pg[2] + '" data-pane="' + pg[1] + '" data-meta="' + esc_(pg[4]) + '"' +
-      (pg[1] === ACTIVE ? "" : ' style="display:none;"') + ">" + pg[3] + "</main>";
-  }).join("");
-
-  // Refresh runs through google.script.run because the page is served inside
-  // a sandboxed iframe — window.location there points at an internal
-  // userCodeAppPanel URL, so navigating it would blank the page.
-  var clientScript =
-    "<script>" +
-    // Section collapse/expand for the DATE matrix. Rows outside the
-    // recent-days window carry .extra-day and are hidden by .collapsed on the
-    // table, so toggling is a pure CSS class flip with no server call.
-    "function dwToggle(btn){" +
-    "  var t=document.getElementById('dwTable'); if(!t) return;" +
-    "  var open=t.classList.toggle('collapsed')===false;" +
-    "  btn.classList.toggle('open', open);" +
-    "  btn.querySelector('.txt').textContent=open?btn.dataset.less:btn.dataset.more;" +
-    "}" +
-    // Pane routing: flip the active tab, show the matching <main>, swap the
-    // subtitle from its data-meta. Panes are keyed by data-pane.
-    "function paneId(page){return {index:'pageIndex',cre:'pageCre',tech:'pageTech',sm:'pageSm'}[page]||'pageIndex';}" +
-    "function paneEl(page){return document.getElementById(paneId(page));}" +
-    "function currentPage(){var a=document.querySelector('.tab-btn.active');return a?a.dataset.page:'index';}" +
-    "function showPane(page){" +
-    "  var mains=document.querySelectorAll('main[data-pane]');" +
-    "  for(var i=0;i<mains.length;i++){mains[i].style.display=(mains[i].getAttribute('data-pane')===page)?'block':'none';}" +
-    "  var active=paneEl(page);" +
-    "  if(active){document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';}" +
-    "  try{window.scrollTo(0,0);}catch(e){}" +
-    "}" +
-    // Keep the address bar truthful without any navigation (best effort —
-    // sandboxed hosts may forbid it, and failure there is harmless).
-    "function syncUrl(page){try{if(window.history&&history.replaceState){history.replaceState(null,'','?page='+page);}}catch(e){}}" +
-    "function switchPage(btn){" +
-    "  var tabs=document.querySelectorAll('.tab-btn');" +
-    "  for(var i=0;i<tabs.length;i++){tabs[i].classList.toggle('active', tabs[i]===btn);}" +
-    "  showPane(btn.dataset.page);" +
-    "  syncUrl(btn.dataset.page);" +
-    "}" +
-    // Tile click → flip to that page (tab highlight follows automatically).
-    "function gotoPage(page, el){" +
-    "  var tabs=document.querySelectorAll('.tab-btn');" +
-    "  for(var i=0;i<tabs.length;i++){tabs[i].classList.toggle('active', tabs[i].dataset.page===page);}" +
-    "  showPane(page);" +
-    "  syncUrl(page);" +
-    "}" +
-    "function tickClock(){" +
-    "  var el=document.getElementById('liveClock'); if(!el) return;" +
-    "  var d=new Date(); function p(n){return (n<10?'0':'')+n;}" +
-    "  var h=d.getHours(), ap=h>=12?'PM':'AM'; h=h%12||12;" +
-    "  el.textContent=p(d.getDate())+'-'+p(d.getMonth()+1)+'-'+d.getFullYear()+' '+" +
-    "    p(h)+':'+p(d.getMinutes())+':'+p(d.getSeconds())+' '+ap;" +
-    "}" +
-    // Bind clicks via addEventListener too — pure belt-and-braces, since
-    // buttons carry no href and thus cannot navigate anyway (Task 57).
-    "function bindTabs(){" +
-    "  var tabs=document.querySelectorAll('.tab-btn');" +
-    "  for(var i=0;i<tabs.length;i++){(function(t){t.addEventListener('click',function(ev){ev.preventDefault();switchPage(t);});})(tabs[i]);}" +
-    "}" +
-    "try{bindTabs();}catch(e){}" +
-    // Back/forward buttons only flip the already-loaded panes — no reload.
-    "try{window.addEventListener('popstate',function(){var m=((window.location&&location.search)||'').match(/[?&]page=(index|cre|tech|sm)/);if(m)gotoPage(m[1],null);});}catch(e){}" +
-    "try{tickClock(); setInterval(tickClock,1000);}catch(e){}" +
-    "" +
-    // Task 51b — silent background updater: right after the page paints it
-    // fills every pane (so tab switches become pure display flips), and from
-    // then on it re-checks for updates every 15 minutes without a reload.
-    "function applySections(res,onlyLoading){" +
-    "  try{" +
-    "    var d=JSON.parse(res);" +
-    "    var map={index:'pageIndex',cre:'pageCre',tech:'pageTech',sm:'pageSm'};" +
-    "    Object.keys(map).forEach(function(pg){var el=document.getElementById(map[pg]);" +
-    "      if(el&&d[pg]!==undefined&&(!onlyLoading||el.querySelector('.pane-loading'))){el.innerHTML=d[pg];}});" +
-    "    var active=paneEl(currentPage());" +
-    "    if(active){document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';}" +
-    "    var n=document.getElementById('note');" +
-    "    if(n){n.textContent=(d.meta||'Up to date'); n.className='note ok';}" +
-    "  }catch(e){}" +
-    "}" +
-    "function autoRefresh(prefillOnly){" +
-    "  if(!(window.google&&google.script&&google.script.run)) return;" +
-    "  google.script.run" +
-    "    .withSuccessHandler(function(res){applySections(res,prefillOnly);})" +
-    "    .withFailureHandler(function(){})" +
-    "    .refreshDashboardSections();" +
-    "}" +
-    "if(window.google&&google.script&&google.script.run){" +
-    "  setInterval(function(){autoRefresh(false);},15*60*1000);" +
-    "}" +
-    "function dashRefresh(btn){" +
-    "  if(btn.disabled) return;" +
-    "  btn.classList.add('loading'); btn.disabled=true;" +
-    "  var t=btn.querySelector('.txt'); var old=t.textContent; t.textContent='Refreshing...';" +
-    "  var done=function(){ btn.classList.remove('loading'); btn.disabled=false; t.textContent=old; };" +
-    "  if(!(window.google && google.script && google.script.run)){" +
-    "    window.top.location.reload(); return;" +
-    "  }" +
-    "  google.script.run" +
-    "    .withSuccessHandler(function(res){" +
-    "      try{" +
-    "        var prev=document.getElementById('dwTable');" +
-    "        var wasOpen=prev?!prev.classList.contains('collapsed'):false;" +
-    "        var d=JSON.parse(res);" +
-    "        var map={index:'pageIndex',cre:'pageCre',tech:'pageTech',sm:'pageSm'};" +
-    "        Object.keys(map).forEach(function(page){" +
-    "          var el=document.getElementById(map[page]);" +
-    "          if(el && d[page]!==undefined){ el.innerHTML=d[page]; }" +
-    "        });" +
-    "        var active=paneEl(currentPage());" +
-    "        if(active){document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';}" +
-    "        if(wasOpen){" +
-    "          var nt=document.getElementById('dwTable');" +
-    "          var nb=document.getElementById('dwToggle');" +
-    "          if(nt) nt.classList.remove('collapsed');" +
-    "          if(nb){ nb.classList.add('open');" +
-    "            nb.querySelector('.txt').textContent=nb.dataset.less; }" +
-    "        }" +
-    "        var n=document.getElementById('note');" +
-    "        n.textContent=(d.meta||'Updated just now'); n.className='note ok';" +
-    "      }catch(e){" +
-    "        document.getElementById('note').textContent='Refresh failed: '+e;" +
-    "        document.getElementById('note').className='note err';" +
-    "      }" +
-    "      done();" +
-    "    })" +
-    "  .withFailureHandler(function(err){" +
-    "      var n=document.getElementById('note');" +
-    "      n.textContent='Refresh failed: '+(err && err.message ? err.message : err);" +
-    "      n.className='note err';" +
-    "      done();" +
-    "    })" +
-    "    .refreshDashboardSections();" +
-    "}" +
-    "" +
-    "// Task 54: per-table export buttons call the single-table endpoint." +
-    "function dashExportSection(key,btn){" +
-    "  if(btn.disabled) return;" +
-    "  var old=btn.textContent; var n=document.getElementById('note');" +
-    "  if(!(window.google && google.script && google.script.run)){" +
-    "    if(n) n.textContent='Export works in the live add-on only.'; return; }" +
-    "  btn.disabled=true; btn.textContent='…'; if(n) n.textContent='Exporting table…';" +
-    "  google.script.run" +
-    "    .withSuccessHandler(function(res){" +
-    "      try{ var d=JSON.parse(res);" +
-    "        if(n) n.innerHTML='Exported · <a target=\"_top\" href=\"'+d.url+'\" style=\"color:#63e6b7;font-weight:800\">open '+d.name+'</a>';" +
-    "      }catch(e){ if(n) n.textContent='Export finished.'; }" +
-    "      btn.disabled=false; btn.textContent=old; })" +
-    "    .withFailureHandler(function(err){" +
-    "      if(n) n.textContent='Export failed: '+(err && err.message ? err.message : err);" +
-    "      btn.disabled=false; btn.textContent=old; })" +
-    "    .exportDashboardSectionToSpreadsheet(key);" +
-    "}" +
-    "" +
-    // ---- chat bot: toggle / send / answer ----
-    "function chatToggle(){" +
-    "  var p=document.getElementById('chatPanel'); if(!p) return;" +
-    "  p.classList.toggle('open');" +
-    "  if(p.classList.contains('open')){var i=document.getElementById('chatInput'); if(i) i.focus();}" +
-    "}" +
-    "function chatBubble(cls,html){" +
-    "  var log=document.getElementById('chatLog'); if(!log) return null;" +
-    "  var d=document.createElement('div'); d.className='chat-msg '+cls; d.innerHTML=html;" +
-    "  log.appendChild(d); log.scrollTop=log.scrollHeight; return d;" +
-    "}" +
-    "function chatSend(){" +
-    "  var inp=document.getElementById('chatInput'); if(!inp) return;" +
-    "  var q=(inp.value||'').trim(); if(!q) return;" +
-    "  inp.value='';" +
-    "  var safe=q.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');" +
-    "  chatBubble('user',safe);" +
-    "  var thinking=chatBubble('bot','<span class=\\\"chat-dots\\\"><i></i><i></i><i></i></span>');" +
-    "  var finish=function(html){ if(thinking) thinking.innerHTML=html; };" +
-    "  if(!(window.google && google.script && google.script.run)){" +
-    "    finish('Chat replies need the live web app (this is a static preview).');" +
-    "    return;" +
-    "  }" +
-    "  google.script.run" +
-    "    .withSuccessHandler(function(raw){" +
-    "      var res; try{res=JSON.parse(raw);}catch(e){res={title:'Reply error',rows:[],note:String(e)};}" +
-    "      var h='<div class=\\\"chat-title\\\">'+res.title+'</div>';" +
-    "      if(res.rows && res.rows.length){" +
-    "        h+='<table class=\\\"chat-table\\\"><tbody>';" +
-    "        for(var i=0;i<res.rows.length;i++){h+='<tr>'+res.rows[i].join('')+'</tr>';}" +
-    "        h+='</tbody></table>';" +
-    "      }" +
-    "      if(res.note){h+='<div class=\\\"muted\\\">'+res.note+'</div>';}" +
-    "      var pl=document.getElementById('chatPanel'); if(pl){pl.classList.toggle('half', !!res.wide);}" +
-    "      finish(h);" +
-    "    })" +
-    "    .withFailureHandler(function(err){" +
-    "      finish('Search failed: '+(err && err.message ? err.message : err));" +
-    "    })" +
-    "    .serverQuery(q);" +
-    "}" +
-    // Task 38 — case detail popover. Values arrive in the #caseDetailData
-    // island on the jobs page; escape everything before innerHTML.
-    "function escText_(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}" +
-    "var CASE_DETAILS_CACHE=null;" +
-    "function caseDetailsMap_(){if(CASE_DETAILS_CACHE===null){" +
-    "  var el=document.getElementById('caseDetailData');" +
-    "  try{CASE_DETAILS_CACHE=el?JSON.parse(el.textContent||'{}'):{};}catch(e){CASE_DETAILS_CACHE={};}" +
-    "}return CASE_DETAILS_CACHE;}" +
-    "function openCaseDetails(cid){" +
-    "  var d=(caseDetailsMap_()||{})[cid]; if(!d)return;" +
-    "  var rows=[['Case ID',d.caseId],['Job Created Date',d.createdDate]," +
-    "    ['Repair Created Date',d.repairDate],['Repair Bucket',d.bucket]," +
-    "    ['Customer Name',d.name],['Product',d.product]," +
-    "    ['Communication Updated',d.commDate],['Ready For Pickup',d.readyDate]," +
-    "    ['GSX Repair Status',d.gsxStatus]];" +
-    "  var h='';for(var i=0;i<rows.length;i++){" +
-    "    h+='<tr><td>'+escText_(rows[i][0])+'</td><td>'+escText_(rows[i][1])+'</td></tr>';}" +
-    "  document.getElementById('cmTable').innerHTML=h;" +
-    "  document.getElementById('cmTitle').textContent='CASE '+d.caseId;" +
-    "  document.getElementById('caseModal').style.display='flex';" +
-    "}" +
-    "function closeCaseDetails(){var m=document.getElementById('caseModal');if(m)m.style.display='none';}" +
-    "document.addEventListener('keydown',function(e){if(e.key==='Escape')closeCaseDetails();});" +
-    "</script>";
-
-  var bizMeta = (opts.metaText !== undefined) ? opts.metaText : renderMetaText_(data);
-
-  return (
-    "<!-- BUILD TASK58 · CSAT restored from target!E47:F51 · tabs never navigate · refresh updates values in place -->" +
-    "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
-    "<title>" + esc_(pageTitle) + "</title><style>" + css + "</style></head><body>" +
-    // Task 30: plain dark-ash backdrop for EVERY page — no image at all.
-    '<header class="topbar"><div class="topbar-inner">' +
-    "<div class=\"topbar-left\">" +
-    // Task 43: brand shows the crm!F2 store name as-is (fallback when blank).
-    '<div class="brand">' + esc_(storeCode ? storeCode : "iPlanetcare") + "</div>" +
-    '<div class="brand-sub">Store Performance Dashboard</div>' +
-    '<div class="meta" id="meta">' + esc_(bizMeta) + "</div>" +
-    '<div class="note" id="note"></div>' +
-    "</div>" +
-    // ---- live clock, top-middle: Task 30 — gif removed; blue LED digits only ----
-    '<div class="topbar-clock" role="timer">' +
-    '<span class="clock-text" id="liveClock">' + esc_(clockStamp) + "</span>" +
-    "</div>" +
-    // Task 57: refresh is a plain button — it can ONLY run dashRefresh(),
-    // which re-reads the source data server-side and swaps the new values in
-    // place. No ?refresh=1 navigation, no full page load.
-    '<button type="button" class="refresh-btn" onclick="dashRefresh(this);return false;">' +
-    '<span class="spin"></span><span class="txt">↻ Refresh data</span></button>' +
-    // ---- tabs: Index / GP / KPI / Walk-in / Operation / Open Jobs / Date ----
-    '<div class="tabs-row"><div class="tabs tabs-wide" role="tablist">' + tabs + "</div></div>" +
-    "</div></header>" +
-    mains +
-    // ---- floating sheet-search chat bot, present on every page ----
-    '<div class="chat-widget" id="chatWidget">' +
-      '<div class="chat-fab" id="chatFab" onclick="chatToggle()" role="button" tabindex="0" ' +
-        'aria-label="Open sheet search chat">' +
-        '<span class="chat-fab-icon">💬</span><span>ask me anything</span>' +
-      '</div>' +
-      '<div class="chat-panel" id="chatPanel" role="dialog" aria-label="Sheet search chat">' +
-        '<div class="chat-head"><b>🤖 ask me anything</b>' +
-          '<span class="chat-sub">ask by mobile number or Case ID</span>' +
-          '<button class="chat-close" onclick="chatToggle()" aria-label="Close chat">&times;</button>' +
-        "</div>" +
-        '<div class="chat-log" id="chatLog">' +
-          '<div class="chat-msg bot"><b>Ask me anything</b> — I search <b>every sheet</b> of this ' +
-            "spreadsheet: customer mobiles, Case IDs, names, products, statuses, dates, " +
-            "amounts… Exact matches only, straight from the sheets.</div>" +
-        "</div>" +
-        '<div class="chat-inputrow">' +
-          '<input class="chat-input" id="chatInput" type="text" autocomplete="off" ' +
-            'placeholder="Search every sheet — mobile, Case ID, name, product…" ' +
-            "onkeydown=\"if(event.key==='Enter')chatSend()\">" +
-          '<button class="chat-send" onclick="chatSend()" aria-label="Send">➤</button>' +
-        "</div>" +
+/**
+ * Section 1 — Store Performance tiles.
+ *
+ * Rendered exactly like the old script page: one dark navy tile per revenue
+ * type, each with a status pill (In Progress / Completed), a 2x2 metric grid
+ * (Target · Achievement · Achievement % · Balance), a cyan Per-Day
+ * Requirement strip and a progress bar. The per-day requirement reuses the
+ * existing bucket requiredPerDay value (balance ÷ working days left,
+ * today counted) — only the presentation changed, not the conditions.
+ */
+function renderStoreTable_(data) {
+  var s = data.store;
+  // Signed money like the old page: a covered target shows the excess with a
+  // minus sign (−₹1,40,068) instead of a clamped zero.
+  function sMoney(n) { return n < 0 ? "\u2212" + money_(-n) : money_(n); }
+  function tile(title, b) {
+    var pct = b.target > 0 ? (100 * b.achieved / b.target) : 0;
+    var complete = b.target > 0 && pct >= 100;
+    var signedBalance = b.target - b.achieved;
+    var dayLabel = complete ? "Target Completed / Excess" : "Per Day Requirement";
+    var dayValue = complete ? sMoney(signedBalance) : money_(b.requiredPerDay);
+    var width = Math.max(0, Math.min(100, pct));
+    return '<div class="card rtile' + (complete ? " done" : "") + '">' +
+      '<div class="rt-head"><h3>' + esc_(title) + "</h3>" +
+      '<span class="status ' + (complete ? "on" : "pending") + '">' +
+      (complete ? "Completed" : "In Progress") + "</span></div>" +
+      '<div class="mg">' +
+      '<div class="metric t"><span>Target</span><strong>' + money_(b.target) + "</strong></div>" +
+      '<div class="metric a"><span>Achievement</span><strong>' + money_(b.achieved) + "</strong></div>" +
+      '<div class="metric p"><span>Achievement %</span><strong>' + pct.toFixed(1) + "%</strong></div>" +
+      '<div class="metric b"><span>Balance</span><strong>' + sMoney(signedBalance) + "</strong></div>" +
       "</div>" +
-    "</div>" +
-    clientScript +
-    "</body></html>"
+      '<div class="dreq"><span>' + esc_(dayLabel) + "</span><strong>" + dayValue + "</strong></div>" +
+      '<div class="bar"><i class="bar-fill" style="width:' + width.toFixed(1) + '%"></i></div>' +
+      "</div>";
+  }
+  return (
+    '<section class="section" id="sec-store"><h2>A1. 🎯 Store Target — Performance ' + exportSectionBtn_("store") + '</h2><div class="body">' +
+    '<div class="sec-desc">Target vs Achievement &middot; Run Rate</div>' +
+    '<div class="rgrid">' +
+    tile("Service Revenue", s.service) +
+    tile("Accessory Revenue", s.accessory) +
+    tile("Repair Revenue", s.repair) +
+    tile("Total Revenue", s.total) +
+    tile("Gross Profit", s.grossProfit) +
+    "</div></div></section>"
   );
 }
 
-function renderDashboardHtml_(data) {
-  return buildDashboardPage_(data);
+function renderWorkingDaysCard_(data) {
+  var s = data.store;
+  return (
+    '<section class="section" id="sec-workdays"><h2>A2. 📅 Working Days (Current Month)</h2><div class="body">' +
+    '<div class="sec-desc">Definition: days the store is open this month — total, already consumed, and how many selling days are left. Holiday dates come from CONFIG.</div>' +
+    '<div class="cards" style="margin-bottom:0">' +
+    '<div class="card"><div class="label">Total Working Days</div><div class="value">' + s.totalWorkingDays + "</div></div>" +
+    '<div class="card"><div class="label">Consumed</div><div class="value">' + s.consumedWorkingDays + "</div></div>" +
+    '<div class="card"><div class="label">Balance</div><div class="value" style="color:' +
+    (s.balanceWorkingDays > 0 ? "#d97706" : "#16a34a") + '">' + s.balanceWorkingDays + "</div></div>" +
+    "</div></div></section>"
+  );
 }
 
-/* ============================================================================
- * PERFORMANCE PAGE — HTML RENDERERS
- * ========================================================================= */
-
-function perfMeta_(pd) {
-  var bits = [];
-  if (pd.walkin.available) bits.push(pd.walkin.totals.walkins + " walk-ins");
-  if (pd.jobs.available) bits.push(pd.jobs.totals.openJobs + " open jobs");
-  return bits.length
-    ? bits.join(" · ") + " · updated " + Utilities.formatDate(pd.generatedAt, Session.getScriptTimeZone(), "dd-MM-yyyy HH:mm")
-    : "No performance source sheets found · updated " +
-        Utilities.formatDate(pd.generatedAt, Session.getScriptTimeZone(), "dd-MM-yyyy HH:mm");
+/** Task 49 — INDEX weekly summary: percentage view only.
+ *  Completed weeks → achieved % of that week's target per revenue type;
+ *  in-progress week → current % so far; upcoming weeks → the % of the MONTH
+ *  target each week must still contribute (remaining balance split evenly). */
+function renderWeeklySummary_(data) {
+  var wa = computeWeeklyAnalysis_(data);
+  function r1(x) { return Math.round(x * 10) / 10; }
+  var upcoming = wa.weeks.filter(function (w) { return w.status === "Upcoming"; });
+  var nUp = upcoming.length;
+  var upPct = {};
+  wa.types.forEach(function (t) {
+    if (!nUp) { upPct[t.key] = null; return; }
+    var bal = Math.max(0, t.monthTarget - (wa.monthTotals[t.key] || 0));
+    upPct[t.key] = r1(((bal / nUp) / Math.max(1, t.monthTarget)) * 100);
+  });
+  function typeCell(w, t) {
+    if (w.status === "Upcoming") {
+      return '<td class="num muted">' + (upPct[t.key] == null ? "—" : upPct[t.key] + "%") + "</td>";
+    }
+    if (!w.tgt[t.key]) return '<td class="num muted">—</td>';
+    var p = r1((w.achieved[t.key] / w.tgt[t.key]) * 100);
+    var cls = p >= 100 ? "pos" : (w.status === "Completed" ? "neg" : "");
+    return '<td class="num' + (cls ? " " + cls : "") + '">' + p + "%</td>";
+  }
+  var rows = wa.weeks.map(function (w) {
+    var tag = w.status === "Completed" ? '<span class="pill pill-positive">completed</span>'
+      : w.status === "In progress" ? '<span class="pill pill-benchmark">in progress</span>'
+      : '<span class="pill">upcoming</span>';
+    return "<tr><td><b>Week " + w.idx + '</b> <span class="muted">(' + w.start + "–" + w.end + ")</span></td>" +
+      "<td>" + tag + "</td>" + wa.types.map(function (t) { return typeCell(w, t); }).join("") + "</tr>";
+  }).join("");
+  return '<section class="section" id="idx-weekly"><h2>A6. 🗓 Weekly Revenue Analysis — ' + esc_(wa.monthName) + "</h2>" +
+    '<div class="body"><div class="sec-desc">completed weeks: achieved % of each week&rsquo;s target · in-progress week: current % so far · ' +
+    "upcoming weeks: % of the month target each week must still contribute (balance split evenly) to close the month at 100%.</div>" +
+    '<div class="scroll-x"><table class="ptable"><thead><tr><th>Week</th><th>Status</th>' +
+    wa.types.map(function (t) { return '<th class="num">' + esc_(t.label) + "</th>"; }).join("") +
+    "</tr></thead><tbody>" + rows + "</tbody></table></div></div></section>";
 }
 
-function emptyPerf_(sheetName, msg) {
-  return '<div class="empty-perf">📁 No <b>' + esc_(sheetName) + '</b> sheet was found in this spreadsheet.<br>' +
-    '<span class="muted">' + esc_(msg) + "</span></div>";
+/** Renders section 7 — weekly achieved vs weekly target per revenue type. */
+function renderWeeklyAnalysis_(data) {
+  var wa = computeWeeklyAnalysis_(data);
+  var TYPES = wa.types;
+
+  var head1 = '<tr><th rowspan="2" class="sticky-col">Week</th><th rowspan="2">Wrk Days</th><th rowspan="2">Status</th>';
+  var head2 = "<tr>";
+  TYPES.forEach(function (t, i) {
+    var wc = " " + t.wc;
+    head1 += '<th colspan="3" class="grp grp-' + (i % 5) + wc + '">' + esc_(t.label) + "</th>";
+    head2 += '<th class="grp grp-' + (i % 5) + wc + '">Achieved</th>' +
+      '<th class="grp grp-' + (i % 5) + wc + '">Week Target</th>' +
+      '<th class="grp grp-' + (i % 5) + wc + '">Balance</th>';
+  });
+  head1 += "</tr>";
+  head2 += "</tr>";
+
+  var body = "";
+  wa.weeks.forEach(function (w) {
+    var tr = "<tr>" +
+      '<td class="sticky-col"><b>Week ' + w.idx + "</b> " +
+      '<span class="muted">(' + w.start + "–" + w.end + " " + esc_(wa.monthName).split(" ")[0] + ")</span></td>" +
+      '<td style="text-align:center">' + w.workingDays + "</td>" +
+      '<td><span class="muted">' + esc_(w.status) + "</span></td>";
+    TYPES.forEach(function (t, i) {
+      var tk = t.key;
+      var wc = " " + t.wc;
+      var ach = w.achieved[tk], tgt = w.tgt[tk];
+      var bal = Math.max(0, tgt - ach);
+      var pill = tgt > 0
+        ? '<span class="apill ' + (ach >= tgt ? "ok" : "no") + '">' + money_(ach) + "</span>"
+        : '<span class="muted">' + money_(ach) + "</span>";
+      tr += '<td class="cell-' + (i % 5) + wc + '">' + pill + "</td>" +
+        '<td class="cell-' + (i % 5) + wc + '"><span class="tgt">' + money_(tgt) + "</span></td>" +
+        '<td class="cell-' + (i % 5) + wc + '">' + (bal > 0
+          ? '<span class="muted">' + money_(bal) + "</span>"
+          : '<span class="apill ok">done</span>') + "</td>";
+    });
+    body += tr + "</tr>";
+  });
+
+  var foot = '<tr class="total-row"><td class="sticky-col">Month</td><td style="text-align:center">' +
+    wa.totalWorkingDays + "</td><td></td>";
+  TYPES.forEach(function (t, i) {
+    var tk = t.key;
+    var wc = " " + t.wc;
+    var ach = wa.monthTotals[tk], tgt = t.monthTarget;
+    var bal = Math.max(0, tgt - ach);
+    foot += '<td class="cell-' + (i % 5) + wc + '"><b>' + money_(ach) + "</b></td>" +
+      '<td class="cell-' + (i % 5) + wc + '"><span class="tgt">' + money_(tgt) + "</span></td>" +
+      '<td class="cell-' + (i % 5) + wc + '">' + money_(bal) + "</td>";
+  });
+  foot += "</tr>";
+
+  return (
+    '<section class="section" id="sec-weekly"><h2>A6. 🗓 Weekly Revenue Analysis — ' +
+      esc_(wa.monthName) + '</h2><div class="body">' +
+    '<div class="sec-desc">Current month split into ' + wa.weeks.length + ' weeks — achieved vs weekly target, per revenue type</div>' +
+    '<div class="scroll-x" style="margin-top:12px"><table class="matrix hdr-deep">' +
+      "<thead>" + head1 + head2 + "</thead><tbody>" + body + foot + "</tbody></table></div>" +
+    "</div></section>"
+  );
+}
+
+/** Renders section 8 — the date-wise per-salesperson matrix. */
+function renderDateWiseTable_(data) {
+  var dailyTarget = data.store.dailyTarget;
+  var people = data.salespeople;
+  var TYPES = [["service", "Service"], ["accessory", "Accessory"], ["repair", "Repair"], ["grossProfit", "Gross Profit"]];
+
+  // Newest date first, so the current day and the two before it sit at the
+  // top of the table — exactly what the collapsed view shows.
+  var dated = data.days.filter(function (d) { return !d.undated; })
+    .slice().sort(function (a, b) { return b.sortKey - a.sortKey; });
+  var undated = data.days.filter(function (d) { return d.undated; });
+
+  // Collapsed view keeps the first CONFIG.COLLAPSED_DAYS rows (the most
+  // recent dates). Everything else is rendered but hidden, so expanding is
+  // instant and needs no extra server round-trip.
+  var visibleKeys = {};
+  dated.slice(0, CONFIG.COLLAPSED_DAYS).forEach(function (d) { visibleKeys[d.dateKey] = true; });
+  var hiddenCount = data.days.length - Math.min(dated.length, CONFIG.COLLAPSED_DAYS);
+
+  // ---- header: two banded rows, one per salesperson group ----
+  var head1 = '<tr><th rowspan="2" class="sticky-col">Date</th>';
+  var head2 = "<tr>";
+  // every salesperson block alternates between a light and a dark
+  // shade (sp-a / sp-b) so neighbouring people are visually separated.
+  people.forEach(function (p, i) {
+    var sp = " sp-" + (i % 2 ? "b" : "a");
+    head1 += '<th colspan="' + TYPES.length + '" class="grp grp-' + (i % 5) + sp + '">' + esc_(p.name) + "</th>";
+    TYPES.forEach(function (pair) {
+      head2 += '<th class="grp grp-' + (i % 5) + sp + '">' + esc_(pair[1]) + "</th>";
+    });
+  });
+  head1 += "</tr>";
+  head2 += "</tr>";
+
+  // ---- body: one row per date ----
+  function dayRow(d) {
+    var byKey = {};
+    (d.people || []).forEach(function (pp) { byKey[pp.key] = pp; });
+
+    var classes = [];
+    if (d.holiday) classes.push("holiday");
+    // Rows outside the collapsed window are tagged so the toggle can show them.
+    if (!(d.undated ? false : visibleKeys[d.dateKey])) classes.push("extra-day");
+
+    var tr = '<tr class="' + classes.join(" ") + '">';
+    tr += '<td class="sticky-col"><b>' + esc_(d.undated ? "No date" : d.dateKey) + "</b>" +
+      (d.weekday ? ' <span class="muted">' + esc_(d.weekday) + "</span>" : "") +
+      (d.holiday ? ' <span class="muted">🔶</span>' : "") + "</td>";
+
+    people.forEach(function (p, i) {
+      var pd = byKey[p.key];
+      var typeMap = {};
+      if (pd) pd.types.forEach(function (t) { typeMap[t.type] = t; });
+
+      TYPES.forEach(function (pair) {
+        var tk = pair[0];
+        // Gross profit uses the flat per-day total (it has no invoice-line
+        // type rows); revenue types use their type row. Same condition.
+        var achieved = tk === "grossProfit"
+          ? (pd ? pd.grossProfit : 0)
+          : (typeMap[tk] ? typeMap[tk].value : 0);
+        var tgt = p.dailyTargets[tk] || 0;
+        // Pill around the achieved number only; the daily target stays small
+        // underneath. The met/missed condition is unchanged.
+        var figure = tgt > 0
+          ? '<span class="apill ' + (achieved >= tgt ? "ok" : "no") + '">' + money_(achieved) + "</span>"
+          : '<span class="muted">' + money_(achieved) + "</span>";
+        tr += '<td class="cell-' + (i % 5) + (i % 2 ? " sp-b" : " sp-a") + '">' + figure +
+          '<span class="tgt">/ ' + money_(tgt) + "</span></td>";
+      });
+    });
+    tr += "</tr>";
+    return tr;
+  }
+
+  var body = "";
+  dated.forEach(function (d) { body += dayRow(d); });
+  undated.forEach(function (d) { body += dayRow(d); });
+
+  // ---- footer: month-to-date totals per person/type (always visible) ----
+  var foot = '<tr class="total-row"><td class="sticky-col">Month to date</td>';
+  people.forEach(function (p, i) {
+    TYPES.forEach(function (pair) {
+      var tk = pair[0];
+      foot += '<td class="cell-' + (i % 5) + (i % 2 ? " sp-b" : " sp-a") + '">' + money_(p[tk].achieved) +
+        '<span class="tgt">/ ' + money_(p[tk].target) + "</span></td>";
+    });
+  });
+  foot += "</tr>";
+
+  // ---- per-person daily target legend ----
+  var legend = people.map(function (p, i) {
+    return '<div class="legend-card cell-' + (i % 5) + (i % 2 ? " sp-b" : " sp-a") + '">' +
+      "<b>" + esc_(p.name) + '</b> <span class="muted">daily targets</span><br>' +
+      TYPES.map(function (pair) {
+        return esc_(pair[1]) + " " + money_(p.dailyTargets[pair[0]]);
+      }).join(' <span class="muted">·</span> ') +
+      "</div>";
+  }).join("");
+
+  var toggle = hiddenCount > 0
+    ? '<button class="toggle-btn" id="dwToggle" onclick="dwToggle(this)" ' +
+      'data-more="Show all ' + data.days.length + ' dates" ' +
+      'data-less="Show only last ' + CONFIG.COLLAPSED_DAYS + ' days">' +
+      '<span class="chev">▼</span><span class="txt">Show all ' + data.days.length + ' dates</span>' +
+      '<span class="count">+' + hiddenCount + ' hidden</span></button>'
+    : "";
+
+  return (
+    '<section class="section" id="sec-datewise"><h2>F1. 📆 Date-wise Sales Revenue Analysis (by salesperson)</h2><div class="body">' +
+    '<div class="cards" style="margin-bottom:14px">' +
+    '<div class="card"><div class="label">Store Daily Target</div><div class="value">' + money_(dailyTarget) +
+    '</div><div class="sub">total target ÷ ' + data.store.totalWorkingDays + " working days</div></div>" +
+    '<div class="card"><div class="label">Working Days</div><div class="value">' + data.store.totalWorkingDays +
+    '</div><div class="sub">' + data.store.consumedWorkingDays + " consumed / " + data.store.balanceWorkingDays + " left</div></div>" +
+    '<div class="card"><div class="label">Required / Day (balance)</div><div class="value">' +
+    money_(data.store.total.requiredPerDay) + '</div><div class="sub">to close the remaining gap</div></div>' +
+    "</div>" +
+    '<div class="legend-row">' + legend + "</div>" +
+    toggle +
+    '<div class="scroll-x"><table class="matrix collapsed" id="dwTable"><thead>' + head1 + head2 + "</thead><tbody>" +
+    body + foot + "</tbody></table></div>" +
+    '<p class="muted" style="font-size:12.5px;margin:12px 0 0">' +
+    "Each cell shows <b>achieved / that engineer's daily target</b> for the revenue type — " +
+    "the daily target is the <b>balance needed for the month ÷ working days remaining</b>. " +
+    "Achieved values sit inside <b>oval pills</b> that turn <b>green</b> when the day meets the target " +
+    "and <b>red</b> when it falls short. " +
+    "Collapsed view shows the latest " + CONFIG.COLLAPSED_DAYS + " days; expand for every date.</p>" +
+    "</div></section>"
+  );
+}
+
+function renderKpiSection_(data) {
+  // Targets come from target!B13:L16 (row 13 = revenue type, row 14 = KPI
+  // name, row 15 = target count). Google Reviews is intentionally NOT a KPI
+  // row — it is shown as its own tile at the top of the page.
+  var allKpis = data.kpi.ar.concat(data.kpi.rr, data.kpi.sr);
+
+  var rows = allKpis.map(function (k) {
+    var pctVal = k.target > 0 ? pct_(k.achieved, k.target) : 0;
+    // Approx ACHIEVABLE value: the BALANCE count still to be hit multiplied
+    // by the per-unit approximate value from target!B16:L16 — how much can
+    // still be won against this KPI's balance target this month.
+    var approxBal = k.approxAmount > 0 && k.target > 0 ? k.balance * k.approxAmount : 0;
+    var approxCell;
+    if (k.approxAmount <= 0) {
+      approxCell = '<span class="muted">&mdash;</span>';
+    } else if (approxBal > 0) {
+      approxCell = money_(approxBal) + '<br><span class="muted" style="font-size:12.5px">balance ' +
+        k.balance + " × " + money_(k.approxAmount) + "</span>";
+    } else {
+      approxCell = money_(approxBal) + '<br><span class="pos" style="font-size:12.5px">target covered</span>';
+    }
+    return "<tr><td>" + esc_(k.label) + "</td><td>" + esc_(k.category) + "</td><td>" +
+      (k.target > 0 ? k.target : "&mdash;") + "</td><td>" + k.achieved + "</td><td>" +
+      (k.target > 0 ? pctBadgeHtml_(pctVal) : '<span class="muted">&mdash;</span>') +
+      '</td><td class="' + (k.target > 0 && k.balance === 0 ? "pos" : k.balance > 0 ? "neg" : "muted") + '">' +
+      (k.target > 0 ? k.balance : "&mdash;") + "</td><td>" +
+      approxCell +
+      "</td><td>" + money_(k.achievedValue) + "</td><td>" + money_(k.achievedGp) + "</td></tr>";
+  }).join("");
+
+  return (
+    '<section class="section" id="sec-kpi"><h2>B. 📊 KPI Target — Store KPI Parameters ' + exportSectionBtn_("kpi") + '</h2><div class="body">' +
+    '<div class="scroll-x">' +
+    "<table><thead><tr><th>KPI</th><th>Type</th><th>Target</th><th>Achieved</th><th>Achieved %</th>" +
+    "<th>Balance</th><th>Approx Achievable Value</th><th>Achieved Value</th><th>Achieved GP</th></tr></thead><tbody>" + rows +
+    "</tbody></table></div>" +
+    '<p class="muted" style="font-size:12.5px;margin:12px 0 0">Targets read from <b>target!B12:L14</b>. ' +
+    "<b>Approx Achievable Value</b> = the balance count still needed × that KPI’s approximate unit value in <b>target!B15:L15</b> — the amount still winnable to close the balance target.</p>" +
+    "</div></section>"
+  );
+}
+
+function renderIncentiveTable_(data) {
+  var bundleByKey = {};
+  data.bundle.forEach(function (b) { bundleByKey[b.key] = b; });
+
+  // ---- Category 1: AMC ----
+  var amcTot = { cnt: 0, elig: 0, accCnt: 0, accElig: 0, inc: 0 };
+  var amcRows = data.amc.map(function (a) {
+    amcTot.cnt += a.amcCount; amcTot.elig += a.amcEligible;
+    amcTot.accCnt += a.accessoryCount; amcTot.accElig += a.accessoryEligible;
+    amcTot.inc += a.projectedIncentive;
+    // the Acc-AMC cell must answer "how many more to close the next
+    // slab" (slab card at target!A29:F33), not just restate the raw count.
+    return "<tr><td>" + esc_(a.name) + "</td><td>" + a.amcCount + "</td><td>" + money_(a.amcEligible) +
+      "</td><td>" + (a.accessoryNextSlab ? a.accessoryRemaining + " more (slab " + a.accessoryNextSlab.accCount + ")" : "top slab") +
+      "</td><td>" + money_(a.accessoryEligible) + "</td><td>" +
+      (a.amcNextSlab ? a.amcRemaining + " more" : "top slab") + '</td><td class="pos">' + money_(a.projectedIncentive) +
+      "</td></tr>";
+  }).join("");
+  var amcFoot = '<tr class="total-row"><td>All salespersons</td><td>' + amcTot.cnt + "</td><td>" +
+    money_(amcTot.elig) + "</td><td></td><td>" + money_(amcTot.accElig) +
+    "<td></td>" + '<td class="pos">' + money_(amcTot.inc) + "</td></tr>";
+
+  // ---- Category 2: Bundle (DISC scheme) ----
+  var bunTot = { cnt: 0, inc: 0 };
+  // bundle rows also carry the gap to the next slab (minimum
+  // incentive tier) — the owner wants the count needed, not just the count.
+  var bunRows = data.amc.map(function (a) {
+    var b = bundleByKey[a.key] || { count: 0, projectedIncentive: 0 };
+    bunTot.cnt += b.count; bunTot.inc += b.projectedIncentive;
+    return "<tr><td>" + esc_(a.name) + "</td><td>" + b.count + "</td><td>" +
+      (b.nextSlab ? b.remaining + " more (slab " + b.nextSlab.min + ")" : "top slab") +
+      '</td><td class="pos">' + money_(b.projectedIncentive) + "</td></tr>";
+  }).join("");
+  var bunFoot = '<tr class="total-row"><td>All salespersons</td><td>' + bunTot.cnt +
+    '</td><td></td><td class="pos">' + money_(bunTot.inc) + "</td></tr>";
+
+  return (
+    '<section class="section" id="sec-incentive"><h2>B1. 💰 Sales Person Incentive — AMC &amp; Bundle</h2><div class="body">' +
+    '<div class="inc-pair">' +
+    '<div class="inc-cat"><div class="inc-cat-title">Category 1 · AMC</div>' +
+    '<div class="scroll-x"><table><thead><tr><th>Salesperson</th><th>AMC Count</th><th>AMC Eligible</th>' +
+    "<th>Need To Close Next Slab</th><th>Acc-AMC Eligible</th><th>AMC To Next</th><th>AMC Incentive</th></tr></thead><tbody>" +
+    amcRows + amcFoot + "</tbody></table></div></div>" +
+    '<div class="inc-cat"><div class="inc-cat-title">Category 2 · Bundle (DISC scheme)</div>' +
+    '<div class="scroll-x"><table><thead><tr><th>Salesperson</th><th>Bundle Count</th><th>Bundle To Next</th><th>Bundle Incentive</th></tr></thead><tbody>' +
+    bunRows + bunFoot + "</tbody></table></div></div></div>" +
+    "</div></section>"
+  );
+}
+
+function renderSalespersonCards_(data) {
+  // Incentive-bearing revenue types show target vs achieved, the balance
+  // still needed in (brackets), the incentive that type has earned, and the
+  // next chase tier of the Task-33 IFS formula (70s tier &rarr; 110% top).
+  function incentiveLine_(label, b, nextSlab) {
+    var balTxt = b.balance > 0
+      ? ' <span class="muted">(' + money_(b.balance) + " to go)</span>"
+      : ' <span class="pos">(target met)</span>';
+    var slabLine = nextSlab
+      ? '<div class="incentive-line"><span class="muted">Next slab (' + esc_(nextSlab.pct) + '% &rarr; ' +
+        esc_(nextSlab.label) + ')</span><span class="next-slab">' + money_(nextSlab.need) +
+        ' more &rarr; earns ' + money_(nextSlab.amount) + "</span></div>"
+      : '<div class="incentive-line"><span class="muted">Next slab</span>' +
+        '<span class="pos">🏆 top slab reached</span></div>';
+    return (
+      '<div class="row-line"><span><b>' + esc_(label) + "</b></span>" +
+      "<span>" + money_(b.achieved) + ' <span class="muted">/ ' + money_(b.target) + "</span> " +
+      pctBadgeHtml_(b.pct) + "</span></div>" +
+      barHtml_(b.pct) +
+      '<div class="incentive-line"><span class="muted">Balance to target' + "</span><span>" + balTxt + "</span></div>" +
+      slabLine +
+      '<div class="incentive-line"><span class="muted">Incentive earned</span><span class="' +
+      (b.incentive > 0 ? "pos" : "muted") + '">' + money_(b.incentive) + "</span></div>"
+    );
+  }
+
+  if (!data.salespeople.length) {
+    return '<section class="section" id="sec-person"><h2>B2. 👤 Sales Person Performance</h2><div class="body">' +
+      '<div class="empty-state">No salespersons on the roster — add names to <b>target!C1:J1</b> (empty cells are skipped). ' +
+      "People named in the CRM but not on the roster count only toward the store totals.</div></div></section>";
+  }
+  var cards = data.salespeople.map(function (p) {
+    var gate = p.repairGate;
+
+    // Repair: the number YOU personally won, shown plainly. No store-target
+    // detail is printed on the card (owner's call) — the 80%-of-store-repair
+    // eligibility is reported by the shared gate banner beneath the grid.
+    var repairBlock =
+      '<div class="row-line" style="margin-top:12px"><span><b>Repair</b> ' +
+      '<span class="muted">(no incentive — store unlock gate)</span></span>' +
+      '<span><b class="rr-val">' + money_(p.repair.achieved) + '</b> ' +
+      '<span class="muted">won by you</span></span></div>';
+
+    var gateBlock = gate.met
+      ? '<div class="gate met">✅ <b>Incentive unlocked for everyone</b> — the store crossed ' +
+        gate.requiredPct + '% of its repair target (store at ' + gate.achievedPct.toFixed(1) + '%). ' +
+        'You receive what you earned: <b>' + money_(p.payableIncentive) + '</b>.</div>'
+      : '<div class="gate blocked">🔒 <b>Incentive on hold for everyone</b> — the store has reached ' +
+        gate.achievedPct.toFixed(1) + '% of its repair target; eligibility opens at ' + gate.requiredPct +
+        '%. Your earned amount so far: <b>' + money_(p.earnedIncentive) + '</b>.</div>';
+
+    return (
+      '<div class="person-card"><h3>' + esc_(p.name) + "</h3>" +
+      '<div class="row-line"><span>Total Revenue</span><span><b>' + money_(p.total.achieved) + "</b>" +
+      ' <span class="muted">/ ' + money_(p.total.target) + "</span> " + pctBadgeHtml_(p.total.pct) + "</span></div>" +
+      barHtml_(p.total.pct) +
+      '<div class="row-line"><span>Invoices</span><span>' + p.invoiceCount + "</span></div>" +
+      '<div class="row-line"><span><b>Payable Incentive</b></span><span class="' +
+      (p.payableIncentive > 0 ? "pos" : "neg") + '"><b>' + money_(p.payableIncentive) + "</b></span></div>" +
+      '<hr style="border:none;border-top:1px solid #e6ebf3;margin:10px 0">' +
+      incentiveLine_("Service", p.service, p.nextSvcSlab) +
+      '<div style="height:10px"></div>' +
+      incentiveLine_("Accessory", p.accessory, p.nextAccSlab) +
+      repairBlock +
+      gateBlock +
+      "</div>"
+    );
+  }).join("");
+
+  return (
+    '<section class="section" id="sec-person"><h2>B2. 👤 Sales Person Performance</h2><div class="body">' +
+    '<div class="person-grid">' + cards + "</div>" +
+    '<p class="muted" style="font-size:12.5px;margin:14px 0 0">' +
+    "Only <b>Service</b> and <b>Accessory</b> revenue earn incentive — payout is the pro-rata IFS formula. Service tiers 71/81/91/100&#8209;&#62;110% (&uarr;to &#8377;12,000); Accessory tiers 51/61/71/81&#8209;&#62;110% (&uarr;to &#8377;8,000). " +
+    "<b>Repair</b> revenue pays nothing on its own — it is one shared store gate: once the store&rsquo;s combined repair achievement passes <b>" +
+    CONFIG.REPAIR_INCENTIVE_GATE_PCT + "%</b> of the store repair target, <b>every salesperson is eligible to receive the incentive they earned</b>.</p>" +
+    "</div></section>"
+  );
+}
+
+/**
+ * AR attachment sub-dashboard (inside section 6).
+ *
+ * An invoice is an AR attachment when accessory revenue appears on the SAME
+ * invoice code as service or repair revenue. Accessory-only invoices are
+ * standalone sales and are excluded. The value and GP shown are the
+ * accessory portion of those invoices — the revenue the attachment earned.
+ */
+function renderArSection_(data) {
+  return (
+    '<section class="section" id="sec-ar"><h2>B3. 🔗 AR Attachment — accessory sold with service / repair</h2><div class="body">' +
+    '<div class="sec-desc">Definition: an invoice counts as an AR attachment when accessory revenue shares the invoice code with service or repair revenue; value and GP shown are the accessory portion of those invoices. Accessory-only invoices are excluded.</div>' +
+    renderArAttachment_(data) + "</div></section>"
+  );
+}
+
+function renderArAttachment_(data) {
+  var a = data.invoiceValuation.arAttachment;
+
+  var rateCls = a.attachRate >= 100 ? "good" : a.attachRate >= 70 ? "info" : a.attachRate >= 40 ? "warn" : "bad";
+
+  return (
+    '<div class="subpanel">' +
+    '<div class="subpanel-head">AR Attachment' +
+    '<span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0"> — accessory sold together with service or repair</span>' +
+    "</div>" +
+    '<div class="cards" style="margin-bottom:0">' +
+    '<div class="card"><div class="label">Total Invoices</div><div class="value">' + a.totalUniqueInvoices +
+    '</div><div class="sub">all unique invoice codes</div></div>' +
+    '<div class="card"><div class="label">AR Attachment Invoices</div><div class="value pos">' + a.attachedInvoices +
+    '</div><div class="sub">' + a.pctOfTotal.toFixed(1) + "% of all invoices</div></div>" +
+    '<div class="card"><div class="label">AR Attachment Value</div><div class="value">' + money_(a.value) +
+    '</div><div class="sub">accessory portion only</div></div>' +
+    '<div class="card"><div class="label">Gross Profit Gained</div><div class="value pos">' + money_(a.grossProfit) +
+    '</div><div class="sub">from attached accessories</div></div>' +
+    "</div>" +
+    '<div class="cards" style="margin:12px 0 0">' +
+    '<div class="card"><div class="label">Attach Rate</div><div class="value">' +
+    '<span class="badge ' + rateCls + '" style="font-size:18px;padding:3px 12px">' + a.attachRate.toFixed(1) + "%</span>" +
+    '</div><div class="sub">' + a.attachedInvoices + " of " + a.attachableInvoices + " service/repair invoices</div></div>" +
+    '<div class="card"><div class="label">Missed Opportunities</div><div class="value neg">' + a.missedInvoices +
+    '</div><div class="sub">service/repair with no accessory</div></div>' +
+    '<div class="card"><div class="label">Avg Attachment Value</div><div class="value">' + money_(a.avgValue) +
+    '</div><div class="sub">per attached invoice</div></div>' +
+    '<div class="card"><div class="label">Accessory-only Invoices</div><div class="value muted">' +
+    a.accessoryOnlyInvoices + '</div><div class="sub">excluded &middot; ' + money_(a.accessoryOnlyValue) + "</div></div>" +
+    "</div>" +
+    '<p class="muted" style="font-size:12.5px;margin:12px 0 0">' +
+    "An invoice counts as an AR attachment only when accessory revenue shares the invoice code with service or repair " +
+    "revenue. Invoices carrying accessory lines alone are treated as non-attachment and excluded from the value and GP above.</p>" +
+    "</div>"
+  );
+}
+
+function renderInvoiceValuation_(data) {
+  var rows = data.revenueTypes.map(function (rt) {
+    return "<tr><td>" + esc_(rt.label) + "</td><td>" + rt.invoiceLines + "</td><td>" + rt.uniqueInvoices +
+      "</td><td>" + money_(rt.revenue) + "</td><td>" + money_(rt.gp) + "</td></tr>";
+  }).join("");
+  var totalRow = "<tr class=\"total-row\"><td>Overall</td><td>" + data.invoiceValuation.totalInvoiceLines +
+    "</td><td>" + data.invoiceValuation.totalUniqueInvoices + "</td><td>" + money_(data.store.total.achieved) +
+    "</td><td>" + money_(data.store.grossProfit.achieved) + "</td></tr>";
+  return (
+    '<section class="section" id="sec-invoice"><h2>A3. 🧾 Invoice Valuation</h2><div class="body">' +
+    '<div class="sec-desc">Definition: what invoices are really worth — line count, unique invoice count, revenue and gross profit per revenue type, plus AR (accessory attachment) rate next to invoices that qualified for one.</div>' +
+    '<div class="iv-split">' +
+    '<div class="iv-left"><div class="scroll-x">' +
+    "<table class=\"hdr-deep\"><thead><tr><th>Revenue Type</th><th>Invoice Lines</th><th>Unique Invoices</th><th>Revenue</th>" +
+    "<th>Gross Profit</th></tr></thead><tbody>" + rows + totalRow + "</tbody></table></div></div>" +
+    '<div class="iv-right">' +
+    '<div class="card"><div class="label">Bundle Unique Invoices</div><div class="value">' +
+    data.invoiceValuation.bundleUniqueInvoices + "</div></div>" +
+    '<div class="card"><div class="label">AMC Unique Invoices</div><div class="value">' +
+    data.invoiceValuation.amcUniqueInvoices + "</div></div>" +
+    "</div>" +
+    "</div>" +
+    "</div></section>"
+  );
+}
+
+/** GP page: Store target · Weekly Revenue Analysis · Invoice valuation. */
+function renderGpHtml_(data) {
+  var body = "";
+  body += renderStoreCards_(data);
+  body += renderStoreTable_(data);
+  body += renderWorkingDaysCard_(data);
+  body += renderInvoiceValuation_(data);
+  body += renderGpExtras_(data.gpExtras);
+  body += renderWeeklyAnalysis_(data);
+  return body;
+}
+
+/** Task 42 — the two GP tiles: high/low margin + discounted cases. */
+function renderGpExtras_(x) {
+  x = x || {};
+  var discount = x.discount || { count: 0, value: 0, gp: 0, pct: 0, byType: {}, byTypeValue: {} };
+  var hi = x.marginHigh || [], lo = x.marginLow || [];
+  function money0(v) { return money_(v || 0); }
+
+  function marginTable(rows) {
+    var body = rows.map(function (m) {
+      // invoice number back under the short part (owner wants both);
+      // the cell carries a tooltip since the column is width-capped.
+      return '<td title="' + esc_(m.partLabel + " · " + m.invoice) + '"><b>' + esc_(m.partLabel) +
+        '</b><span class="cell-sub">' + esc_(m.invoice) + "</span></td>" +
+        "<td>" + esc_(m.typeLabel) + "</td>" +
+        '<td class="num">' + money0(m.taxable) + "</td>" +
+        '<td class="num"><span class="' + (m.gp >= 0 ? "pos" : "neg") + '">' + money0(m.gp) + "</span></td>" +
+        '<td class="num"><span class="' + (m.margin >= 0 ? "pos" : "neg") + '">' + m.margin.toFixed(1) + "%</span></td></tr>";
+    }).join("");
+    if (!rows.length) body = '<tr><td colspan="5"><span class="muted">no invoice valuation rows</span></td></tr>';
+    return '<table class="ptable"><thead><tr><th>Part</th><th>Revenue Type</th>' +
+      '<th class="num">Taxable</th><th class="num">Gross Profit</th><th class="num">Margin %</th></tr></thead>' +
+      "<tbody>" + body + "</tbody></table>";
+  }
+
+  var TYPE_LBL = [["repair", "Repair Revenue"], ["accessory", "Accessory Revenue"], ["service", "Service Revenue"]];
+  var dRows = TYPE_LBL.map(function (t) {
+    var top = discount.byTypeTop && discount.byTypeTop[t[0]];
+    return "<tr><td>" + t[1] + '</td><td class="num">' + (discount.byType[t[0]] || 0) +
+      '</td><td class="num">' + money0(discount.byTypeValue[t[0]]) +
+      "</td><td>" + (top ? esc_(top.label) + (top.n > 1 ? " ×" + top.n : "") : '<span class="muted">—</span>') + "</td></tr>";
+  }).join("");
+  var dTotal = '<tr class="totrow"><td><b>Total</b></td><td class="num"><b>' + discount.count +
+    '</b></td><td class="num"><b>' + money0(discount.value) + "</b></td><td></td></tr>";
+
+  var marginPanel =
+    '<section class="section" id="sec-gpmargin"><h2>A4. 📈 High / Low Margin ' + exportSectionBtn_("margin") + '</h2><div class="body">' +
+    '<div class="sec-desc">margin % = crm!GrossProfit ÷ crm!TaxableAmount per unique invoice (SALES only; ' +
+    "zero-base invoices skipped). Top 5 at each end, across all revenue types.</div>" +
+    '<div class="hl-pair">' +
+    '<div class="hl-half"><div class="subpanel-head">Top 5 — High Margin</div><div class="scroll-x">' + marginTable(hi) + "</div></div>" +
+    '<div class="hl-half"><div class="subpanel-head">Top 5 — Low Margin</div><div class="scroll-x">' + marginTable(lo) + "</div></div>" +
+    "</div></div></section>";
+
+  var discPanel =
+    '<section class="section" id="sec-discount"><h2>A5. 🏷 Discounted Cases</h2><div class="body">' +
+    '<div class="sec-desc">crm!DiscountAmount &gt; 0 rows (SALES only); cases counted once per unique invoice code.</div>' +
+    '<div class="cards" style="margin-bottom:12px">' +
+    '<div class="card"><div class="label">Discounted Invoices</div><div class="value">' + discount.count +
+    '</div><div class="sub">unique invoice codes</div></div>' +
+    '<div class="card"><div class="label">Total Discount Value</div><div class="value neg">' + money0(discount.value) +
+    '</div><div class="sub">Σ crm!DiscountAmount</div></div>' +
+    '<div class="card"><div class="label">Discount ÷ Gross Profit</div><div class="value">' + discount.pct +
+    '%</div><div class="sub">vs GP of the discounted lines</div></div>' +
+    "</div>" +
+    '<div class="scroll-x"><table class="ptable"><thead><tr><th>Revenue Type</th><th class="num">Cases</th>' +
+    '<th class="num">Discount Value</th><th>Top Part</th></tr></thead><tbody>' +
+    dRows + dTotal + "</tbody></table></div>" +
+    "</div></section>";
+
+  // stacked vertically (each panel gets the full page width) with
+  // High / Low Margin ABOVE Discounted Cases — no more side-by-side pair.
+  return '<div class="gp-stack">' + marginPanel + discPanel + "</div>";
+}
+
+/** KPI page: KPI target · Incentive · Salesperson performance · AR attachment. */
+function renderKpiHtml_(data) {
+  // KPI table sizes to its CONTENT, and the incentive tables compress into
+  // the free space on its right instead of leaving a wide empty band.
+  var body = '<div class="kpi-pair"><div class="kp-left">' + renderKpiSection_(data) + "</div>" +
+    '<div class="kp-right">' + renderIncentiveTable_(data) + "</div></div>";
+  body += renderSalespersonCards_(data);
+  body += renderArSection_(data);
+  return body;
+}
+
+/** DATE page: date-wise sales revenue analysis (by salesperson). */
+function renderDateHtml_(data) {
+  return renderDateWiseTable_(data);
+}
+
+/* ==========================================================================
+ * 10 · RENDER — PROCESS BLOCKS                                            *
+ * ======================================================================== */
+
+/** WALK-IN page: walk-in analysis + token creation side by side. */
+function renderWalkinHtml_(pd) {
+  var wl = pd.walkin;
+  var head =
+    '<section class="section" id="sec-walkin"><h2>C. 🚶 Walk-in Analysis &amp; Token Creation</h2><div class="body">' +
+    '<div class="sec-desc">source: ' + esc_(wl.sheetName) +
+    ". Every row is one walk-in — MobileNo identifies the visitor (Unique = distinct mobiles); a row with a CaseId counts as a case, a row with an InvoiceCode as a completed sale. The token table pins which user created each token.</div>" +
+    '<div class="walkin-pair">';
+
+  // Matching heads keep 🚶 Walk-in Analysis and 🎟 Token Creation aligned on
+  // ONE line; the wide day-wise table gets the full page width below the pair.
+  var left =
+    '<div class="wp-left"><div class="wp-head">C1. 🚶 Walk-in Analysis</div>' +
+    '<p class="sec-desc" style="margin:-2px 0 10px">month-to-date walk-in summary — visitors, cases, invoices, remarks and dead leads.</p>' +
+    renderWalkinAnalysis_(wl) + "</div>";
+  var mid =
+    '<div class="wp-mid"><div class="wp-head">C2. 🧭 Customer Source Analysis</div>' +
+    '<p class="sec-desc" style="margin:-2px 0 10px">pivot on walkin!CustomerVisitSource against the total number of walk-ins.</p>' +
+    renderCustomerSource_(wl) + "</div>";
+  var right =
+    '<div class="wp-right"><div class="wp-head">C3. 🎟 Token Creation</div>' +
+    '<p class="sec-desc" style="margin:-2px 0 10px">how many walk-in tokens each user created, and their share of the month&rsquo;s tokens.</p>' +
+    renderTokenCreation_(wl) + "</div>";
+
+  return head + left + mid + right + "</div>" +
+    '<div class="wp-daytable"><div class="wp-head">C4. 📅 Day-wise Walk-in &amp; Token Details</div>' +
+    renderWalkinDayTable_(wl) + "</div></div></section>";
 }
 
 function renderWalkinAnalysis_(wl) {
@@ -4720,7 +3593,7 @@ function renderWalkinAnalysis_(wl) {
   }
   var t = wl.totals;
   // Summary rendered as ONE table (was a row of tiles) — one row per metric.
-  // Task 45: the free-text "Reading" column becomes the metric's % share of
+  // the free-text "Reading" column becomes the metric's % share of
   // the total walk-in tokens (one decimal).
   function contrib(n) {
     return '<td class="num">' + (t.walkins > 0 ? Math.round((1000 * n) / t.walkins) / 10 : 0) + "%</td>";
@@ -4917,7 +3790,7 @@ function renderJobManagement_(jm) {
     return "<td>" + esc_(s) + "</td>";
   }
 
-  // Task 34 — one distinguishable accent per owner-named repair bucket.
+  // one distinguishable accent per owner-named repair bucket.
   function bucketAccent_(grp) {
     var g = str_(grp).toLowerCase();
     if (g.indexOf("unclaimed") > -1) return "bk-unclaimed";
@@ -4944,7 +3817,7 @@ function renderJobManagement_(jm) {
   // Case ID · Name · Number · GSX ID · Device S.No · Model · Comm updated.
   // Rows stay grouped under a colour-coded band per repair bucket.
   var NCOLS = 11;
-  // Task 45: column header line repeated under every bucket band — CRM Status
+  // column header line repeated under every bucket band — CRM Status
   // (service!CRM_JobStatusDesc) sits between GSX Repair Status and Repair Type.
   var BUCKET_COLS =
     "<th>Aging</th><th>GSX Repair Status</th><th>CRM Status</th><th>Repair Type</th>" +
@@ -4992,7 +3865,7 @@ function renderJobManagement_(jm) {
     // "Unclaimed Device" badge kept loud. The <td> is pre-built by
     // repairStatusCell — the grphead band above each block carries the
     // highlight, so the cell itself stays a plain status.
-    // Task 41: first column is titled "CRM Status" now — value unchanged:
+    // first column is titled "CRM Status" now — value unchanged:
     // service!CRM_JobStatusDesc (the same field the bucket bands group by).
     var bucketCell = j.isUnclaimed
       ? '<td class="bucket-cell' + (bk ? " " + bk : "") + '"><span class="badge-unclaimed">' + esc_(j.crmRepairStatus || "—") + "</span></td>"
@@ -5007,7 +3880,7 @@ function renderJobManagement_(jm) {
     return "<tr" + (rowClses.length ? ' class="' + rowClses.join(" ") + '"' : "") + ">" +
       ageCell(j.jobAge) +
       gsxDisplay +
-      // Task 45: CRM Status (service!CRM_JobStatusDesc) between GSX Repair
+      // CRM Status (service!CRM_JobStatusDesc) between GSX Repair
       // Status and Repair Type — the row order matches BUCKET_COLS.
       bucketCell +
       "<td>" + esc_(repairTypeShort_(j.repairType)) + "</td>" +
@@ -5016,7 +3889,7 @@ function renderJobManagement_(jm) {
         "</td>" +
       "<td>" + esc_(j.name) + "</td>" +
       '<td class="num">' + esc_(j.mobile) + "</td>" +
-      // Task 34: GSX ID + device serial right after Number, before Model.
+      // GSX ID + device serial right after Number, before Model.
       "<td>" + esc_(j.gsxId || "—") + "</td>" +
       "<td>" + esc_(j.serialNo || "—") + "</td>" +
       "<td>" + esc_(j.product) + "</td>" +
@@ -5032,7 +3905,7 @@ function renderJobManagement_(jm) {
     '<col style="width:9%"><col style="width:9%"><col style="width:9%">' +
     '<col style="width:10%"><col style="width:12%">' +
     '</colgroup>' +
-    // Task 45: every bucket block carries its own "Repair Bucket" subtitle,
+    // every bucket block carries its own "Repair Bucket" subtitle,
     // the bucket band and a fresh column header row — no global thead.
     "<tbody>" + rows + "</tbody></table></div>";
 
@@ -5049,7 +3922,7 @@ function renderJobManagement_(jm) {
     ["Model","product"],["Open filter","status"]]
     .map(srcLine).join(" · ") + "</div>";
 
-  // Task 38: case-id popup details. A hidden data island carries one JSON
+  // case-id popup details. A hidden data island carries one JSON
   // row per open job; openCaseDetails() (client script) renders the modal.
   var cdMap = {};
   jm.jobs.forEach(function (j) {
@@ -5070,14 +3943,415 @@ function renderJobManagement_(jm) {
   return head + mapLine + table + caseBits;
 }
 
-/** Task 47 — group banner separating the master's A-G groups on the SM page. */
-function roleBanner_(letter, name) {
-  return '<div class="group-banner"><span class="gb-letter">' + esc_(letter) + "</span>" +
-    '<span class="gb-name">' + esc_(name) + "</span></div>";
+/** Renders the repair-type & coverage analytics sections (Operation page). */
+function renderRepairAnalyticsInner_(ra) {
+  if (!ra.available) {
+    return '<div class="section"><h2 class="section-title">🔧 Repair Analytics</h2>' +
+      '<div class="empty-state">No service data available yet.</div></div>';
+  }
+  var out = [];
+
+  // no 3-month average pills anywhere — current month only.
+  function daysCell(avg) { return avg == null ? "—" : avg + " d"; }
+
+  function bucketSection(icon, title, labelCol, comp, note) {
+    if (!comp.length) return "";
+    var o = ['<div class="section">' +
+      '<h2 class="section-title">' + icon + " " + esc_(title) + " · <em>" + esc_(ra.curLabel) + "</em></h2>" +
+      '<div class="section-sub">' + esc_(note) + ' Counts are whole numbers. Blank and "Service Non-Repair" repair types are excluded.</div>' +
+      '<div class="tile-grid">'];
+    comp.forEach(function (c) {
+      o.push('<div class="tile"><div class="label">' + esc_(c.name) + "</div>" +
+        '<div class="value">' + c.cur + "</div></div>");
+    });
+    o.push('</div><div class="table-wrap"><table aria-label="' + esc_(title) + '"><thead><tr>' +
+      "<th>" + esc_(labelCol) + "</th>" +
+      '<th class="num">This Month</th><th class="num">Avg Days · Now</th>' +
+      "</tr></thead><tbody>");
+    comp.forEach(function (c) {
+      o.push("<tr><td><strong>" + esc_(c.name) + "</strong></td>" +
+        '<td class="num">' + c.cur + "</td>" +
+        '<td class="num">' + daysCell(c.curDaysAvg) + "</td></tr>");
+    });
+    o.push("</tbody></table></div></div>");
+    return o.join("");
+  }
+
+  var typeSec = bucketSection("📈", "D2. Repair Type Performance", "Repair Type", ra.typeComp,
+    "Case counts in " + ra.curLabel + " (month to date).");
+  typeSec = insertExportBtn_(typeSec, "repairType");
+
+  out.push(typeSec);
+
+  // The "Repair Types — Till Date" composition table was retired on the
+  // owner's request; the Repair Type Performance block above already carries
+  // the month-to-date counts per type.
+  return out.join("");
+}
+
+/** Task 49: decline / win-back card pair — shared by the OPERATION
+ * group (SM page) and the TECH page. */
+function renderOpsPairHtml_(ex) {
+  return (
+    '<div class="ops-pair"><section class="sec"><div class="sec-head"><h2>D3. 🚫 Decline Repair ' + exportSectionBtn_("decline") + '</h2>' +
+    '<p class="sec-sub">Unique CaseIDs in <b>decline</b> where GSXRepairStatusDescription is ' +
+    '"Declined - Rejected by Local Approver".</p></div>' +
+    '<div class="cards">' +
+    '<div class="card"><div class="label">Declined repairs</div><div class="value">' +
+      (ex.decline.count || 0) + '</div>' +
+      '<div class="sub">' + (ex.decline.sheetName ? "unique CaseIDs · from " + esc_(ex.decline.sheetName) : "no decline sheet found") + '</div></div>' +
+    "</div></section>" +
+  // Requote & Win-back: eligible cases are carry-in / mail-in
+  // parts repairs, OUT of warranty (service!ProductWarrantyDesc); a win-back
+  // is a serial whose Repair-Revenue quote was rejected and later approved.
+    '<section class="sec"><div class="sec-head"><h2>D4. 🔁 Requote &amp; Win-back</h2>' +
+    '<p class="sec-sub">Serials (service!SerialNo1) of out-of-warranty carry-in / mail-in cases whose ' +
+    '<b>quote</b> rows (RevenueType "Repair Revenue") show lastAction rejected and later approved for the same serial.</p></div>' +
+    '<div class="cards">' +
+    '<div class="card"><div class="label">Win-backs</div><div class="value">' +
+      (ex.winback.count || 0) + '</div>' +
+      '<div class="sub">' + (ex.winback.sheetName ? "rejected → approved · unique serials · from " + esc_(ex.winback.sheetName) : "no quote sheet found") + '</div></div>' +
+    "</div></section></div>");
+}
+
+/** OPERATION page: customer satisfaction + repair ops + sub-modules. */
+function renderOperationHtml_(pd) {
+  var out = [];
+  out.push(renderTargetBlock_(pd.targetBlock, pd.repair));
+  out.push(renderRepairAnalyticsInner_(pd.repair));
+  var ex = pd.opsExtras || { decline: {}, winback: {} };
+  // Decline Repair: unique decline!CaseId whose GSX status is
+  // "Declined - Rejected by Local Approver".
+  out.push(renderOpsPairHtml_(ex));
+
+  return out.join("");
+}
+
+/** DECK page (Task 36): full rework — the owner's 8 tables, current month
+ *  only, in the given order. All values come from computeDeckAnalysis_. */
+function renderDeckHtml_(data, pd) {
+  var d = (data && data.deckAnalysis) || {};
+  var month = d.monthLabel || "";
+  var stamp = month ? '<span class="fresh-chip fresh-stamp"><i>current month</i><b>' + esc_(month) + "</b></span>" : "";
+
+  function th(cells) {
+    return "<thead><tr>" + cells.map(function (c, i) {
+      return "<th" + (i > 0 ? ' class="num"' : "") + ">" + esc_(c) + "</th>";
+    }).join("") + "</tr></thead>";
+  }
+  function tr(cells, total) {
+    return "<tr" + (total ? ' class="totrow"' : "") + ">" + cells.map(function (c, i) {
+      return "<td" + (i === 0 ? ">" : ' class="num">') + c + "</td>";
+    }).join("") + "</tr>";
+  }
+  function money0(v) { return money_(v || 0); }
+  function table(id, icon, title, sub, head, body, foot) {
+    return '<section class="section" id="' + id + '"><h2>' + icon + " " + esc_(title) + "</h2>" +
+      '<div class="body">' +
+      '<div class="scroll-x"><table class="ptable decktable">' + th(head) + "<tbody>" +
+      body + (foot || "") + "</tbody></table></div></div></section>";
+  }
+
+  var sections = [];
+
+  // ---- 1) Sales Revenue Analysis (revenue details) ----
+  var sr = d.salesRev || { rows: [] };
+  sections.push(table("deck-sales", "📊", "G1. Sales Revenue Analysis",
+    "Revenue details — count & value per crm!RevenueType · crm!TaxableAmount. " +
+    "crm!TranType = SALESRETURN is excluded from every valuation on this page.",
+    ["Revenue Type", "Count", "Value"],
+    sr.rows.map(function (r) { return tr([esc_(r.label), r.count, money0(r.value)]); }).join(""),
+    tr(["<b>Total</b>", "<b>" + (sr.totalCount || 0) + "</b>", "<b>" + money0(sr.totalValue) + "</b>"], true)));
+
+  // ---- 2) Walk-in details ----
+  var w = d.walkins || {};
+  sections.push(table("deck-walkin", "🚶", "G2. Walk-in Details",
+    "Total unique walk-in count from walkin!MobileNo · unique invoice count from crm!InvoiceCode.",
+    ["Metric", "Count"],
+    tr(["No. Of Walkin (unique)", w.unique || 0]) +
+    tr(["Unique Invoice", w.uniqBills || 0])));
+
+  // ---- 3) Repair Revenue Analysis ----
+  var rr = d.repairRev || { rows: [] };
+  sections.push(table("deck-repair", "🔧", "G3. Repair Revenue Analysis",
+    "Product families by service!ProductDescription · unique count from service!SerialNo1 · " +
+    "value = crm!TaxableAmount where service!CaseId = crm!OrderCode. Service Non-Repair excluded.",
+    ["Product", "Count", "Value"],
+    rr.rows.map(function (r) { return tr([esc_(r.label), r.count, money0(r.value)]); }).join(""),
+    tr(["<b>Total</b>", "<b>" + (rr.totalCount || 0) + "</b>", "<b>" + money0(rr.totalValue) + "</b>"], true)));
+
+  // ---- 4) Accessories Revenue Analysis ----
+  var ar = d.accessoriesRev || { rows: [] };
+  sections.push(table("deck-accessories", "📱", "G4. Accessories Revenue Analysis",
+    "Buckets from crm!ItemDescription — tg / temper(ed) glass / tamper → Tempered Glass; " +
+    "Case; Adapter & Cable; AppleCare+/AC+; Protect Plus; AMC; rest → Others. Value = crm!TaxableAmount.",
+    ["Product", "Count", "Value"],
+    ar.rows.map(function (r) { return tr([esc_(r.label), r.count, money0(r.value)]); }).join(""),
+    tr(["<b>Total</b>", "<b>" + (ar.totalCount || 0) + "</b>", "<b>" + money0(ar.totalValue) + "</b>"], true)));
+
+  // ---- 5) Service Revenue Analysis ----
+  var sv = d.serviceRev || { rows: [] };
+  sections.push(table("deck-service", "🧾", "G5. Service Revenue Analysis",
+    "Pivot on crm!ItemCode — Service Revenue only; crm!TranType = SALESRETURN excluded.",
+    ["Item Code", "Count", "Value"],
+    sv.rows.map(function (r) { return tr([esc_(r.label), r.count, money0(r.value)]); }).join("") ||
+      tr(['<span class="muted">no Service Revenue rows this month</span>', "0", money0(0)]),
+    tr(["<b>Total</b>", "<b>" + (sv.totalCount || 0) + "</b>", "<b>" + money0(sv.totalValue) + "</b>"], true)));
+
+  // ---- 6) Gross Profit Analysis — Value ----
+  var gp = d.gpValue || { rows: [] };
+  sections.push(table("deck-gp", "💰", "G6. Gross Profit Analysis — Value",
+    "Invoice value = Σ crm!TaxableAmount · GP value = Σ crm!GrossProfit · GP% = GP ÷ invoice value.",
+    ["Revenue Type", "Invoice Value", "GP Value", "GP %"],
+    gp.rows.map(function (r) {
+      return tr([esc_(r.label), money0(r.value), money0(r.gp), r.pct.toFixed(1) + "%"]);
+    }).join(""),
+    (gp.total ? tr(["<b>Total</b>", "<b>" + money0(gp.total.value) + "</b>",
+      "<b>" + money0(gp.total.gp) + "</b>", "<b>" + gp.total.pct.toFixed(1) + "%</b>"], true) : "")));
+
+  // ---- 7) Walk-in Analysis (rank: most important) ----
+  var wa = d.walkinAnalysis || [];
+  sections.push(table("deck-walkin-analysis", "📈", "G7. Walk-in Analysis",
+    "No. Of Walkin = unique walkin!MobileNo · Unique Bill = unique crm!InvoiceCode · Bills = total invoices · " +
+    "AR/RR/SR = unique invoice count per crm!RevenueType · Walkin to Bills % = unique bills ÷ walk-ins · Enquiry = walk-ins − unique bills.",
+    ["Metric", "Count"],
+    wa.map(function (r) { return tr([esc_(r.label), r.value]); }).join("")));
+
+  // ---- 8) Coverage Analysis | LOB ----
+  var cov = d.coverage || { rows: [] };
+  sections.push(table("deck-coverage", "🛡", "G8. Coverage Analysis | LOB",
+    "Product + battery/display from service!ProductDescription & service!PartDescription (must match) · " +
+    "W / NW from service!CoverageCodeDescription.",
+    ["Product", "Cases", "W", "NW"],
+    cov.rows.map(function (r) { return tr([esc_(r.label), r.count, r.w, r.nw]); }).join(""),
+    (cov.total ? tr(["<b>Total</b>", "<b>" + cov.total.count + "</b>",
+      "<b>" + cov.total.w + "</b>", "<b>" + cov.total.nw + "</b>"], true) : "")));
+
+  // same owner order, laid out as four side-by-side pairs.
+  var grid = "";
+  for (var pi = 0; pi < sections.length; pi += 2) {
+    grid += '<div class="deck-pair">' + sections[pi] + (sections[pi + 1] || "") + "</div>";
+  }
+  return '<section class="sec"><div class="sec-head"><h2>G. 🗂 Deck — ' + esc_(month || "Current Month") + " " + stamp + '</h2>' +
+    '<p class="sec-sub">Owner order — revenue · walk-in · repair · accessories · service · GP · walk-in analysis · coverage. ' +
+    "Current month only; previous months are kept manually by the owner. SALESRETURN is excluded everywhere.</p></div></section>" +
+    grid;
+}
+
+/** OPEN JOBS page: job management. */
+function renderJobsHtml_(pd) {
+  return renderJobsSection_(pd);
+}
+
+/** Renders the C-SAT block: summary tiles + styled table + repair strip. */
+function renderTargetBlock_(tb, ra) {
+  if (!tb.available) return "";
+  var title = "Customer Satisfaction — " + (tb.periodName || "current period");
+
+  function pctOf(part, whole) { return whole > 0 ? Math.round((part / whole) * 100) : 0; }
+  function chip(cls, label, value, sub) {
+    return '<div class="csat-chip ' + cls + '"><span class="cc-label">' + esc_(label) + '</span>' +
+      '<span class="cc-value">' + esc_(value) + '</span><span class="cc-sub">' + esc_(sub || "") + '</span></div>';
+  }
+
+  var chips = [];
+  if (tb.labels.length) {
+    chips.push(chip("", "Feedback responses", tb.totalRow.total,
+      tb.people.length + " salesperson" + (tb.people.length === 1 ? "" : "s") + " rated"));
+    chips.push(chip("pos", "Satisfied (VS + SS)", pctOf(tb.satTotal, tb.totalRow.total) + "%",
+      tb.satTotal + " of " + tb.totalRow.total));
+    if (tb.csat) chips.push(chip("info", "C-SAT", tb.csat, "as recorded in sheet"));
+    if (tb.cfi) chips.push(chip(tb.cfi === "0.00%" || tb.cfi === "0" ? "pos" : "warn", "CFI", tb.cfi, "as recorded in sheet"));
+    chips.push(chip(tb.disTotal > 0 ? "neg" : "pos", "Dissatisfied", pctOf(tb.disTotal, tb.totalRow.total) + "%",
+      tb.disTotal + " of " + tb.totalRow.total));
+  } else {
+    // narrow target!E47:F51 report — no satisfaction buckets; show
+    // the store C-SAT (sheet total, else average of the per-CRE values) and
+    // how many CREs were rated.
+    if (tb.csat) chips.push(chip("info", "Store C-SAT", tb.csat, "from target!F48:F51"));
+    chips.push(chip("", "CREs rated", tb.people.length, "rows from target!E48:F51"));
+    if (tb.cfi) chips.push(chip("info", "CFI", tb.cfi, "as recorded in sheet"));
+  }
+
+  var thead = "<thead><tr><th>" + esc_(tb.nameHeader) + "</th>";
+  tb.labels.forEach(function (h) { thead += "<th>" + esc_(h) + "</th>"; });
+  if (tb.labels.length || tb.hasTotalCol) thead += "<th>Total</th>";
+  if (tb.labels.length) thead += "<th>% Satisfied</th>";
+  if (tb.hasCsatCol) thead += "<th>C-SAT</th>";
+  if (tb.hasCfiCol) thead += "<th>CFI</th>";
+  thead += "</tr></thead>";
+
+  function dataRow(e, isTotal) {
+    var tr = "<tr" + (isTotal ? ' class="totrow"' : "") + "><td><b>" + esc_(e.name) + "</b></td>";
+    e.cats.forEach(function (n, i) {
+      var cls = tb.kinds[i] === "pos" ? "csat-pos" : tb.kinds[i] === "neg" ? "csat-neg" : "csat-mid";
+      tr += '<td class="num ' + cls + '">' + (n || "—") + "</td>";
+    });
+    if (tb.labels.length || tb.hasTotalCol) tr += '<td class="num"><b>' + e.total + "</b></td>";
+    if (tb.labels.length) tr += '<td class="num">' + pctOf(tb.satisfiedCount(e), e.total) + "%</td>";
+    if (tb.hasCsatCol) tr += '<td class="num">' + esc_(e.csat || "—") + "</td>";
+    if (tb.hasCfiCol) tr += '<td class="num">' + esc_(e.cfi || "—") + "</td>";
+    return tr + "</tr>";
+  }
+  var body = "<tbody>" + tb.people.map(function (p) { return dataRow(p, false); }).join("") +
+    dataRow(tb.totalRow, true) + "</tbody>";
+
+  // Owner layout: table shrunk and left-aligned; the summary chips stack in a
+  // column immediately to the table's right.
+  // chips sit BELOW the table in one horizontal band (owner's layout).
+  var table = '<div class="scroll-x csat-left"><table class="ptable csat-table">' + thead + body +
+    '</table></div><div class="csat-brow">' + chips.join("") + "</div>";
+
+  // the repairs 3-month comparison strip was removed (owner: no
+  // last-3-month average comparisons anywhere on the dashboards).
+
+  return '<section class="sec"><div class="sec-head">' +
+    "<h2>🎯 D1. " + esc_(title) + "</h2>" +
+    '<p class="sec-sub">Every feedback response lands in a satisfaction bucket. Period name from ' +
+    '<span class="src-hint">target!D47</span>, table from <span class="src-hint">target!E47:F51</span> ' +
+    '(auto-extends up to <span class="src-hint">:O51</span> when the full satisfaction grid is filled) — ' +
+    "cleaned and re-presented (junk columns dropped, totals verified).</p></div>" +
+    table + "</section>";
+}
+
+/** Job management section (OPEN JOBS page). */
+function renderJobsSection_(pd) {
+  var jm = pd.jobs;
+  return (
+    '<section class="sec"><div class="sec-head">' +
+    '<h2>E1. 🔧 Job Management — Open Jobs ' + exportSectionBtn_("jobs") + '</h2>' +
+    "</div>" + renderJobManagement_(jm) + "</section>"
+  );
+}
+
+/* ==========================================================================
+ * 11 · PAGE COMPOSERS                                                     *
+ * ======================================================================== */
+
+function renderIndexHtml_(data, perfData) {
+  var s = data.store;
+  var inv = data.invoiceValuation || {};
+  var wlT = perfData && perfData.walkin && perfData.walkin.available ? perfData.walkin.totals : null;
+  var jbT = perfData && perfData.jobs && perfData.jobs.available ? perfData.jobs.totals : null;
+  var ex = perfData && perfData.opsExtras ? perfData.opsExtras : { decline: {}, winback: {} };
+  function m0(v) { return money_(v || 0); }
+
+  function statCard(label, value, sub, cls) {
+    return '<div class="card"><div class="label">' + esc_(label) + "</div>" +
+      '<div class="value' + (cls ? " " + cls : "") + '">' + value + "</div>" +
+      (sub ? '<div class="sub">' + sub + "</div>" : "") + "</div>";
+  }
+  function idxSection(id, h2, desc, body) {
+    return '<section class="section" id="' + id + '"><h2>' + h2 + "</h2><div class=\"body\">" +
+      (desc ? '<div class="sec-desc">' + desc + "</div>" : "") + body + "</div></section>";
+  }
+
+  // ---- 1) Store performance -------------------------------------------------
+  function storeCard(label, b) {
+    return statCard(label, "<b>" + m0(b.achieved) + "</b>",
+      "target " + m0(b.target) + " · <b>" + b.pct + "%</b> achieved");
+  }
+  var storeSec = idxSection("idx-store", "🎯 Store Performance",
+    "month-to-date achievement against the store revenue targets (crm vs target!store).",
+    '<div class="cards">' +
+      storeCard("Total Revenue", s.total) + storeCard("Service Revenue", s.service) +
+      storeCard("Accessories Revenue", s.accessory) + storeCard("Repair Revenue", s.repair) +
+    "</div>");
+
+  // ---- 2) Total walk-ins  +  3) invoices in each revenue type ---------------
+  var types = inv.byType || [];
+  var typeRows = types.map(function (t) {
+    return "<tr><td><b>" + esc_(t.label) + "</b></td>" +
+      '<td class="num"><b>' + t.uniqueInvoices + "</b></td>" +
+      '<td class="num">' + t.invoiceLines + "</td>" +
+      '<td class="num">' + m0(t.revenue) + "</td>" +
+      '<td class="num">' + m0(t.gp) + "</td></tr>";
+  }).join("");
+  var totLines = 0, totRev = 0, totGp = 0;
+  types.forEach(function (t) { totLines += t.invoiceLines; totRev += t.revenue; totGp += t.gp; });
+  typeRows += '<tr class="totrow"><td><b>Total</b></td>' +
+    '<td class="num"><b>' + s.uniqueInvoices + "</b></td>" +
+    '<td class="num"><b>' + totLines + "</b></td>" +
+    '<td class="num"><b>' + m0(s.total.achieved) + "</b></td>" +
+    '<td class="num"><b>' + m0(s.grossProfit.achieved) + "</b></td></tr>";
+  var walkinSec = idxSection("idx-walkin", "🚶 Total Walk-ins · 🧾 Invoices — each Revenue Type",
+    "walk-in tokens from the walkin sheet; invoice counts are unique crm!InvoiceCode per crm!RevenueType (TranType = SALESRETURN excluded).",
+    '<div class="cards" style="margin-bottom:12px">' +
+      statCard("Total Walk-ins", "<b>" + (wlT ? wlT.walkins : 0) + "</b>",
+        wlT ? (wlT.unique + " unique visitors · " + wlT.cases + " jobs · " + wlT.invoices + " invoices") : "walkin sheet not found") +
+    "</div>" +
+    '<div class="scroll-x"><table class="ptable"><thead><tr><th>Revenue Type</th>' +
+    '<th class="num">Total Invoices</th><th class="num">Invoice Lines</th>' +
+    '<th class="num">Revenue</th><th class="num">Gross Profit</th></tr></thead><tbody>' +
+    typeRows + "</tbody></table></div>");
+
+  // ---- 4) Weekly Revenue Analysis — INDEX shows the % summary, not the
+  // detailed table (Task 49): completed/in-progress achieved %, upcoming weeks
+  // the balance % each must contribute to close the month.
+  var weeklySec = renderWeeklySummary_(data);
+
+  // ---- 5) KPI Target — overall achieved % ------------------------------------
+  var kAch = 0, kTgt = 0;
+  var catChips = [["AR", data.kpi.ar], ["RR", data.kpi.rr], ["SR", data.kpi.sr]].map(function (c) {
+    var a = 0, t = 0;
+    c[1].forEach(function (k) { a += k.achieved || 0; t += k.target || 0; });
+    kAch += a; kTgt += t;
+    return statCard(c[0] + " KPIs", "<b>" + pct_(a, t) + "%</b>", a + " of " + t + " achieved");
+  }).join("");
+  var kpiSec = idxSection("idx-kpi", "📊 KPI Target — Store KPI Parameters",
+    "overall achievement across every KPI parameter (AR + RR + SR · Σ achieved ÷ Σ target).",
+    '<div class="cards">' +
+      statCard("Overall KPI Achievement", "<b>" + pct_(kAch, kTgt) + "%</b>", kAch + " of " + kTgt + " parameters achieved", "headline") +
+      catChips +
+    "</div>");
+
+  // ---- 6) AR Attachment — total count ----------------------------------------
+  var aa = inv.arAttachment || {};
+  var arSec = idxSection("idx-ar", "🔗 AR Attachment",
+    "invoices that carried an accessory together with a service / repair.",
+    '<div class="cards">' +
+      statCard("AR Attachments", "<b>" + (aa.attachedInvoices || 0) + "</b>",
+        "of " + (aa.attachableInvoices || 0) + " service / repair invoices · " + (aa.attachRate || 0) + "% attach rate") +
+    "</div>");
+
+  // ---- 7) Sales Person Performance — % of achievement only --------------------
+  var spRows = (data.salespeople || []).map(function (p) {
+    function pc(seg) { return '<td class="num">' + seg.pct + "%</td>"; }
+    return "<tr><td><b>" + esc_(p.name) + "</b></td>" +
+      pc(p.service) + pc(p.accessory) + pc(p.repair) + pc(p.grossProfit) +
+      '<td class="num"><b>' + p.total.pct + "%</b></td></tr>";
+  }).join("");
+  var personSec = idxSection("idx-person", "👤 Sales Person Performance",
+    "% of achievement in each segment — percentages only, no values (repair % is judged on the store repair target).",
+    '<div class="scroll-x"><table class="ptable"><thead><tr><th>Salesperson</th>' +
+    '<th class="num">Service %</th><th class="num">Accessory %</th><th class="num">Repair %</th>' +
+    '<th class="num">Gross Profit %</th><th class="num">Total %</th></tr></thead><tbody>' +
+    spRows + "</tbody></table></div>");
+
+  // ---- 8/9/10) decline repairs · win-backs · open jobs ------------------------
+  var opsSec = idxSection("idx-ops", "📉 Repairs & Jobs — counts",
+    "headline counts from the service / decline / quote / job sources (details on the SM and TECH pages).",
+    '<div class="cards">' +
+      statCard("Declined Repairs", "<b>" + (ex.decline.count || 0) + "</b>", "unique decline!CaseId · local approver rejected", "neg") +
+      statCard("Requote Win-backs", "<b>" + (ex.winback.count || 0) + "</b>", "rejected → approved · unique serials", "pos") +
+      statCard("Open Jobs", "<b>" + (jbT ? jbT.openJobs : 0) + "</b>",
+        jbT ? ("communication updated " + jbT.communicated + " · pending " + jbT.notCommunicated) : "service sheet not found") +
+    "</div>");
+  opsSec = insertExportBtn_(opsSec, "ops");
+
+  // ---- 11) Working Days (Current Month) — the master A2 module, moved to the
+  // top of the page directly below 🎯 Store Performance (Task 49).
+  var wdSec = renderWorkingDaysCard_(data).replace('id="sec-workdays"', 'id="idx-workdays"');
+
+  return (
+    '<section class="index-hero"><h2>Store Performance Dashboard</h2></section>' +
+    storeSec + wdSec + walkinSec + weeklySec + kpiSec + arSec + personSec + opsSec +
+    freshnessLineHtml_(data, perfData)
+  );
 }
 
 /**
- * Task 49 — CRE page manifest (owner's list, replaces the Task-47 minimal
+ * CRE page manifest (owner's list, replaces the Task-47 minimal
  * view): A1 Store Target, A2 Working Days, A6 Weekly, B / B1 / B2 / B3 KPI
  * family, C with C1 walk-in analysis only, and D1 customer satisfaction —
  * all rendered by the same master modules the SM page uses.
@@ -5106,7 +4380,7 @@ function renderCreHtml_(data, pd) {
 }
 
 /**
- * Task 49 — TECH page manifest (owner's list): D2 Repair Type Performance,
+ * TECH page manifest (owner's list): D2 Repair Type Performance,
  * D3 Decline Repair, D4 Requote & Win-back, then the E1 job-management zone —
  * the Task-47 bucket summary (counts · aging bands · communication) followed
  * by the full master open-jobs table.
@@ -5120,7 +4394,7 @@ function renderTechHtml_(pd) {
       emptyPerf_("service", "Add a service sheet to see the bucket, aging and communication summary.");
   }
   var t = jm.totals || {};
-  // Task 50 (owner): aging split-up 0-2 · 3-5 · 6-10 · 11-15 · 16-30 ·
+  // aging split-up 0-2 · 3-5 · 6-10 · 11-15 · 16-30 ·
   // 31-45 · 46-60 · 61-100 · 100+ days.
   var BANDS = [[0, 2, "0–2 d"], [3, 5, "3–5 d"], [6, 10, "6–10 d"], [11, 15, "11–15 d"],
     [16, 30, "16–30 d"], [31, 45, "31–45 d"], [46, 60, "46–60 d"], [61, 100, "61–100 d"], [101, 1e12, "100+ d"]];
@@ -5178,7 +4452,7 @@ function renderTechHtml_(pd) {
 }
 
 /**
- * Task 47 — SM page: the full & detailed master report. Every section of the
+ * SM page: the full & detailed master report. Every section of the
  * legacy pages in the owner's master order A → G, separated by group banners.
  */
 function renderSmHtml_(data, pd) {
@@ -5200,24 +4474,1110 @@ function renderSmHtml_(data, pd) {
   );
 }
 
-/** Job management section (OPEN JOBS page). */
-function renderJobsSection_(pd) {
-  var jm = pd.jobs;
-  return (
-    '<section class="sec"><div class="sec-head">' +
-    '<h2>E1. 🔧 Job Management — Open Jobs ' + exportSectionBtn_("jobs") + '</h2>' +
-    "</div>" + renderJobManagement_(jm) + "</section>"
-  );
+/** Bottom line on the index: latest dated record seen in each sheet. */
+function freshnessLineHtml_(data, perfData) {
+  var bits = [];
+  // every chip reads the sheet's own LAST record date AND time.
+  var fr = perfData && perfData.freshness ? perfData.freshness : {};
+  bits.push(["crm (sales)", fr.crm || "no rows"]);
+  bits.push(["target (plan)", "refreshed " +
+    Utilities.formatDate(data.generatedAt, Session.getScriptTimeZone(), "dd-MM-yyyy HH:mm" )]);
+  bits.push(["walkin", fr.walkin || "no rows"]);
+  bits.push(["service", fr.service || "no rows"]);
+  bits.push(["advance", fr.advance || "—"]);
+  bits.push(["comm", fr.comm || "—"]);
+  var li = bits.map(function (b) {
+    return '<span class="fresh-chip"><i>' + esc_(b[0]) + "</i><b>" + esc_(b[1]) + "</b></span>";
+  }).join("");
+  // every tab is stamped with the dashboard-refresh time — show it.
+  var stamp = (perfData && perfData.refreshStamp)
+    ? '<span class="fresh-chip fresh-stamp"><i>all sheets</i><b>' +
+      esc_(perfData.refreshStamp.replace("⟳ Dashboard refresh · ", "")) + "</b></span>"
+    : "";
+  return '<div class="fresh-line"><div class="fresh-line-head">⏱ Latest records per sheet</div>' +
+    '<div class="fresh-row">' + stamp + li + "</div></div>";
 }
 
-/** Whole performance tab content (legacy combined view, kept for compat). */
-function renderPerformanceHtml_(pd) {
-  var wl = pd.walkin;
-  var pieces = [];
-  var secTarget = renderTargetBlock_(pd.targetBlock, pd.repair);
-  if (secTarget) pieces.push(secTarget);
-  pieces.push(renderWalkinHtml_(pd), renderJobsSection_(pd));
-  return pieces.join("");
+/**
+ * Single source of truth for the four page panes. The cold load, the
+ * refresh endpoint and the 15-minute background top-up all compute and
+ * cache pane markup through this one builder, so the paths can never
+ * drift apart.
+ */
+function buildAllPanes_(data, perfData) {
+  return {
+    index: renderIndexHtml_(data, perfData),
+    cre: renderCreHtml_(data, perfData),
+    tech: renderTechHtml_(perfData),
+    sm: renderSmHtml_(data, perfData)
+  };
+}
+
+/* ==========================================================================
+ * 12 · PER-TABLE EXPORT                                                   *
+ * ======================================================================== */
+
+/**
+ * per-table export. The page-wide "Export to Sheets" is gone; a
+ * small "⬇ Export" button sits on each owner-listed table only:
+ *   A1 Store Target — Performance · Repairs & Jobs — counts ·
+ *   D2 Repair Type Performance · D3 Decline Repair ·
+ *   E1 Job Management — Open Jobs · A4 High / Low Margin ·
+ *   B KPI Target — Store KPI Parameters
+ * A click creates a NEW spreadsheet containing just that table, as shown.
+ */
+function exportSectionBtn_(key) {
+  return '<button class="mini-export" onclick="dashExportSection(\'' + key + '\',this)" ' +
+    'title="Export this table to a spreadsheet">⬇ Export</button>';
+}
+
+function insertExportBtn_(html, key) {
+  return html.replace(/<h2[^>]*>/, function (m) { return m + exportSectionBtn_(key); });
+}
+
+/** Table blocks for one export key (headers + rows, exactly as shown). */
+function exportBlocksFor_(key) {
+  key = String(key || "").toLowerCase();
+  var loaded = loadDashboardData_();
+  var data = loaded.data;
+  var pd = loadPerformanceData_();
+
+  function storePerfRows_() {
+    var st = data.store;
+    function tile(title, b) {
+      var pct = b.target > 0 ? (100 * b.achieved / b.target) : 0;
+      var complete = b.target > 0 && pct >= 100;
+      var signedBalance = b.target - b.achieved;
+      return [title, complete ? "Completed" : "In Progress",
+        b.target, b.achieved, (Math.round(pct * 10) / 10) + "%",
+        b.target > 0 ? signedBalance : 0,
+        complete ? signedBalance : b.requiredPerDay];
+    }
+    return [tile("Service Revenue", st.service), tile("Accessory Revenue", st.accessory),
+      tile("Repair Revenue", st.repair), tile("Total Revenue", st.total),
+      tile("Gross Profit", st.grossProfit)];
+  }
+  function opsCountRows_() {
+    var ex = pd.opsExtras || {};
+    var t = (pd.jobs && pd.jobs.totals) || {};
+    return [
+      ["Declined Repairs — unique decline!CaseId · local approver rejected",
+        ex.decline ? ex.decline.count || 0 : 0],
+      ["Requote Win-backs — serials rejected → approved",
+        ex.winback ? ex.winback.count || 0 : 0],
+      ["Open Jobs", t.openJobs || 0],
+      ["Communication updated", t.communicated || 0],
+      ["Update pending", t.notCommunicated || 0]];
+  }
+  function repairTypeRows_() {
+    var ra = pd.repair || {};
+    return (ra.typeComp || []).map(function (c) {
+      return [c.name, c.cur, c.curDaysAvg == null ? "—" : c.curDaysAvg + " d"];
+    });
+  }
+  function declineRows_() {
+    var ex = pd.opsExtras || {}, d = ex.decline || {};
+    return [
+      ["Declined repairs — unique CaseIDs · 'Declined - Rejected by Local Approver'",
+        d.count || 0, d.sheetName || ""],
+      ["Decline rows matched (all statuses)", d.matched || 0, d.sheetName || ""]];
+  }
+  var JOB_HEADERS = ["Aging", "GSX Repair Status", "CRM Status", "Repair Type",
+    "Case ID", "Name", "Number", "GSX ID", "S.No", "Model", "Comm. Updated"];
+  function jobRows_() {
+    var now = Date.now(), rows = [];
+    var jobs = (pd.jobs && pd.jobs.available && pd.jobs.jobs) ? pd.jobs.jobs : [];
+    jobs.forEach(function (j) {
+      var comm = "—";
+      if (j.commTs > 0) {
+        var dfc = Math.max(0, Math.floor((now - j.commTs) / 86400000));
+        comm = dfc === 0 ? "today" : dfc + "d";
+      }
+      rows.push([j.jobAge == null ? "" : j.jobAge,
+        j.gsxStatus || "—", j.crmRepairStatus || "—", j.repairType || "—",
+        j.caseId || "—", j.name || "—", j.mobile || "—", j.gsxId || "—",
+        j.serialNo || "—", j.product || "—", comm]);
+    });
+    return rows;
+  }
+  var BANDS = [[0, 2, "0–2 d"], [3, 5, "3–5 d"], [6, 10, "6–10 d"], [11, 15, "11–15 d"],
+    [16, 30, "16–30 d"], [31, 45, "31–45 d"], [46, 60, "46–60 d"], [61, 100, "61–100 d"], [101, 1e12, "100+ d"]];
+  function bucketHeaders_() {
+    return ["Repair Bucket"].concat(BANDS.map(function (bd) { return bd[2]; })).concat(["Age —", "Total"]);
+  }
+  function bucketRows_() {
+    var jobs = (pd.jobs && pd.jobs.available && pd.jobs.jobs) ? pd.jobs.jobs : [];
+    var bMap = {}, bOrder = [];
+    jobs.forEach(function (j) {
+      var b = (j.crmRepairStatus || "—");
+      if (!bMap[b]) { bMap[b] = { bands: BANDS.map(function () { return 0; }), noAge: 0, total: 0 }; bOrder.push(b); }
+      var rec = bMap[b]; rec.total++;
+      var age = (typeof j.jobAge === "number" && isFinite(j.jobAge) && j.jobAge >= 0) ? j.jobAge : null;
+      if (age == null) rec.noAge++;
+      else BANDS.forEach(function (bd, i) { if (age >= bd[0] && age <= bd[1]) rec.bands[i]++; });
+    });
+    bOrder.sort();
+    return bOrder.map(function (b) {
+      var r = bMap[b];
+      return [b].concat(r.bands).concat([r.noAge, r.total]);
+    });
+  }
+  function marginRows_(mk) {
+    var x = data.gpExtras || {};
+    return (x[mk] || []).map(function (m) {
+      return [m.partLabel || "—", m.invoice || "—", m.typeLabel || "—",
+        Math.round(m.taxable || 0), Math.round(m.gp || 0),
+        (Math.round((m.margin || 0) * 10) / 10) + "%"];
+    });
+  }
+  var MARGIN_HEADERS = ["Part", "Invoice", "Revenue Type", "Taxable", "Gross Profit", "Margin %"];
+  function kpiTargetRows_() {
+    var allKpis = data.kpi.ar.concat(data.kpi.rr, data.kpi.sr);
+    return allKpis.map(function (k) {
+      var pctVal = k.target > 0 ? pct_(k.achieved, k.target) : 0;
+      var approxBal = k.approxAmount > 0 && k.target > 0 ? k.balance * k.approxAmount : "—";
+      return [k.label || k.name, k.category || "",
+        k.target > 0 ? k.target : "—", k.achieved,
+        k.target > 0 ? pctVal + "%" : "—",
+        k.target > 0 ? k.balance : "—",
+        approxBal === "—" ? "—" : Math.round(approxBal),
+        Math.round(k.achievedValue || 0), Math.round(k.achievedGp || 0)];
+    });
+  }
+
+  if (key === "store") return { name: "Store Target — Performance", blocks: [
+    { title: "A1. Store Target — Performance",
+      headers: ["Revenue Type", "Status", "Target", "Achievement", "Achievement %", "Balance (Target − Achievement)", "Per Day Requirement / Excess"],
+      rows: storePerfRows_() }] };
+  if (key === "ops") return { name: "Repairs & Jobs — counts", blocks: [
+    { title: "Repairs & Jobs — counts", headers: ["Metric", "Count"], rows: opsCountRows_() }] };
+  if (key === "repairtype") return { name: "Repair Type Performance", blocks: [
+    { title: "D2. Repair Type Performance · " + ((pd.repair && pd.repair.curLabel) || "current month"),
+      headers: ["Repair Type", "This Month", "Avg Days · Now"], rows: repairTypeRows_() }] };
+  if (key === "decline") return { name: "Decline Repair", blocks: [
+    { title: "D3. Decline Repair", headers: ["Metric", "Count", "Source sheet"], rows: declineRows_() }] };
+  if (key === "jobs") return { name: "Job Management — Open Jobs", blocks: [
+    { title: "Bucket Summary — 9 aging bands", headers: bucketHeaders_(), rows: bucketRows_() },
+    { title: "E1. Job Management — Open Jobs", headers: JOB_HEADERS, rows: jobRows_() }] };
+  if (key === "margin") return { name: "High Low Margin", blocks: [
+    { title: "A4. High Margin — top 5", headers: MARGIN_HEADERS, rows: marginRows_("marginHigh") },
+    { title: "A4. Low Margin — top 5", headers: MARGIN_HEADERS, rows: marginRows_("marginLow") }] };
+  if (key === "kpi") return { name: "KPI Target — Store KPI Parameters", blocks: [
+    { title: "B. KPI Target — Store KPI Parameters",
+      headers: ["KPI", "Category", "Target", "Achieved", "%", "Balance", "Approx Balance Value", "Achieved Value", "Achieved GP"],
+      rows: kpiTargetRows_() }] };
+  return null;
+}
+
+/** Public endpoint called by the per-table "⬇ Export" buttons. */
+function exportDashboardSectionToSpreadsheet(key) {
+  var spec = exportBlocksFor_(key);
+  if (!spec) throw new Error("Unknown export table: " + key);
+  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd-MM-yyyy HH:mm");
+  var book = SpreadsheetApp.create(spec.name + " — " + stamp);
+  var sh = book.getSheets()[0];
+  sh.setName(spec.name.replace(/[\[\]:*?/\\]/g, " ").slice(0, 31));
+  var r = 1;
+  spec.blocks.forEach(function (b) {
+    sh.getRange(r, 1).setValue(b.title).setFontWeight("bold");
+    sh.getRange(r + 1, 1, 1, b.headers.length).setValues([b.headers]).setFontWeight("bold");
+    if (b.rows.length) sh.getRange(r + 2, 1, b.rows.length, b.headers.length).setValues(b.rows);
+    r += 2 + b.rows.length + 1;
+  });
+  return JSON.stringify({ name: book.getName(), url: book.getUrl() });
+}
+
+/* ==========================================================================
+ * 13 · SHEET-SEARCH CHAT ASSISTANT                                        *
+ * ======================================================================== */
+
+/**
+ * Public endpoint for the chat widget. No trailing underscore — the Apps
+ * Script editor would treat `serverQuery_` as private and google.script.run
+ * would not reach it.
+ */
+function serverQuery(q) {
+  var result = { title: "Sheet search", rows: [], note: "" };
+  try {
+    var query = str_(q).trim();
+    if (!query) {
+      result.title = "Say something first";
+      result.note = "Try a customer mobile number or a Case ID.";
+      return JSON.stringify(result);
+    }
+
+    var c = chatQuery(query);
+    result.title = c.title;
+    result.rows = c.rows || [];
+    result.note = c.note || "";
+    return JSON.stringify(result);
+  } catch (err) {
+    try {
+      return JSON.stringify({
+        title: "Search failed",
+        rows: [],
+        note: esc_(str_(err && err.message ? err.message : err)),
+      });
+    } catch (e2) {
+      return '{"title":"Search failed","rows":[],"note":"unknown error"}';
+    }
+  }
+}
+
+// chatTxt is HTML-raw: call sites esc_() sheet data themselves; chatPlain wraps + escapes.
+function chatTxt(t) { return "<td>" + t + "</td>"; }
+
+function chatPlain(t) { return "<td>" + esc_(t) + "</td>"; }
+
+/** Canonical 10-digit mobile (strip +91 / leading 0). */
+function chatDig(q) {
+  var d = str_(q).replace(/\D/g, "");
+  if (d.length > 10) d = d.slice(-10);
+  return d.length === 10 ? d : "";
+}
+
+function chatMoneyCell(n) { return '<td class="num">₹' + Math.round(n || 0).toLocaleString("en-IN") + "</td>"; }
+
+/**
+ * Route the free-text question to the right search.
+ * Returns { title, rows, note } where rows are table-cell arrays.
+ */
+/**
+ * Task 30 hard limit: the bot answers ONLY two kinds of lookups —
+ *   1. a customer mobile number  → service!MobileNo → case ID, CRM repair
+ *      status (CRM_JobStatusDesc), customer name, product, plus the rest of
+ *      the 360 (walk-in visits, advance balance, CRM invoices).
+ *   2. a Case ID                 → service!CaseId  → the full case detail.
+ * Anything else gets a gentle guidance reply instead of a fuzzy search.
+ */
+function chatQuery(q) {
+  // 1) A contiguous 10+ digit run (a real phone number) — dates never match.
+  var phoneMatch = str_(q).match(/[\d+][\d\s().\-]{8,}\d/);
+  var mobile = phoneMatch ? chatDig(phoneMatch[0]) : "";
+  if (mobile) return chatMobileQuery(mobile, q);
+
+  // 2) A case-id shaped token (optionally letters + 3+ digits): C1001,
+  // CS-200145, or a bare 6+ digit job number.
+  var tok = null;
+  var tokens = (str_(q).toLowerCase().replace(/[^a-z0-9\- ]/g, " ").split(/\s+/));
+  for (var i = 0; i < tokens.length; i++) {
+    var t = tokens[i];
+    if (t === "case" || t === "caseid" || t === "id" || t === "job" || t === "status") continue;
+    if (/^[a-z]{0,4}\d{3,}[a-z0-9\-]*$/.test(t)) { tok = t; break; }
+  }
+  if (tok) {
+    var hit = chatCaseQuery(tok);
+    if (hit) return hit;
+  }
+
+  // 3) Task 35 — universal search: every other query is scanned across ALL
+  //    sheets of this spreadsheet (never external sources). Exact token
+  //    matches only — no fuzzy/similar suggestions are ever offered.
+  var uni = chatUniversalQuery_(q);
+  if (uni) return uni;
+  return {
+    title: "No matches for “" + str_(q).trim() + "”",
+    rows: [[chatTxt('<span class="muted">Nothing in any sheet contains all those words. ' +
+      "Numbers, names, case IDs, products, statuses and dates are searched exactly as typed.</span>")]],
+    note: "Searched every tab of this spreadsheet.",
+    wide: false,
+  };
+}
+
+/**
+ * TASK 35 — universal cross-sheet search. A data row matches when EVERY
+ * query token (case-insensitive, 1-char tokens ignored) appears somewhere in
+ * that row. Results are grouped by sheet (tab order), identical rows are
+ * de-duplicated, and output is capped so the panel stays readable.
+ */
+function chatUniversalQuery_(q) {
+  var query = str_(q).trim();
+  if (query.length < 2) return null;
+  var tokens = query.toLowerCase().split(/\s+/).filter(function (t) { return t.length >= 2; });
+  if (!tokens.length) return null;
+  // Deployment hardening: if this helper ever goes missing from the project
+  // (stale/partial paste), fall back to the bound spreadsheet directly.
+  var ss = (typeof getSpreadsheet_ === "function") ? getSpreadsheet_()
+    : SpreadsheetApp.getActiveSpreadsheet();
+  var rows = [];
+  var totalHits = 0, hitSheets = 0;
+  var MAX_PER_SHEET = 4, MAX_ROWS = 18;
+  ss.getSheets().forEach(function (sh) {
+    if (rows.length >= MAX_ROWS) return;
+    var values;
+    try { values = chatSheetData(sh); } catch (e) { return; }
+    var header = values.header;
+    var seenRows = {};
+    var sheetRows = [];
+    for (var i = 0; i < values.rows.length && sheetRows.length < MAX_PER_SHEET; i++) {
+      var r = values.rows[i];
+      var cells = r.map(function (v) { return str_(v).toLowerCase(); });
+      var joined = " " + cells.join(" │ ") + " ";
+      var all = tokens.every(function (t) {
+        var tn = t.replace(/[.\/\-]/g, " ");
+        return joined.indexOf(t) > -1 ||
+          (tn !== t && (" " + joined.replace(/[.\/\-]/g, " ") + " ").indexOf(" " + tn + " ") > -1);
+      });
+      if (!all) continue;
+      var sig = r.join("|").toLowerCase();
+      if (seenRows[sig]) continue;
+      seenRows[sig] = true;
+      var pairs = [];
+      for (var c = 0; c < r.length && pairs.length < 8; c++) {
+        var v = str_(r[c]);
+        if (!v) continue;
+        var h = (header[c] !== undefined && str_(header[c])) ? str_(header[c]) : "col " + (c + 1);
+        pairs.push(h.length > 26 ? h.slice(0, 24) + "…" : h);
+        pairs.push(v.length > 60 ? v.slice(0, 58) + "…" : v);
+      }
+      if (pairs.length) sheetRows.push({ rowNo: i + 2, pairs: pairs });
+    }
+    if (sheetRows.length) {
+      hitSheets++;
+      rows.push([chatTxt("<b>📄 " + esc_(sh.getName()) + "</b>"),
+        chatTxt('<span class="muted">' + sheetRows.length + " match" + (sheetRows.length === 1 ? "" : "es") + "</span>")]);
+      sheetRows.forEach(function (m) {
+        if (rows.length >= MAX_ROWS + 2) return;
+        rows.push([chatTxt('<span class="muted">row ' + m.rowNo + "</span>"),
+          chatPlain(chatPairsInline_(m.pairs))]);
+        totalHits++;
+      });
+    }
+  });
+  if (!totalHits) return null;
+  return {
+    title: "🔍 “" + query + "” → " + totalHits + " row" + (totalHits === 1 ? "" : "s") +
+      " in " + hitSheets + " sheet" + (hitSheets === 1 ? "" : "s"),
+    rows: rows,
+    note: "Exact matches only — nothing similar/related is included.",
+    wide: true,
+  };
+}
+
+/** header/value pairs → "H: V · H: V" single-line text. */
+function chatPairsInline_(pairs) {
+  var out = [];
+  for (var i = 0; i + 1 < pairs.length; i += 2) out.push(pairs[i] + ": " + pairs[i + 1]);
+  return out.join(" · ");
+}
+
+/** Chat answer for a mobile number — the 360 customer profile. */
+function chatMobileQuery(mobile, origQ) {
+  // Deployment hardening: if this helper ever goes missing from the project
+  // (stale/partial paste), fall back to the bound spreadsheet directly.
+  var ss = (typeof getSpreadsheet_ === "function") ? getSpreadsheet_()
+    : SpreadsheetApp.getActiveSpreadsheet();
+  var last4 = mobile.slice(-4);
+
+  // crm — invoice rows billed to this mobile (via walkin InvoiceCode links)
+  var crm = chatInvoiceRowsForMobile(ss, mobile);
+
+  // walkin — token history
+  var walkin = chatWalkinRowsForMobile(ss, mobile);
+
+  // service — open/closed cases
+  var service = chatServiceRowsForMobile(ss, mobile);
+
+  // advance — balances
+  var advance = chatAdvanceRowsForMobile(ss, mobile);
+
+  var rows = [];
+  var title = "📱 Mobile …" + last4;
+
+  // Customer name
+  var name = "";
+  if (service.length && (service[0].first || service[0].last)) name = (service[0].first + " " + service[0].last).trim();
+  if (!name && crm.length) name = "customer";
+  if (name) rows.push([chatTxt("<b>Customer</b>"), chatPlain(name)]);
+  rows.push([chatTxt("<b>Mobile</b>"), chatTxt(mobile)]);
+
+  // Cases (service sheet, then walkin case ids not in service)
+  var caseIds = {};
+  service.forEach(function (s) {
+    if (s.caseId) caseIds[s.caseId] = s;
+  });
+  var caseArr = Object.keys(caseIds);
+  // one diagnostic block per case — Case ID, customer, product,
+  // CRM case status, GSX case status, CRM bucket, case date and the most
+  // recent communication-update date.
+  caseArr.forEach(function (c) {
+    var s = caseIds[c];
+    rows.push([chatTxt("<b>&#128736;&#65039; " + c + "</b>")]);
+    rows.push([chatTxt("Case ID"), chatTxt(c)]);
+    if (name) rows.push([chatTxt("Customer"), chatPlain(name)]);
+    rows.push([chatTxt("Product"), chatPlain(s.product || "—")]);
+    rows.push([chatTxt("CRM case status"), chatPlain(s.caseStatus || "—")]);
+    rows.push([chatTxt("GSX case status"), chatPlain(s.gsx || "—")]);
+    rows.push([chatTxt("CRM bucket"), chatPlain(s.status || "—")]);
+    rows.push([chatTxt("Case date"), chatPlain(s.caseDate || "—")]);
+    var commD = chatCommDateForCase_(ss, c);
+    rows.push([chatTxt("Comm updated"), chatPlain(commD || "no updates logged")]);
+  });
+
+  // Invoices (walkin InvoiceCode joined to crm value)
+  if (crm.invoices.length) {
+    rows.push([chatTxt("<b>Invoices</b>"), chatPlain(crm.invoices.map(function (i) {
+      return i.code + " (₹" + Math.round(i.total).toLocaleString("en-IN") + ")";
+    }).join(" · "))]);
+  }
+  if (crm.total) {
+    rows.push([chatTxt("<b>Invoice value</b>"), chatMoneyCell(crm.total)]);
+    rows.push([chatTxt("<b>Gross profit</b>"), chatMoneyCell(crm.gp)]);
+  }
+  if (walkin.length) {
+    rows.push([chatTxt("<b>Visits</b>"), chatTxt(String(walkin.length) + " visit" + (walkin.length === 1 ? "" : "s"))]);
+  }
+  if (advance && advance.total) {
+    rows.push([chatTxt("<b>Adv. balance</b>"), chatMoneyCell(advance.total)]);
+  }
+  if (!crm.invoices.length && !caseArr.length && !service.length && !(advance && advance.count) && !walkin.length) {
+    return {
+      title: title,
+      rows: [[chatTxt('<span class="muted">No records found for this number in any sheet.</span>')]],
+      note: "Check the number, or try a Case ID instead.",
+      wide: true,
+    };
+  }
+  return { title: title, rows: rows, note: "criss-crossed through walk-in, service, advance and CRM sheets.", wide: true };
+}
+
+/** crm rows that reference this mobile (via the invoice-code link from walk-in). */
+function chatInvoiceRowsForMobile(ss, mobile) {
+  var out = { invoices: [], lines: [], total: 0, gp: 0 };
+  var codes = {};
+  // First: which invoice codes belong to this mobile? From walk-in sheet.
+  var ws = getSheetByNames_(ss, CONFIG.WALKIN_SHEET_NAMES);
+  if (ws) {
+    var values = chatSheetData(ws);
+    var col = {
+      mobile: findColumn_(values.header, [/mobile/i, /number/i, /phone/i]),
+      invoiceCode: findColumn_(values.header, [/invoice.*(code|no\.?|number|id)/i]),
+      caseId: findColumn_(values.header, [/case.*id/i]),
+    };
+    values.rows.forEach(function (row) {
+      var m = chatDig(row[col.mobile]);
+      if (m === mobile && col.invoiceCode !== -1 && str_(row[col.invoiceCode]))
+        codes[str_(row[col.invoiceCode])] = true;
+    });
+  }
+  // Also: invoices whose TranType is INVOICE and InvoiceCode appears in walkin service sheets — but for a pure mobile answer we only need the codes we just found.
+  var crmSheet = getSheetByNames_(ss, [CONFIG.CRM_SHEET_NAME]);
+  if (crmSheet) {
+    var values = parseCrmRows(chatSheetData(crmSheet).allValues);
+    var found = {};
+    values.forEach(function (r) {
+      if (codes[r.invoiceCode]) {
+        if (!found[r.invoiceCode]) {
+          found[r.invoiceCode] = { code: r.invoiceCode, total: 0, gp: 0 };
+          out.invoices.push(found[r.invoiceCode]);
+        }
+        found[r.invoiceCode].total += r.taxableAmount;
+        found[r.invoiceCode].gp += r.grossProfit;
+        out.lines.push(r);
+        out.total += r.taxableAmount;
+        out.gp += r.grossProfit;
+      }
+    });
+  }
+  return out;
+}
+
+/** All walk-in rows for this mobile. */
+function chatWalkinRowsForMobile(ss, mobile) {
+  var ws = getSheetByNames_(ss, CONFIG.WALKIN_SHEET_NAMES);
+  if (!ws) return [];
+  var values = chatSheetData(ws);
+  var cMobile = findColumn_(values.header, [/mobile/i, /number/i, /phone/i]);
+  var cDate = findColumn_(values.header, [/token.*date/i, /visit.*date/i, /date/i]);
+  var cCase = findColumn_(values.header, [/case.*id/i]);
+  var cInvoice = findColumn_(values.header, [/invoice.*(code|no\.?|number|id)/i]);
+  var cPurpose = findColumn_(values.header, [/purpose/i]);
+  var cRemark = findColumn_(values.header, [/remark/i]);
+  var out = [];
+  values.rows.forEach(function (r) {
+    if (chatDig(r[cMobile]) === mobile) {
+      out.push({
+        date: cDate !== -1 ? str_(r[cDate]) : "",
+        caseId: cCase !== -1 ? str_(r[cCase]) : "",
+        invoiceCode: cInvoice !== -1 ? str_(r[cInvoice]) : "",
+        purpose: cPurpose !== -1 ? str_(r[cPurpose]) : "",
+        remark: cRemark !== -1 ? str_(r[cRemark]) : "",
+      });
+    }
+  });
+  return out;
+}
+
+/** Service rows for this mobile. */
+function chatServiceRowsForMobile(ss, mobile) {
+  var sh = getSheetByNames_(ss, CONFIG.SERVICE_SHEET_NAMES);
+  if (!sh) return [];
+  var values = chatSheetData(sh);
+  var cMobile = findColumn_(values.header, [/mobile/i, /number/i, /phone/i]);
+  var cFirst = findColumn_(values.header, [/first.*name/i, /name/i]);
+  var cLast = findColumn_(values.header, [/last.*name/i]);
+  var cCase = findColumn_(values.header, [/case.*id/i]);
+  var cStatus = findColumn_(values.header, [/^crm_?jobstatusdesc$/i, /crm.*status/i, /job.*status.*desc/i]);
+  var cGsx = findColumn_(values.header, [/gsx/i, /repair.*status/i]);
+  var cProd = findColumn_(values.header, [/product.*desc/i, /^product/i, /model/i]);
+  // case status (service!Status), the CRM bucket and the case date
+  // ride along so the answer can list the full per-case diagnostic block.
+  var cCaseStatus = findColumn_(values.header, [/^status$/i, /^jobstatus$/i, /case.*status/i]);
+  var cCaseDate = findColumn_(values.header, [/^casedate$/i, /case.*date/i]);
+  var out = [];
+  values.rows.forEach(function (r) {
+    if (chatDig(r[cMobile]) === mobile) {
+      out.push({
+        first: cFirst !== -1 ? str_(r[cFirst]) : "",
+        last: cLast !== -1 ? str_(r[cLast]) : "",
+        caseId: cCase !== -1 ? str_(r[cCase]) : "",
+        status: cStatus !== -1 ? str_(r[cStatus]) : "",
+        caseStatus: cCaseStatus !== -1 ? str_(r[cCaseStatus]) : "",
+        caseDate: cCaseDate !== -1 ? str_(r[cCaseDate]) : "",
+        gsx: cGsx !== -1 ? str_(r[cGsx]) : "",
+        product: cProd !== -1 ? str_(r[cProd]) : "",
+      });
+    }
+  });
+  return out;
+}
+
+/**
+ * Latest communication-created date for a Case ID (Task 33). Reads the
+ * chat-display values of the communication sheet and keeps the newest
+ * parseable stamp; the day key comes back as dd-MM-yyyy for display.
+ */
+function chatCommDateForCase_(ss, caseId) {
+  var sh = getSheetByNames_(ss, CONFIG.COMM_SHEET_NAMES);
+  if (!sh) return "";
+  var values = chatSheetData(sh);
+  var cCase = findColumn_(values.header, COMM_SPEC.caseId);
+  var cDate = findColumn_(values.header, COMM_SPEC.createdDate);
+  if (cCase === -1 || cDate === -1) return "";
+  var want = str_(caseId).toLowerCase();
+  var best = null;
+  values.rows.forEach(function (r) {
+    if (str_(r[cCase]).toLowerCase() === want) {
+      var p = parseAnyDate_(r[cDate]);
+      if (p.valid && (!best || p.ts > best.ts)) best = p;
+    }
+  });
+  return best ? best.dayKey : "";
+}
+
+/**
+ * Direct Case-ID lookup against service!CaseId (Task 30). Returns null when
+ * the ID isn't on the sheet so the router can fall back to the guidance text.
+ */
+function chatCaseQuery(caseId) {
+  // Deployment hardening: if this helper ever goes missing from the project
+  // (stale/partial paste), fall back to the bound spreadsheet directly.
+  var ss = (typeof getSpreadsheet_ === "function") ? getSpreadsheet_()
+    : SpreadsheetApp.getActiveSpreadsheet();
+  var sh = getSheetByNames_(ss, CONFIG.SERVICE_SHEET_NAMES);
+  if (!sh) return null;
+  var values = chatSheetData(sh);
+  var cCase = findColumn_(values.header, [/^caseid$/i, /^case.*id/i]);
+  if (cCase === -1) return null;
+  function col(patterns) { return findColumn_(values.header, patterns); }
+  var cFirst = col([/first.*name/i, /name/i]);
+  var cLast = col([/last.*name/i]);
+  var cMobile = col([/mobile/i, /number/i, /phone/i]);
+  var cProd = col([/product.*desc/i, /^product/i, /model/i]);
+  var cStatus = col([/^jobstatus$/i, /^status$/i, /case.*status/i]);
+  var cGsx = col([/gsx/i, /repair.*status/i]);
+  var cCrm = col([/^crm_?jobstatusdesc$/i, /crm.*status/i, /crm.*job/i]);
+  var cDoc = col([/^repairdoctype$/i, /repair.*doc.*type/i, /doc.*type/i]);
+  var cAge = col([/^jobage$/i, /job.*age/i, /^age$/i]);
+  var cDate = col([/^casedate$/i, /case.*date/i]);
+  var rows = [];
+  var want = str_(caseId).toLowerCase();
+  values.rows.forEach(function (r) {
+    if (str_(r[cCase]).toLowerCase() === want) rows.push(r);
+  });
+  if (!rows.length) return null;
+  var outRows = [];
+  outRows.push([chatTxt("<b>Case ID</b>"), chatTxt(str_(rows[0][cCase]).toUpperCase())]);
+  var name = ((cFirst !== -1 ? str_(rows[0][cFirst]) : "") + " " + (cLast !== -1 ? str_(rows[0][cLast]) : "")).trim();
+  if (name) outRows.push([chatTxt("<b>Customer</b>"), chatPlain(name)]);
+  if (cMobile !== -1 && rows[0][cMobile]) outRows.push([chatTxt("<b>Mobile</b>"), chatTxt(str_(rows[0][cMobile]))]);
+  if (cProd !== -1) outRows.push([chatTxt("<b>Product</b>"), chatPlain(str_(rows[0][cProd]) || "—")]);
+  if (cCrm !== -1) outRows.push([chatTxt("<b>CRM repair status</b>"), chatPlain(str_(rows[0][cCrm]) || "—")]);
+  if (cGsx !== -1) outRows.push([chatTxt("<b>GSX repair status</b>"), chatPlain(str_(rows[0][cGsx]) || "—")]);
+  if (cDoc !== -1 && rows[0][cDoc]) outRows.push([chatTxt("<b>Repair type</b>"), chatPlain(str_(rows[0][cDoc]))]);
+  if (cStatus !== -1 && rows[0][cStatus]) outRows.push([chatTxt("<b>Case status</b>"), chatPlain(str_(rows[0][cStatus]))]);
+  if (cAge !== -1 && rows[0][cAge] !== "") outRows.push([chatTxt("<b>Job age</b>"), chatTxt(String(rows[0][cAge]) + " days")]);
+  if (cDate !== -1 && rows[0][cDate]) outRows.push([chatTxt("<b>Case opened</b>"), chatPlain(str_(rows[0][cDate]))]);
+  var commD = chatCommDateForCase_(ss, caseId);
+  outRows.push([chatTxt("<b>Comm updated</b>"), chatPlain(commD || "no updates logged")]);
+  if (rows.length > 1) outRows.push([chatTxt('<span class="muted">' + rows.length + " rows carry this Case ID on the service sheet.</span>")]);
+  return { title: "🧰 Case " + str_(caseId).toUpperCase(), rows: outRows, note: "From service!CaseId.", wide: true };
+}
+
+/** Advance-balance rows for this mobile. */
+function chatAdvanceRowsForMobile(ss, mobile) {
+  var sh = getSheetByNames_(ss, CONFIG.ADVANCE_SHEET_NAMES);
+  if (!sh) return null;
+  var values = chatSheetData(sh);
+  var cMobile = findColumn_(values.header, [/mobile/i, /number/i, /phone/i]);
+  var cBal = findColumn_(values.header, [/balance/i, /advance/i, /amount/i, /value/i]);
+  var total = 0, count = 0;
+  values.rows.forEach(function (r) {
+    if (chatDig(r[cMobile]) === mobile) { total += num_(r[cBal]); count++; }
+  });
+  return { total: total, count: count };
+}
+
+/**
+ * Read a sheet's values once, returning { allValues, header, rows }.
+ * allValues is the raw grid (header + rows), header/lrows are split views.
+ */
+function chatSheetData(sheet) {
+  var all = sheet.getDataRange().getDisplayValues();
+  return { allValues: all, header: all[0] || [], rows: all.slice(1) };
+}
+
+/* ==========================================================================
+ * 14 · CACHING LAYER (script cache + Drive persistence)                   *
+ * ======================================================================== */
+
+/**
+ * best-effort pane cache: stores each rendered dashboard pane
+ * (skipping any over the 100 KB CacheService cap) plus the small frame
+ * record (store code + meta line) so doGet can serve repeat loads without a
+ * single sheet read. TTL matches the 15-minute background refresh cadence.
+ */
+// CacheService caps each value at 100 KB — the SM pane alone can be larger
+// than that with real data. Every pane is therefore stored as 90 KB chunks:
+// key_n = chunk count, key_0 .. key_{n-1} = the pieces. Without this the
+// whole-pane cache missed EVERY load, which is why each tab tap recomputed.
+var PANE_CACHE_CHUNK = 90000;
+
+function paneCachePut_(cache, key, html) {
+  try {
+    if (!html) return;
+    var n = Math.ceil(html.length / PANE_CACHE_CHUNK);
+    if (n > 40) return; // pathological size — serve without caching
+    for (var i = 0; i < n; i++) {
+      cache.put(key + "_" + i, html.substr(i * PANE_CACHE_CHUNK, PANE_CACHE_CHUNK), 900);
+    }
+    cache.put(key + "_n", String(n), 900);
+  } catch (err) { /* best-effort */ }
+}
+
+function paneCacheGet_(cache, key) {
+  try {
+    var nS = cache.get(key + "_n");
+    if (!nS) return null;
+    var n = parseInt(nS, 10) || 0, out = "";
+    for (var i = 0; i < n; i++) {
+      var part = cache.get(key + "_" + i);
+      if (part == null) return null;
+      out += part;
+    }
+    return out;
+  } catch (err) { return null; }
+}
+
+// CacheService alone proved unreliable live (entries can be evicted
+// at any moment; the whole SM pane is large). The panes + frame record are
+// therefore ALSO persisted to a small Drive file: a "cold" recompute then
+// happens only when the data is genuinely due (the 15-minute cadence), never
+// because a cache entry vanished. All Drive work is best-effort: any failure
+// (e.g. scope not granted) silently falls back to CacheService-only.
+var PANE_DRIVE_FILE = "SalesDashboard_paneCache_v1.json";
+
+var PANE_DRIVE_TTL_MS = 900000; // 15 minutes, matches the auto-refresh cadence
+
+function paneDriveGetAll_() {
+  try {
+    var files = DriveApp.getFilesByName(PANE_DRIVE_FILE);
+    if (!files.hasNext()) return null;
+    var d = JSON.parse(files.next().getBlob().getDataAsString() || "{}");
+    if (!d || !d.t || (Date.now() - d.t) > PANE_DRIVE_TTL_MS) return null;
+    return d;
+  } catch (err) { return null; }
+}
+
+function paneDriveMerge_(single, meta) {
+  try {
+    var files = DriveApp.getFilesByName(PANE_DRIVE_FILE);
+    var d = null;
+    if (files.hasNext()) {
+      try { d = JSON.parse(files.next().getBlob().getDataAsString() || "{}"); } catch (e1) { d = null; }
+    }
+    if (!d || typeof d !== "object") d = {};
+    d.t = Date.now();
+    d.panes = d.panes || {};
+    if (single) for (var k in single) if (single[k]) d.panes[k] = single[k];
+    if (meta) d.meta = meta;
+    var body = JSON.stringify(d);
+    var write = files ? null : null;
+    files = DriveApp.getFilesByName(PANE_DRIVE_FILE);
+    if (files.hasNext()) files.next().setContent(body);
+    else DriveApp.createFile(PANE_DRIVE_FILE, body, MimeType.PLAIN_TEXT);
+  } catch (err) { /* best-effort */ }
+}
+
+/** Read all warm panes + frame meta from the persistent store (or null). */
+function paneDriveState_() {
+  var d = paneDriveGetAll_();
+  if (!d || !d.panes) return null;
+  var all = ["index", "cre", "tech", "sm"].every(function (pg) { return !!d.panes[pg]; });
+  return all ? d : null;
+}
+
+function cachePanes_(data, panes) {
+  try {
+    var cache = CacheService.getScriptCache();
+    ["index", "cre", "tech", "sm"].forEach(function (pg) {
+      if (panes[pg]) paneCachePut_(cache, "dash_pane_v5_" + pg, panes[pg]);
+    });
+    cache.put("dash_meta_v5", JSON.stringify({
+      storeCode: (data && data.store && data.store.storeCode) ? data.store.storeCode : "",
+      metaText: renderMetaText_(data)
+    }), 900);
+    // Fresh panes ⇒ previously assembled pages are stale; drop them.
+    try {
+      cache.removeAll(["dash_pg_v6_index", "dash_pg_v6_cre", "dash_pg_v6_tech", "dash_pg_v6_sm"]);
+    } catch (e2) { /* non-fatal */ }
+    // also persist to the Drive-backed store (merge, timestamped).
+    paneDriveMerge_(panes, {
+      storeCode: (data && data.store && data.store.storeCode) ? data.store.storeCode : "",
+      metaText: renderMetaText_(data)
+    });
+  } catch (err) { /* caching is best-effort only */ }
+}
+
+/* ==========================================================================
+ * 15 · PAGE ASSEMBLY & STYLES                                             *
+ * ======================================================================== */
+
+/** Assembles the complete HTML document. */
+function buildDashboardPage_(data, initialPage, opts) {
+  opts = opts || {};
+  var css = getDashboardCss_();
+  var storeCode = (opts.storeCode !== undefined) ? opts.storeCode :
+    ((data && data.store && data.store.storeCode) ? data.store.storeCode : "");
+  // Task 35/43: brand line 1 = the crm!F2 store name verbatim; generic title
+  // moves to a second line but stays the page header.
+  var pageTitle = (storeCode ? storeCode : "iPlanetcare") + " — Store Performance Dashboard";
+
+  var perfData = opts.paneJson ? null : loadPerformanceData_();
+
+  // ?page=… deep links — resolve which tab shows first, build the
+  // anchor-fallback URL (blank outside the live Apps Script env), and stamp
+  // the digital clock with the server time so it is never blank.
+  var ACTIVE = "index";
+  PAGES_ACTIVE: {
+    var rq = String(initialPage || "index").toLowerCase();
+    if (["index", "cre", "tech", "sm"].indexOf(rq) !== -1) ACTIVE = rq;
+  }
+  var clockStamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd-MM-yyyy hh:mm:ss a");
+
+  // the eight legacy pages are replaced by four ROLE pages.
+  // INDEX - overall store performance at a glance; CRE - minimum basic
+  // details; TECH - job management basics only; SM - the full master report
+  // (groups A-G). Fine-grained per-role gating per target!X1:Y50 follows in
+  // the next iteration.
+  var cached = opts.paneJson || null;
+  var PAGES = [
+    // [tab label, data-page id, main id, html, meta-subtitle]
+    ["INDEX", "index", "pageIndex", cached ? cached.index : renderIndexHtml_(data, perfData), "Overall store performance — every dashboard at a glance"],
+    ["CRE",   "cre",   "pageCre",   cached ? cached.cre : renderCreHtml_(data, perfData),     "CRE — walk-in tokens · jobs & invoices created · C-SAT summary"],
+    ["TECH",  "tech",  "pageTech",  cached ? cached.tech : renderTechHtml_(perfData),         "TECH — job buckets · bucket aging · communication status"],
+    ["SM",    "sm",    "pageSm",    cached ? cached.sm : renderSmHtml_(data, perfData),       "SM — full & detailed master report (groups A-G)"],
+  ];
+  // Full renders also warm the pane caches (Task 51b) so repeat page loads
+  // and tab clicks skip all server compute.
+  if (!cached && data) {
+    cachePanes_(data, { index: PAGES[0][3], cre: PAGES[1][3], tech: PAGES[2][3], sm: PAGES[3][3] });
+  }
+
+  // tabs are plain <button>s — a tap can ONLY flip the panes that
+  // were prefetched into the DOM at load. There is no href at all, so a tap
+  // can never hit the server, never re-read sheet data, never reload.
+  var tabs = PAGES.map(function (pg) {
+    var act = (pg[1] === ACTIVE) ? " active" : "";
+    return '<button type="button" class="tab-btn' + act + '" data-page="' + pg[1] +
+      '" onclick="switchPage(this);return false;">' + pg[0] + "</button>";
+  }).join("");
+
+  var mains = PAGES.map(function (pg) {
+    return '<main class="wrap" id="' + pg[2] + '" data-pane="' + pg[1] + '" data-meta="' + esc_(pg[4]) + '"' +
+      (pg[1] === ACTIVE ? "" : ' style="display:none;"') + ">" + pg[3] + "</main>";
+  }).join("");
+
+  // Refresh runs through google.script.run because the page is served inside
+  // a sandboxed iframe — window.location there points at an internal
+  // userCodeAppPanel URL, so navigating it would blank the page.
+  var clientScript =
+    "<script>" +
+    // Section collapse/expand for the DATE matrix. Rows outside the
+    // recent-days window carry .extra-day and are hidden by .collapsed on the
+    // table, so toggling is a pure CSS class flip with no server call.
+    "function dwToggle(btn){" +
+    "  var t=document.getElementById('dwTable'); if(!t) return;" +
+    "  var open=t.classList.toggle('collapsed')===false;" +
+    "  btn.classList.toggle('open', open);" +
+    "  btn.querySelector('.txt').textContent=open?btn.dataset.less:btn.dataset.more;" +
+    "}" +
+    // Pane routing: flip the active tab, show the matching <main>, swap the
+    // subtitle from its data-meta. Panes are keyed by data-pane.
+    "function paneId(page){return {index:'pageIndex',cre:'pageCre',tech:'pageTech',sm:'pageSm'}[page]||'pageIndex';}" +
+    "function paneEl(page){return document.getElementById(paneId(page));}" +
+    "function currentPage(){var a=document.querySelector('.tab-btn.active');return a?a.dataset.page:'index';}" +
+    "function showPane(page){" +
+    "  var mains=document.querySelectorAll('main[data-pane]');" +
+    "  for(var i=0;i<mains.length;i++){mains[i].style.display=(mains[i].getAttribute('data-pane')===page)?'block':'none';}" +
+    "  var active=paneEl(page);" +
+    "  if(active){document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';}" +
+    "  try{window.scrollTo(0,0);}catch(e){}" +
+    "}" +
+    // Keep the address bar truthful without any navigation (best effort —
+    // sandboxed hosts may forbid it, and failure there is harmless).
+    "function syncUrl(page){try{if(window.history&&history.replaceState){history.replaceState(null,'','?page='+page);}}catch(e){}}" +
+    "function switchPage(btn){" +
+    "  var tabs=document.querySelectorAll('.tab-btn');" +
+    "  for(var i=0;i<tabs.length;i++){tabs[i].classList.toggle('active', tabs[i]===btn);}" +
+    "  showPane(btn.dataset.page);" +
+    "  syncUrl(btn.dataset.page);" +
+    "}" +
+    // Tile click → flip to that page (tab highlight follows automatically).
+    "function gotoPage(page, el){" +
+    "  var tabs=document.querySelectorAll('.tab-btn');" +
+    "  for(var i=0;i<tabs.length;i++){tabs[i].classList.toggle('active', tabs[i].dataset.page===page);}" +
+    "  showPane(page);" +
+    "  syncUrl(page);" +
+    "}" +
+    "function tickClock(){" +
+    "  var el=document.getElementById('liveClock'); if(!el) return;" +
+    "  var d=new Date(); function p(n){return (n<10?'0':'')+n;}" +
+    "  var h=d.getHours(), ap=h>=12?'PM':'AM'; h=h%12||12;" +
+    "  el.textContent=p(d.getDate())+'-'+p(d.getMonth()+1)+'-'+d.getFullYear()+' '+" +
+    "    p(h)+':'+p(d.getMinutes())+':'+p(d.getSeconds())+' '+ap;" +
+    "}" +
+    // Bind clicks via addEventListener too — pure belt-and-braces, since
+    // buttons carry no href and thus cannot navigate anyway (Task 57).
+    "function bindTabs(){" +
+    "  var tabs=document.querySelectorAll('.tab-btn');" +
+    "  for(var i=0;i<tabs.length;i++){(function(t){t.addEventListener('click',function(ev){ev.preventDefault();switchPage(t);});})(tabs[i]);}" +
+    "}" +
+    "try{bindTabs();}catch(e){}" +
+    // Back/forward buttons only flip the already-loaded panes — no reload.
+    "try{window.addEventListener('popstate',function(){var m=((window.location&&location.search)||'').match(/[?&]page=(index|cre|tech|sm)/);if(m)gotoPage(m[1],null);});}catch(e){}" +
+    "try{tickClock(); setInterval(tickClock,1000);}catch(e){}" +
+    "" +
+    // silent background updater: right after the page paints it
+    // fills every pane (so tab switches become pure display flips), and from
+    // then on it re-checks for updates every 15 minutes without a reload.
+    "function applySections(res,onlyLoading){" +
+    "  try{" +
+    "    var d=JSON.parse(res);" +
+    "    var map={index:'pageIndex',cre:'pageCre',tech:'pageTech',sm:'pageSm'};" +
+    "    Object.keys(map).forEach(function(pg){var el=document.getElementById(map[pg]);" +
+    "      if(el&&d[pg]!==undefined&&(!onlyLoading||el.querySelector('.pane-loading'))){el.innerHTML=d[pg];}});" +
+    "    var active=paneEl(currentPage());" +
+    "    if(active){document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';}" +
+    "    var n=document.getElementById('note');" +
+    "    if(n){n.textContent=(d.meta||'Up to date'); n.className='note ok';}" +
+    "  }catch(e){}" +
+    "}" +
+    "function autoRefresh(prefillOnly){" +
+    "  if(!(window.google&&google.script&&google.script.run)) return;" +
+    "  google.script.run" +
+    "    .withSuccessHandler(function(res){applySections(res,prefillOnly);})" +
+    "    .withFailureHandler(function(){})" +
+    "    .refreshDashboardSections();" +
+    "}" +
+    "if(window.google&&google.script&&google.script.run){" +
+    "  setInterval(function(){autoRefresh(false);},15*60*1000);" +
+    "}" +
+    "function dashRefresh(btn){" +
+    "  if(btn.disabled) return;" +
+    "  btn.classList.add('loading'); btn.disabled=true;" +
+    "  var t=btn.querySelector('.txt'); var old=t.textContent; t.textContent='Refreshing...';" +
+    "  var done=function(){ btn.classList.remove('loading'); btn.disabled=false; t.textContent=old; };" +
+    "  if(!(window.google && google.script && google.script.run)){" +
+    "    window.top.location.reload(); return;" +
+    "  }" +
+    "  google.script.run" +
+    "    .withSuccessHandler(function(res){" +
+    "      try{" +
+    "        var prev=document.getElementById('dwTable');" +
+    "        var wasOpen=prev?!prev.classList.contains('collapsed'):false;" +
+    "        var d=JSON.parse(res);" +
+    "        var map={index:'pageIndex',cre:'pageCre',tech:'pageTech',sm:'pageSm'};" +
+    "        Object.keys(map).forEach(function(page){" +
+    "          var el=document.getElementById(map[page]);" +
+    "          if(el && d[page]!==undefined){ el.innerHTML=d[page]; }" +
+    "        });" +
+    "        var active=paneEl(currentPage());" +
+    "        if(active){document.getElementById('meta').textContent=active.getAttribute('data-meta')||'';}" +
+    "        if(wasOpen){" +
+    "          var nt=document.getElementById('dwTable');" +
+    "          var nb=document.getElementById('dwToggle');" +
+    "          if(nt) nt.classList.remove('collapsed');" +
+    "          if(nb){ nb.classList.add('open');" +
+    "            nb.querySelector('.txt').textContent=nb.dataset.less; }" +
+    "        }" +
+    "        var n=document.getElementById('note');" +
+    "        n.textContent=(d.meta||'Updated just now'); n.className='note ok';" +
+    "      }catch(e){" +
+    "        document.getElementById('note').textContent='Refresh failed: '+e;" +
+    "        document.getElementById('note').className='note err';" +
+    "      }" +
+    "      done();" +
+    "    })" +
+    "  .withFailureHandler(function(err){" +
+    "      var n=document.getElementById('note');" +
+    "      n.textContent='Refresh failed: '+(err && err.message ? err.message : err);" +
+    "      n.className='note err';" +
+    "      done();" +
+    "    })" +
+    "    .refreshDashboardSections();" +
+    "}" +
+    "" +
+    "// Task 54: per-table export buttons call the single-table endpoint." +
+    "function dashExportSection(key,btn){" +
+    "  if(btn.disabled) return;" +
+    "  var old=btn.textContent; var n=document.getElementById('note');" +
+    "  if(!(window.google && google.script && google.script.run)){" +
+    "    if(n) n.textContent='Export works in the live add-on only.'; return; }" +
+    "  btn.disabled=true; btn.textContent='…'; if(n) n.textContent='Exporting table…';" +
+    "  google.script.run" +
+    "    .withSuccessHandler(function(res){" +
+    "      try{ var d=JSON.parse(res);" +
+    "        if(n) n.innerHTML='Exported · <a target=\"_top\" href=\"'+d.url+'\" style=\"color:#63e6b7;font-weight:800\">open '+d.name+'</a>';" +
+    "      }catch(e){ if(n) n.textContent='Export finished.'; }" +
+    "      btn.disabled=false; btn.textContent=old; })" +
+    "    .withFailureHandler(function(err){" +
+    "      if(n) n.textContent='Export failed: '+(err && err.message ? err.message : err);" +
+    "      btn.disabled=false; btn.textContent=old; })" +
+    "    .exportDashboardSectionToSpreadsheet(key);" +
+    "}" +
+    "" +
+    // ---- chat bot: toggle / send / answer ----
+    "function chatToggle(){" +
+    "  var p=document.getElementById('chatPanel'); if(!p) return;" +
+    "  p.classList.toggle('open');" +
+    "  if(p.classList.contains('open')){var i=document.getElementById('chatInput'); if(i) i.focus();}" +
+    "}" +
+    "function chatBubble(cls,html){" +
+    "  var log=document.getElementById('chatLog'); if(!log) return null;" +
+    "  var d=document.createElement('div'); d.className='chat-msg '+cls; d.innerHTML=html;" +
+    "  log.appendChild(d); log.scrollTop=log.scrollHeight; return d;" +
+    "}" +
+    "function chatSend(){" +
+    "  var inp=document.getElementById('chatInput'); if(!inp) return;" +
+    "  var q=(inp.value||'').trim(); if(!q) return;" +
+    "  inp.value='';" +
+    "  var safe=q.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');" +
+    "  chatBubble('user',safe);" +
+    "  var thinking=chatBubble('bot','<span class=\\\"chat-dots\\\"><i></i><i></i><i></i></span>');" +
+    "  var finish=function(html){ if(thinking) thinking.innerHTML=html; };" +
+    "  if(!(window.google && google.script && google.script.run)){" +
+    "    finish('Chat replies need the live web app (this is a static preview).');" +
+    "    return;" +
+    "  }" +
+    "  google.script.run" +
+    "    .withSuccessHandler(function(raw){" +
+    "      var res; try{res=JSON.parse(raw);}catch(e){res={title:'Reply error',rows:[],note:String(e)};}" +
+    "      var h='<div class=\\\"chat-title\\\">'+res.title+'</div>';" +
+    "      if(res.rows && res.rows.length){" +
+    "        h+='<table class=\\\"chat-table\\\"><tbody>';" +
+    "        for(var i=0;i<res.rows.length;i++){h+='<tr>'+res.rows[i].join('')+'</tr>';}" +
+    "        h+='</tbody></table>';" +
+    "      }" +
+    "      if(res.note){h+='<div class=\\\"muted\\\">'+res.note+'</div>';}" +
+    "      var pl=document.getElementById('chatPanel'); if(pl){pl.classList.toggle('half', !!res.wide);}" +
+    "      finish(h);" +
+    "    })" +
+    "    .withFailureHandler(function(err){" +
+    "      finish('Search failed: '+(err && err.message ? err.message : err));" +
+    "    })" +
+    "    .serverQuery(q);" +
+    "}" +
+    // case detail popover. Values arrive in the #caseDetailData
+    // island on the jobs page; escape everything before innerHTML.
+    "function escText_(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}" +
+    "var CASE_DETAILS_CACHE=null;" +
+    "function caseDetailsMap_(){if(CASE_DETAILS_CACHE===null){" +
+    "  var el=document.getElementById('caseDetailData');" +
+    "  try{CASE_DETAILS_CACHE=el?JSON.parse(el.textContent||'{}'):{};}catch(e){CASE_DETAILS_CACHE={};}" +
+    "}return CASE_DETAILS_CACHE;}" +
+    "function openCaseDetails(cid){" +
+    "  var d=(caseDetailsMap_()||{})[cid]; if(!d)return;" +
+    "  var rows=[['Case ID',d.caseId],['Job Created Date',d.createdDate]," +
+    "    ['Repair Created Date',d.repairDate],['Repair Bucket',d.bucket]," +
+    "    ['Customer Name',d.name],['Product',d.product]," +
+    "    ['Communication Updated',d.commDate],['Ready For Pickup',d.readyDate]," +
+    "    ['GSX Repair Status',d.gsxStatus]];" +
+    "  var h='';for(var i=0;i<rows.length;i++){" +
+    "    h+='<tr><td>'+escText_(rows[i][0])+'</td><td>'+escText_(rows[i][1])+'</td></tr>';}" +
+    "  document.getElementById('cmTable').innerHTML=h;" +
+    "  document.getElementById('cmTitle').textContent='CASE '+d.caseId;" +
+    "  document.getElementById('caseModal').style.display='flex';" +
+    "}" +
+    "function closeCaseDetails(){var m=document.getElementById('caseModal');if(m)m.style.display='none';}" +
+    "document.addEventListener('keydown',function(e){if(e.key==='Escape')closeCaseDetails();});" +
+    "</script>";
+
+  var bizMeta = (opts.metaText !== undefined) ? opts.metaText : renderMetaText_(data);
+
+  return (
+    "<!-- BUILD TASK59 · fresh consolidated rebuild of the whole script — same conditions & templates · prefetched panes · tabs never navigate -->" +
+    "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
+    "<title>" + esc_(pageTitle) + "</title><style>" + css + "</style></head><body>" +
+    // plain dark-ash backdrop for EVERY page — no image at all.
+    '<header class="topbar"><div class="topbar-inner">' +
+    "<div class=\"topbar-left\">" +
+    // brand shows the crm!F2 store name as-is (fallback when blank).
+    '<div class="brand">' + esc_(storeCode ? storeCode : "iPlanetcare") + "</div>" +
+    '<div class="brand-sub">Store Performance Dashboard</div>' +
+    '<div class="meta" id="meta">' + esc_(bizMeta) + "</div>" +
+    '<div class="note" id="note"></div>' +
+    "</div>" +
+    // ---- live clock, top-middle: Task 30 — gif removed; blue LED digits only ----
+    '<div class="topbar-clock" role="timer">' +
+    '<span class="clock-text" id="liveClock">' + esc_(clockStamp) + "</span>" +
+    "</div>" +
+    // refresh is a plain button — it can ONLY run dashRefresh(),
+    // which re-reads the source data server-side and swaps the new values in
+    // place. No ?refresh=1 navigation, no full page load.
+    '<button type="button" class="refresh-btn" onclick="dashRefresh(this);return false;">' +
+    '<span class="spin"></span><span class="txt">↻ Refresh data</span></button>' +
+    // ---- tabs: Index / GP / KPI / Walk-in / Operation / Open Jobs / Date ----
+    '<div class="tabs-row"><div class="tabs tabs-wide" role="tablist">' + tabs + "</div></div>" +
+    "</div></header>" +
+    mains +
+    // ---- floating sheet-search chat bot, present on every page ----
+    '<div class="chat-widget" id="chatWidget">' +
+      '<div class="chat-fab" id="chatFab" onclick="chatToggle()" role="button" tabindex="0" ' +
+        'aria-label="Open sheet search chat">' +
+        '<span class="chat-fab-icon">💬</span><span>ask me anything</span>' +
+      '</div>' +
+      '<div class="chat-panel" id="chatPanel" role="dialog" aria-label="Sheet search chat">' +
+        '<div class="chat-head"><b>🤖 ask me anything</b>' +
+          '<span class="chat-sub">ask by mobile number or Case ID</span>' +
+          '<button class="chat-close" onclick="chatToggle()" aria-label="Close chat">&times;</button>' +
+        "</div>" +
+        '<div class="chat-log" id="chatLog">' +
+          '<div class="chat-msg bot"><b>Ask me anything</b> — I search <b>every sheet</b> of this ' +
+            "spreadsheet: customer mobiles, Case IDs, names, products, statuses, dates, " +
+            "amounts… Exact matches only, straight from the sheets.</div>" +
+        "</div>" +
+        '<div class="chat-inputrow">' +
+          '<input class="chat-input" id="chatInput" type="text" autocomplete="off" ' +
+            'placeholder="Search every sheet — mobile, Case ID, name, product…" ' +
+            "onkeydown=\"if(event.key==='Enter')chatSend()\">" +
+          '<button class="chat-send" onclick="chatSend()" aria-label="Send">➤</button>' +
+        "</div>" +
+      "</div>" +
+    "</div>" +
+    clientScript +
+    "</body></html>"
+  );
 }
 
 function getDashboardCss_() {
@@ -5385,7 +5745,7 @@ function getDashboardCss_() {
     ".csat-chips { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:12px; }" +
     ".csat-chip { flex:1 1 150px; background:#fff; border:1px solid #d5dde6; border-radius:10px;" +
     " padding:10px 14px; display:flex; flex-direction:column; gap:2px; box-shadow:0 2px 6px rgba(15,23,42,.06); }" +
-    // Task 25: navy chip → light text so labels stay readable.
+    // navy chip → light text so labels stay readable.
     ".csat-chip .cc-label { font-size:11.5px; font-weight:700; color:#9fb4e8; text-transform:uppercase; letter-spacing:.05em; }" +
     ".csat-chip .cc-value { font-size:1.5rem; font-weight:800; color:#f4f8ff; }" +
     ".csat-chip .cc-sub { font-size:11.5px; color:#93a5d4; }" +
@@ -5489,7 +5849,7 @@ function getDashboardCss_() {
     " text-align:left; border-right:1px solid rgba(105,132,255,.35); }" +
     "table.matrix thead .sticky-col { z-index:4; background:#1c2b52; }" +
     "table.matrix td .tgt { display:block; font-size:.66rem; font-weight:600; color:#94a2d2; margin-top:2px; }" +
-    // Task 31: one flat colour set for every table — per-person column bands removed
+    // one flat colour set for every table — per-person column bands removed
                             "table.matrix tr.total-row td { background:#101a38 !important; border-top:2px solid rgba(142,170,255,.6); }" +
     // ---- AR attachment sub-panel inside section 6 (light panel like old summary items) ----
     ".subpanel { margin-top:14px; padding:13px 15px; border-radius:10px;" +
@@ -5573,13 +5933,13 @@ function getDashboardCss_() {
     " font-size:.78rem; color:#6b5410; margin-bottom:12px; font-weight:500; }" +
     ".empty-perf { background:rgba(28,43,82,.60); border:1px dashed rgba(170,190,255,.4); border-radius:9px; padding:22px; color:#a9b6d8;" +
     " text-align:center; font-size:.82rem; color:#64748b; font-weight:500; }" +
-    // Task 34 — one distinguishable colour per owner-named repair bucket.
+    // one distinguishable colour per owner-named repair bucket.
     ".grphead.bk-estimate td { background:linear-gradient(180deg,#f6a21c 0%,#c97a08 55%,#a25f06 100%) !important; }" +
     ".grphead.bk-ready td { background:linear-gradient(180deg,#2fd475 0%,#17a558 55%,#0f8145 100%) !important; }" +
     ".grphead.bk-process td { background:linear-gradient(180deg,#22c2e3 0%,#0f91c0 55%,#0b7197 100%) !important; }" +
     ".grphead.bk-unclaimed td { background:linear-gradient(180deg,#f05858 0%,#d02e2e 55%,#a81f1f 100%) !important; }" +
     ".grphead[class*=bk-] .grphead-count { color:#ffffff; }" +
-    // Task 35: the whole row under a bucket wears a LIGHT tint of its colour.
+    // the whole row under a bucket wears a LIGHT tint of its colour.
     ".jobtable tr.bk-estimate td { background:rgba(246,162,28,.16) !important; }" +
     ".jobtable tr.bk-ready td { background:rgba(47,212,117,.15) !important; }" +
     ".jobtable tr.bk-process td { background:rgba(34,194,227,.15) !important; }" +
@@ -5774,7 +6134,7 @@ function getDashboardCss_() {
     ".group-banner .gb-letter { font-size:1.02rem; font-weight:900; background:#ffd477; color:#17263a;" +
     " border-radius:7px; padding:3px 9px; line-height:1.15; }" +
     ".group-banner .gb-name { font-size:.9rem; font-weight:800; letter-spacing:.04em; }" +
-    // Task 48 — INDEX overview: headline KPI card pops.
+    // INDEX overview: headline KPI card pops.
     "#idx-kpi .value.headline b { font-size:1.06em; }" +
     " border-radius:9px; background:#ffffff; padding:10px 12px 14px; }" +
     // ---- job table: fixed layout compressed to the page width ----
@@ -5787,7 +6147,7 @@ function getDashboardCss_() {
     // ---- next-slab chase line on the salesperson cards ----
     ".next-slab { color:#8fc7ff; font-weight:700; }" +
     // ---- live clock, top-middle of the page ----
-    // Task 35: no card/frame at all — only the date & time digits, glowing
+    // no card/frame at all — only the date & time digits, glowing
     // golden yellow on the topbar.
     ".topbar-clock { position:relative; overflow:visible; width:400px; height:96px; flex:0 0 auto;" +
     " padding:0 8px; box-sizing:border-box;" +
@@ -5832,7 +6192,7 @@ function getDashboardCss_() {
     // walk-in analysis + token creation locked side by side, sharing the width
     ".walkin-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:stretch; }" +
     ".walkin-pair .wp-left, .walkin-pair .wp-right { min-width:0; }" +
-    // Task 37: three panes side by side — analysis | source | tokens.
+    // three panes side by side — analysis | source | tokens.
     ".walkin-pair { grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr); }" +
     ".walkin-pair .wp-mid { min-width:0; background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.18);" +
     " border-radius:12px; padding:12px; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }" +
@@ -5847,10 +6207,10 @@ function getDashboardCss_() {
     " border-radius:12px; padding:12px; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }" +
     // job table: entirely left-aligned
     ".jobtable th, .jobtable td { text-align:left; }" +
-    // Task 38: owner wants every value on ONE line — cells never wrap, never
+    // owner wants every value on ONE line — cells never wrap, never
     // truncate; the table grows to content and .jobwrap scrolls sideways.
     ".jobtable th, .jobtable td { white-space:nowrap; overflow:visible; text-overflow:clip; }" +
-    // Task 38 — case detail popover (click a Case ID).
+    // case detail popover (click a Case ID).
     ".caselink { background:none; border:none; color:#9fd7ff; font:inherit; font-weight:800;" +
     " cursor:pointer; padding:0; text-decoration:underline dotted; }" +
     ".caselink:hover, .caselink:focus { color:#d9efff; }" +
@@ -5882,7 +6242,7 @@ function getDashboardCss_() {
     ".deck-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:stretch; margin-bottom:16px; }" +
     ".deck-pair > .section { margin-bottom:0; height:100%; }" +
     "@media (max-width:1100px) { .deck-pair, .ops-pair { grid-template-columns:minmax(0,1fr); } }" +
-    // Task 40 — date-wise table: bigger tiles, high-contrast text and the
+    // date-wise table: bigger tiles, high-contrast text and the
     // alternating light/dark salesperson shades (sp-a = light, sp-b = dark).
     "#dwTable { font-size:.95rem; }" +
     "#dwTable th, #dwTable td { padding:10px 12px; }" +
@@ -5892,7 +6252,7 @@ function getDashboardCss_() {
     "#dwTable th.grp.sp-b { background:rgba(16,26,70,.85); color:#e5ecff; }" +
     "#dwTable td.sp-a { background:rgba(96,128,235,.16); }" +
     "#dwTable td.sp-b { background:rgba(10,16,44,.34); }" +
-    // Task 41 — AR Attachment panel: owner found it washed out after the 60%
+    // AR Attachment panel: owner found it washed out after the 60%
     // background softening; darken the panel/cards and lift the text.
     "#sec-ar .subpanel { background:rgba(8,14,40,.94); border-color:rgba(140,165,255,.45); }" +
     "#sec-ar .card { background:rgba(15,23,58,.90); border-color:rgba(140,165,255,.38); color:#ffffff; }" +
@@ -5903,7 +6263,7 @@ function getDashboardCss_() {
     "#sec-ar .subpanel .muted { color:#9fadde; }" +
     "#sec-ar .subpanel-head { color:#e8eeff; }" +
     "#sec-ar p.muted { color:#aebcf0; }" +
-    // Task 41 — jobs table subtitle header row + group-band subtitle chip.
+    // jobs table subtitle header row + group-band subtitle chip.
     ".jobtable tr.bucket-sub-row th { text-align:left !important; font-size:.74rem; letter-spacing:.10em; text-transform:uppercase; color:#ffe08a; background:rgba(20,30,74,.65); border-bottom:1px solid rgba(170,190,255,.35); }" +
     ".jobtable tr.bucket-cols th { background:#1c2b52; color:#cfe0ff; font-size:.62rem; font-weight:800; letter-spacing:.05em; text-transform:uppercase; white-space:nowrap; }" +
     // Task 45+46 — margin tables never overflow their tile (ellipsis safety
@@ -5916,7 +6276,7 @@ function getDashboardCss_() {
     "#sec-gpmargin .subpanel-head { font-size:.86rem; }" +
     ".bucket-sub-note { font-weight:600; letter-spacing:.02em; color:#9fadde; text-transform:none; font-size:.66rem; }" +
     ".grphead-sub { display:inline-block; margin-right:8px; font-weight:800; color:#ffe08a; font-size:.66rem; letter-spacing:.10em; text-transform:uppercase; }" +
-    // Task 42 — high/low margin tables share a tight two-pane grid.
+    // high/low margin tables share a tight two-pane grid.
     ".hl-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:14px; margin-top:12px; }" +
     "@media (max-width:900px) { .hl-pair { grid-template-columns:minmax(0,1fr); } }" +
     "#sec-datewise .legend-card.sp-a { border-left:4px solid rgba(126,156,255,.85); }" +
@@ -5924,7 +6284,7 @@ function getDashboardCss_() {
     "#sec-datewise .card .value { font-size:1.55rem; color:#ffffff; }" +
     "#sec-datewise .card .label { color:#b9c6f2; }" +
 
-    // Task 40: satisfaction table takes the full width; the chips become one
+    // satisfaction table takes the full width; the chips become one
     // wrapped horizontal band underneath it (was a narrow right column).
     ".csat-left table.csat-table { width:100%; table-layout:fixed; }" +
     ".csat-left table.csat-table th, .csat-left table.csat-table td {" +
@@ -5993,7 +6353,7 @@ function getDashboardCss_() {
     " backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);" +
     " box-shadow:0 18px 46px rgba(2,6,26,.75); }" +
     ".chat-panel.open { display:flex; }" +
-    // Task 33: a mobile/case answer widens the panel to half the page width.
+    // a mobile/case answer widens the panel to half the page width.
     ".chat-panel.half { width:50vw; max-width:calc(100vw - 30px); height:70vh; max-height:calc(100vh - 60px); }" +
     ".chat-head { display:flex; align-items:center; gap:8px; padding:10px 12px;" +
     " border-bottom:1px solid rgba(170,190,255,.22); color:#f2f6ff; font-size:.85rem; }" +
@@ -6031,7 +6391,7 @@ function getDashboardCss_() {
     ".mini-export:hover { background:#223b59; color:#e6eeff; }" +
     ".mini-export:disabled { opacity:.6; cursor:wait; }" +
     ".pane-loading { text-align:center; color:#8fa3d4; padding:40px 0; }" +
-    // Task 55: off-screen sections are not laid out — big win for tab taps and
+    // off-screen sections are not laid out — big win for tab taps and
     // first paint on lower-end devices.
     ".wrap .section, .wrap .sec, .wrap .subpanel {" +
     " content-visibility:auto; contain-intrinsic-size:auto 520px; }" +
@@ -6067,679 +6427,123 @@ function getDashboardCss_() {
   );
 }
 
-function renderStoreCards_(data) {
-  var s = data.store;
-  function card(label, value, sub) {
-    return '<div class="card"><div class="label">' + esc_(label) + '</div><div class="value">' +
-      esc_(value) + '</div><div class="sub">' + esc_(sub || "") + "</div></div>";
-  }
-  var gr = data.kpi.googleReview;
-  // Google review tile — REVERSED emphasis: the gained review count is the
-  // big bold number; the current and previous counts sit small beneath it.
-  var diffCls = gr.difference > 0 ? "pos" : gr.difference < 0 ? "neg" : "muted";
-  var grTile =
-    '<div class="card"><div class="label">Google Reviews</div>' +
-    '<div class="value ' + diffCls + '">' + (gr.difference >= 0 ? "+" : "") + gr.difference + "</div>" +
-    '<div class="sub">' + gr.currentMonth + " this month &middot; previous " + gr.previousMonth + "</div></div>";
-
-  return (
-    '<div class="cards">' +
-    card("Month Progress", s.daysElapsed + " / " + s.daysInMonth + " days", s.daysRemaining + " remaining") +
-    card("Total Invoices", s.totalInvoices, "invoice lines (SALES only)") +
-    card("Unique Invoices", s.uniqueInvoices, "deduped invoice codes") +
-    card("Total Revenue", money_(s.total.achieved), s.total.pct + "% of target") +
-    card("Gross Profit", money_(s.grossProfit.achieved), s.grossProfit.pct + "% of target") +
-    grTile +
-    "</div>"
-  );
-}
+/* ==========================================================================
+ * 16 · PUBLIC ENDPOINTS                                                   *
+ * ======================================================================== */
 
 /**
- * Section 1 — Store Performance tiles.
+ * Web App entry point. Apps Script calls this automatically
+ * whenever someone opens the deployed Web App URL (see the setup steps in
+ * the header comment above — Deploy → New deployment → Web app).
  *
- * Rendered exactly like the old script page: one dark navy tile per revenue
- * type, each with a status pill (In Progress / Completed), a 2x2 metric grid
- * (Target · Achievement · Achievement % · Balance), a cyan Per-Day
- * Requirement strip and a progress bar. The per-day requirement reuses the
- * existing bucket requiredPerDay value (balance ÷ working days left,
- * today counted) — only the presentation changed, not the conditions.
+ * Fast path: the fully-rendered HTML is cached for CONFIG.CACHE_SECONDS so
+ * repeat visits are near-instant. Opening the URL with "?refresh=1" (what
+ * the on-page Refresh button does) skips the cache and recomputes.
  */
-function renderStoreTable_(data) {
-  var s = data.store;
-  // Signed money like the old page: a covered target shows the excess with a
-  // minus sign (−₹1,40,068) instead of a clamped zero.
-  function sMoney(n) { return n < 0 ? "\u2212" + money_(-n) : money_(n); }
-  function tile(title, b) {
-    var pct = b.target > 0 ? (100 * b.achieved / b.target) : 0;
-    var complete = b.target > 0 && pct >= 100;
-    var signedBalance = b.target - b.achieved;
-    var dayLabel = complete ? "Target Completed / Excess" : "Per Day Requirement";
-    var dayValue = complete ? sMoney(signedBalance) : money_(b.requiredPerDay);
-    var width = Math.max(0, Math.min(100, pct));
-    return '<div class="card rtile' + (complete ? " done" : "") + '">' +
-      '<div class="rt-head"><h3>' + esc_(title) + "</h3>" +
-      '<span class="status ' + (complete ? "on" : "pending") + '">' +
-      (complete ? "Completed" : "In Progress") + "</span></div>" +
-      '<div class="mg">' +
-      '<div class="metric t"><span>Target</span><strong>' + money_(b.target) + "</strong></div>" +
-      '<div class="metric a"><span>Achievement</span><strong>' + money_(b.achieved) + "</strong></div>" +
-      '<div class="metric p"><span>Achievement %</span><strong>' + pct.toFixed(1) + "%</strong></div>" +
-      '<div class="metric b"><span>Balance</span><strong>' + sMoney(signedBalance) + "</strong></div>" +
-      "</div>" +
-      '<div class="dreq"><span>' + esc_(dayLabel) + "</span><strong>" + dayValue + "</strong></div>" +
-      '<div class="bar"><i class="bar-fill" style="width:' + width.toFixed(1) + '%"></i></div>' +
-      "</div>";
-  }
-  return (
-    '<section class="section" id="sec-store"><h2>A1. 🎯 Store Target — Performance ' + exportSectionBtn_("store") + '</h2><div class="body">' +
-    '<div class="sec-desc">Target vs Achievement &middot; Run Rate</div>' +
-    '<div class="rgrid">' +
-    tile("Service Revenue", s.service) +
-    tile("Accessory Revenue", s.accessory) +
-    tile("Repair Revenue", s.repair) +
-    tile("Total Revenue", s.total) +
-    tile("Gross Profit", s.grossProfit) +
-    "</div></div></section>"
-  );
-}
+function doGet(e) {
+  var wantsFresh = !!(e && e.parameter && e.parameter.refresh);
+  // deep-linkable tabs: "?page=cre" serves the CRE pane already
+  // visible, so navigation keeps working even where inline JS is stripped.
+  var page = (e && e.parameter && e.parameter.page) ? String(e.parameter.page).toLowerCase() : "index";
+  if (["index", "cre", "tech", "sm"].indexOf(page) === -1) page = "index";
+  var cache = CacheService.getScriptCache();
 
-function renderWorkingDaysCard_(data) {
-  var s = data.store;
-  return (
-    '<section class="section" id="sec-workdays"><h2>A2. 📅 Working Days (Current Month)</h2><div class="body">' +
-    '<div class="sec-desc">Definition: days the store is open this month — total, already consumed, and how many selling days are left. Holiday dates come from CONFIG.</div>' +
-    '<div class="cards" style="margin-bottom:0">' +
-    '<div class="card"><div class="label">Total Working Days</div><div class="value">' + s.totalWorkingDays + "</div></div>" +
-    '<div class="card"><div class="label">Consumed</div><div class="value">' + s.consumedWorkingDays + "</div></div>" +
-    '<div class="card"><div class="label">Balance</div><div class="value" style="color:' +
-    (s.balanceWorkingDays > 0 ? "#d97706" : "#16a34a") + '">' + s.balanceWorkingDays + "</div></div>" +
-    "</div></div></section>"
-  );
-}
-
-function renderSalespersonCards_(data) {
-  // Incentive-bearing revenue types show target vs achieved, the balance
-  // still needed in (brackets), the incentive that type has earned, and the
-  // next chase tier of the Task-33 IFS formula (70s tier &rarr; 110% top).
-  function incentiveLine_(label, b, nextSlab) {
-    var balTxt = b.balance > 0
-      ? ' <span class="muted">(' + money_(b.balance) + " to go)</span>"
-      : ' <span class="pos">(target met)</span>';
-    var slabLine = nextSlab
-      ? '<div class="incentive-line"><span class="muted">Next slab (' + esc_(nextSlab.pct) + '% &rarr; ' +
-        esc_(nextSlab.label) + ')</span><span class="next-slab">' + money_(nextSlab.need) +
-        ' more &rarr; earns ' + money_(nextSlab.amount) + "</span></div>"
-      : '<div class="incentive-line"><span class="muted">Next slab</span>' +
-        '<span class="pos">🏆 top slab reached</span></div>';
-    return (
-      '<div class="row-line"><span><b>' + esc_(label) + "</b></span>" +
-      "<span>" + money_(b.achieved) + ' <span class="muted">/ ' + money_(b.target) + "</span> " +
-      pctBadgeHtml_(b.pct) + "</span></div>" +
-      barHtml_(b.pct) +
-      '<div class="incentive-line"><span class="muted">Balance to target' + "</span><span>" + balTxt + "</span></div>" +
-      slabLine +
-      '<div class="incentive-line"><span class="muted">Incentive earned</span><span class="' +
-      (b.incentive > 0 ? "pos" : "muted") + '">' + money_(b.incentive) + "</span></div>"
-    );
-  }
-
-  if (!data.salespeople.length) {
-    return '<section class="section" id="sec-person"><h2>B2. 👤 Sales Person Performance</h2><div class="body">' +
-      '<div class="empty-state">No salespersons on the roster — add names to <b>target!C1:J1</b> (empty cells are skipped). ' +
-      "People named in the CRM but not on the roster count only toward the store totals.</div></div></section>";
-  }
-  var cards = data.salespeople.map(function (p) {
-    var gate = p.repairGate;
-
-    // Repair: the number YOU personally won, shown plainly. No store-target
-    // detail is printed on the card (owner's call) — the 80%-of-store-repair
-    // eligibility is reported by the shared gate banner beneath the grid.
-    var repairBlock =
-      '<div class="row-line" style="margin-top:12px"><span><b>Repair</b> ' +
-      '<span class="muted">(no incentive — store unlock gate)</span></span>' +
-      '<span><b class="rr-val">' + money_(p.repair.achieved) + '</b> ' +
-      '<span class="muted">won by you</span></span></div>';
-
-    var gateBlock = gate.met
-      ? '<div class="gate met">✅ <b>Incentive unlocked for everyone</b> — the store crossed ' +
-        gate.requiredPct + '% of its repair target (store at ' + gate.achievedPct.toFixed(1) + '%). ' +
-        'You receive what you earned: <b>' + money_(p.payableIncentive) + '</b>.</div>'
-      : '<div class="gate blocked">🔒 <b>Incentive on hold for everyone</b> — the store has reached ' +
-        gate.achievedPct.toFixed(1) + '% of its repair target; eligibility opens at ' + gate.requiredPct +
-        '%. Your earned amount so far: <b>' + money_(p.earnedIncentive) + '</b>.</div>';
-
-    return (
-      '<div class="person-card"><h3>' + esc_(p.name) + "</h3>" +
-      '<div class="row-line"><span>Total Revenue</span><span><b>' + money_(p.total.achieved) + "</b>" +
-      ' <span class="muted">/ ' + money_(p.total.target) + "</span> " + pctBadgeHtml_(p.total.pct) + "</span></div>" +
-      barHtml_(p.total.pct) +
-      '<div class="row-line"><span>Invoices</span><span>' + p.invoiceCount + "</span></div>" +
-      '<div class="row-line"><span><b>Payable Incentive</b></span><span class="' +
-      (p.payableIncentive > 0 ? "pos" : "neg") + '"><b>' + money_(p.payableIncentive) + "</b></span></div>" +
-      '<hr style="border:none;border-top:1px solid #e6ebf3;margin:10px 0">' +
-      incentiveLine_("Service", p.service, p.nextSvcSlab) +
-      '<div style="height:10px"></div>' +
-      incentiveLine_("Accessory", p.accessory, p.nextAccSlab) +
-      repairBlock +
-      gateBlock +
-      "</div>"
-    );
-  }).join("");
-
-  return (
-    '<section class="section" id="sec-person"><h2>B2. 👤 Sales Person Performance</h2><div class="body">' +
-    '<div class="person-grid">' + cards + "</div>" +
-    '<p class="muted" style="font-size:12.5px;margin:14px 0 0">' +
-    "Only <b>Service</b> and <b>Accessory</b> revenue earn incentive — payout is the pro-rata IFS formula. Service tiers 71/81/91/100&#8209;&#62;110% (&uarr;to &#8377;12,000); Accessory tiers 51/61/71/81&#8209;&#62;110% (&uarr;to &#8377;8,000). " +
-    "<b>Repair</b> revenue pays nothing on its own — it is one shared store gate: once the store&rsquo;s combined repair achievement passes <b>" +
-    CONFIG.REPAIR_INCENTIVE_GATE_PCT + "%</b> of the store repair target, <b>every salesperson is eligible to receive the incentive they earned</b>.</p>" +
-    "</div></section>"
-  );
-}
-
-function renderIncentiveTable_(data) {
-  var bundleByKey = {};
-  data.bundle.forEach(function (b) { bundleByKey[b.key] = b; });
-
-  // ---- Category 1: AMC ----
-  var amcTot = { cnt: 0, elig: 0, accCnt: 0, accElig: 0, inc: 0 };
-  var amcRows = data.amc.map(function (a) {
-    amcTot.cnt += a.amcCount; amcTot.elig += a.amcEligible;
-    amcTot.accCnt += a.accessoryCount; amcTot.accElig += a.accessoryEligible;
-    amcTot.inc += a.projectedIncentive;
-    // Task 40: the Acc-AMC cell must answer "how many more to close the next
-    // slab" (slab card at target!A29:F33), not just restate the raw count.
-    return "<tr><td>" + esc_(a.name) + "</td><td>" + a.amcCount + "</td><td>" + money_(a.amcEligible) +
-      "</td><td>" + (a.accessoryNextSlab ? a.accessoryRemaining + " more (slab " + a.accessoryNextSlab.accCount + ")" : "top slab") +
-      "</td><td>" + money_(a.accessoryEligible) + "</td><td>" +
-      (a.amcNextSlab ? a.amcRemaining + " more" : "top slab") + '</td><td class="pos">' + money_(a.projectedIncentive) +
-      "</td></tr>";
-  }).join("");
-  var amcFoot = '<tr class="total-row"><td>All salespersons</td><td>' + amcTot.cnt + "</td><td>" +
-    money_(amcTot.elig) + "</td><td></td><td>" + money_(amcTot.accElig) +
-    "<td></td>" + '<td class="pos">' + money_(amcTot.inc) + "</td></tr>";
-
-  // ---- Category 2: Bundle (DISC scheme) ----
-  var bunTot = { cnt: 0, inc: 0 };
-  // Task 40: bundle rows also carry the gap to the next slab (minimum
-  // incentive tier) — the owner wants the count needed, not just the count.
-  var bunRows = data.amc.map(function (a) {
-    var b = bundleByKey[a.key] || { count: 0, projectedIncentive: 0 };
-    bunTot.cnt += b.count; bunTot.inc += b.projectedIncentive;
-    return "<tr><td>" + esc_(a.name) + "</td><td>" + b.count + "</td><td>" +
-      (b.nextSlab ? b.remaining + " more (slab " + b.nextSlab.min + ")" : "top slab") +
-      '</td><td class="pos">' + money_(b.projectedIncentive) + "</td></tr>";
-  }).join("");
-  var bunFoot = '<tr class="total-row"><td>All salespersons</td><td>' + bunTot.cnt +
-    '</td><td></td><td class="pos">' + money_(bunTot.inc) + "</td></tr>";
-
-  return (
-    '<section class="section" id="sec-incentive"><h2>B1. 💰 Sales Person Incentive — AMC &amp; Bundle</h2><div class="body">' +
-    '<div class="inc-pair">' +
-    '<div class="inc-cat"><div class="inc-cat-title">Category 1 · AMC</div>' +
-    '<div class="scroll-x"><table><thead><tr><th>Salesperson</th><th>AMC Count</th><th>AMC Eligible</th>' +
-    "<th>Need To Close Next Slab</th><th>Acc-AMC Eligible</th><th>AMC To Next</th><th>AMC Incentive</th></tr></thead><tbody>" +
-    amcRows + amcFoot + "</tbody></table></div></div>" +
-    '<div class="inc-cat"><div class="inc-cat-title">Category 2 · Bundle (DISC scheme)</div>' +
-    '<div class="scroll-x"><table><thead><tr><th>Salesperson</th><th>Bundle Count</th><th>Bundle To Next</th><th>Bundle Incentive</th></tr></thead><tbody>' +
-    bunRows + bunFoot + "</tbody></table></div></div></div>" +
-    "</div></section>"
-  );
-}
-
-function renderKpiSection_(data) {
-  // Targets come from target!B13:L16 (row 13 = revenue type, row 14 = KPI
-  // name, row 15 = target count). Google Reviews is intentionally NOT a KPI
-  // row — it is shown as its own tile at the top of the page.
-  var allKpis = data.kpi.ar.concat(data.kpi.rr, data.kpi.sr);
-
-  var rows = allKpis.map(function (k) {
-    var pctVal = k.target > 0 ? pct_(k.achieved, k.target) : 0;
-    // Approx ACHIEVABLE value: the BALANCE count still to be hit multiplied
-    // by the per-unit approximate value from target!B16:L16 — how much can
-    // still be won against this KPI's balance target this month.
-    var approxBal = k.approxAmount > 0 && k.target > 0 ? k.balance * k.approxAmount : 0;
-    var approxCell;
-    if (k.approxAmount <= 0) {
-      approxCell = '<span class="muted">&mdash;</span>';
-    } else if (approxBal > 0) {
-      approxCell = money_(approxBal) + '<br><span class="muted" style="font-size:12.5px">balance ' +
-        k.balance + " × " + money_(k.approxAmount) + "</span>";
-    } else {
-      approxCell = money_(approxBal) + '<br><span class="pos" style="font-size:12.5px">target covered</span>';
+  // ---- fast page loads, three tiers --------------------------------------
+  // (a) whole-page cache, chunked per page — zero compute, all panes embedded.
+  // (b) pane caches (script + Drive) + frame record warm → cheap rebuild.
+  // (c) cold → the load itself PREFETCHES everything: all four panes are
+  //     computed, embedded and cached in one pass (Task 56), so once loading
+  //     completes switching between pages never recomputes.
+  var html = null;
+  if (!wantsFresh) {
+    try { html = paneCacheGet_(cache, "dash_pg_v6_" + page); } catch (e0) { html = null; }
+    if (!html) {
+      try {
+        var metaJ = cache.get("dash_meta_v5");
+        if (metaJ) {
+          var panes = {}, cold = false;
+          ["index", "cre", "tech", "sm"].forEach(function (pg) {
+            var h = paneCacheGet_(cache, "dash_pane_v5_" + pg);
+            if (h == null) cold = true; else panes[pg] = h;
+          });
+          if (!cold) {
+            var meta = JSON.parse(metaJ);
+            html = buildDashboardPage_(null, page, {
+              storeCode: meta.storeCode, metaText: meta.metaText, paneJson: panes
+            });
+          }
+        }
+      } catch (err) { html = null; }
     }
-    return "<tr><td>" + esc_(k.label) + "</td><td>" + esc_(k.category) + "</td><td>" +
-      (k.target > 0 ? k.target : "&mdash;") + "</td><td>" + k.achieved + "</td><td>" +
-      (k.target > 0 ? pctBadgeHtml_(pctVal) : '<span class="muted">&mdash;</span>') +
-      '</td><td class="' + (k.target > 0 && k.balance === 0 ? "pos" : k.balance > 0 ? "neg" : "muted") + '">' +
-      (k.target > 0 ? k.balance : "&mdash;") + "</td><td>" +
-      approxCell +
-      "</td><td>" + money_(k.achievedValue) + "</td><td>" + money_(k.achievedGp) + "</td></tr>";
-  }).join("");
-
-  return (
-    '<section class="section" id="sec-kpi"><h2>B. 📊 KPI Target — Store KPI Parameters ' + exportSectionBtn_("kpi") + '</h2><div class="body">' +
-    '<div class="scroll-x">' +
-    "<table><thead><tr><th>KPI</th><th>Type</th><th>Target</th><th>Achieved</th><th>Achieved %</th>" +
-    "<th>Balance</th><th>Approx Achievable Value</th><th>Achieved Value</th><th>Achieved GP</th></tr></thead><tbody>" + rows +
-    "</tbody></table></div>" +
-    '<p class="muted" style="font-size:12.5px;margin:12px 0 0">Targets read from <b>target!B12:L14</b>. ' +
-    "<b>Approx Achievable Value</b> = the balance count still needed × that KPI’s approximate unit value in <b>target!B15:L15</b> — the amount still winnable to close the balance target.</p>" +
-    "</div></section>"
-  );
-}
-
-function renderInvoiceValuation_(data) {
-  var rows = data.revenueTypes.map(function (rt) {
-    return "<tr><td>" + esc_(rt.label) + "</td><td>" + rt.invoiceLines + "</td><td>" + rt.uniqueInvoices +
-      "</td><td>" + money_(rt.revenue) + "</td><td>" + money_(rt.gp) + "</td></tr>";
-  }).join("");
-  var totalRow = "<tr class=\"total-row\"><td>Overall</td><td>" + data.invoiceValuation.totalInvoiceLines +
-    "</td><td>" + data.invoiceValuation.totalUniqueInvoices + "</td><td>" + money_(data.store.total.achieved) +
-    "</td><td>" + money_(data.store.grossProfit.achieved) + "</td></tr>";
-  return (
-    '<section class="section" id="sec-invoice"><h2>A3. 🧾 Invoice Valuation</h2><div class="body">' +
-    '<div class="sec-desc">Definition: what invoices are really worth — line count, unique invoice count, revenue and gross profit per revenue type, plus AR (accessory attachment) rate next to invoices that qualified for one.</div>' +
-    '<div class="iv-split">' +
-    '<div class="iv-left"><div class="scroll-x">' +
-    "<table class=\"hdr-deep\"><thead><tr><th>Revenue Type</th><th>Invoice Lines</th><th>Unique Invoices</th><th>Revenue</th>" +
-    "<th>Gross Profit</th></tr></thead><tbody>" + rows + totalRow + "</tbody></table></div></div>" +
-    '<div class="iv-right">' +
-    '<div class="card"><div class="label">Bundle Unique Invoices</div><div class="value">' +
-    data.invoiceValuation.bundleUniqueInvoices + "</div></div>" +
-    '<div class="card"><div class="label">AMC Unique Invoices</div><div class="value">' +
-    data.invoiceValuation.amcUniqueInvoices + "</div></div>" +
-    "</div>" +
-    "</div>" +
-    "</div></section>"
-  );
-}
-
-/**
- * AR attachment sub-dashboard (inside section 6).
- *
- * An invoice is an AR attachment when accessory revenue appears on the SAME
- * invoice code as service or repair revenue. Accessory-only invoices are
- * standalone sales and are excluded. The value and GP shown are the
- * accessory portion of those invoices — the revenue the attachment earned.
- */
-function renderArSection_(data) {
-  return (
-    '<section class="section" id="sec-ar"><h2>B3. 🔗 AR Attachment — accessory sold with service / repair</h2><div class="body">' +
-    '<div class="sec-desc">Definition: an invoice counts as an AR attachment when accessory revenue shares the invoice code with service or repair revenue; value and GP shown are the accessory portion of those invoices. Accessory-only invoices are excluded.</div>' +
-    renderArAttachment_(data) + "</div></section>"
-  );
-}
-
-function renderArAttachment_(data) {
-  var a = data.invoiceValuation.arAttachment;
-
-  var rateCls = a.attachRate >= 100 ? "good" : a.attachRate >= 70 ? "info" : a.attachRate >= 40 ? "warn" : "bad";
-
-  return (
-    '<div class="subpanel">' +
-    '<div class="subpanel-head">AR Attachment' +
-    '<span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0"> — accessory sold together with service or repair</span>' +
-    "</div>" +
-    '<div class="cards" style="margin-bottom:0">' +
-    '<div class="card"><div class="label">Total Invoices</div><div class="value">' + a.totalUniqueInvoices +
-    '</div><div class="sub">all unique invoice codes</div></div>' +
-    '<div class="card"><div class="label">AR Attachment Invoices</div><div class="value pos">' + a.attachedInvoices +
-    '</div><div class="sub">' + a.pctOfTotal.toFixed(1) + "% of all invoices</div></div>" +
-    '<div class="card"><div class="label">AR Attachment Value</div><div class="value">' + money_(a.value) +
-    '</div><div class="sub">accessory portion only</div></div>' +
-    '<div class="card"><div class="label">Gross Profit Gained</div><div class="value pos">' + money_(a.grossProfit) +
-    '</div><div class="sub">from attached accessories</div></div>' +
-    "</div>" +
-    '<div class="cards" style="margin:12px 0 0">' +
-    '<div class="card"><div class="label">Attach Rate</div><div class="value">' +
-    '<span class="badge ' + rateCls + '" style="font-size:18px;padding:3px 12px">' + a.attachRate.toFixed(1) + "%</span>" +
-    '</div><div class="sub">' + a.attachedInvoices + " of " + a.attachableInvoices + " service/repair invoices</div></div>" +
-    '<div class="card"><div class="label">Missed Opportunities</div><div class="value neg">' + a.missedInvoices +
-    '</div><div class="sub">service/repair with no accessory</div></div>' +
-    '<div class="card"><div class="label">Avg Attachment Value</div><div class="value">' + money_(a.avgValue) +
-    '</div><div class="sub">per attached invoice</div></div>' +
-    '<div class="card"><div class="label">Accessory-only Invoices</div><div class="value muted">' +
-    a.accessoryOnlyInvoices + '</div><div class="sub">excluded &middot; ' + money_(a.accessoryOnlyValue) + "</div></div>" +
-    "</div>" +
-    '<p class="muted" style="font-size:12.5px;margin:12px 0 0">' +
-    "An invoice counts as an AR attachment only when accessory revenue shares the invoice code with service or repair " +
-    "revenue. Invoices carrying accessory lines alone are treated as non-attachment and excluded from the value and GP above.</p>" +
-    "</div>"
-  );
-}
-
-/**
- * Section 7 — a date-by-date matrix.
- *
- * One row per date. Each salesperson owns a group of columns, and within
- * that group every revenue type (Service / Accessory / Repair) gets its own
- * cell showing "achieved / day-target". A cell is green when the achieved
- * value meets or beats that person's daily target for that revenue type,
- * red when it falls short. Each salesperson's column group is tinted so the
- * blocks stay visually distinct.
- *
- * The date column itself keeps the original rule: the STORE total for that
- * day, green when it meets or beats the store daily target, red when not.
- */
-/** Weekly revenue analysis — weeks of the current month, per revenue type. */
-function computeWeeklyAnalysis_(data) {
-  var now = new Date();
-  var curMonth = now.getMonth() + 1, curYear = now.getFullYear();
-  var monthName = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][curMonth - 1] +
-    " " + curYear;
-  var daysInMonth = daysInCurrentMonth_();
-  var TYPES = [
-    { key: "service", label: "Service", monthTarget: data.store.service.target },
-    { key: "accessory", label: "Accessory", monthTarget: data.store.accessory.target },
-    { key: "repair", label: "Repair", monthTarget: data.store.repair.target },
-    { key: "grossProfit", label: "Gross Profit", monthTarget: data.store.grossProfit.target },
-  ];
-  // Task 39: one soft colour per revenue type so the groups read apart.
-  var WCLASS = { service: "wt-svc", accessory: "wt-acc", repair: "wt-rep", grossProfit: "wt-gp" };
-  TYPES.forEach(function (t) { t.wc = WCLASS[t.key]; });
-
-  // Week chunks of the month: 1–7, 8–14, 15–21, 22–28, 29–end.
-  var weeks = [];
-  for (var start = 1; start <= daysInMonth; start += 7) {
-    var end = Math.min(daysInMonth, start + 6);
-    var w = { start: start, end: end, workingDays: 0, achieved: {}, tgt: {}, idx: weeks.length + 1 };
-    for (var d = start; d <= end; d++) if (isWorkingDay_(d)) w.workingDays++;
-    TYPES.forEach(function (t) { w.achieved[t.key] = 0; });
-    weeks.push(w);
-  }
-  var totalWorkingDays = 0;
-  weeks.forEach(function (w) { totalWorkingDays += w.workingDays; });
-
-  // Weekly target plan (owner's formula): split the month target by the
-  // month's ACTUAL working days to get a per-working-day rate, then multiply
-  // back by this week's working days.
-  //   week target = month target ÷ actual working days × week working days
-  weeks.forEach(function (w) {
-    TYPES.forEach(function (t) {
-      var perDay = t.monthTarget / Math.max(1, totalWorkingDays);
-      w.tgt[t.key] = Math.round(perDay * w.workingDays);
-    });
-  });
-
-  // Achieved per week: only current-month CRM dates count.
-  (data.days || []).forEach(function (d) {
-    if (d.undated || d.month !== curMonth || d.year !== curYear || !d.day) return;
-    var w = weeks[Math.floor((d.day - 1) / 7)];
-    if (!w) return;
-    w.achieved.service += d.serviceRevenue || 0;
-    w.achieved.accessory += d.accessoryRevenue || 0;
-    w.achieved.repair += d.repairRevenue || 0;
-    w.achieved.grossProfit += d.grossProfit || 0;
-  });
-
-  var monthTotals = {};
-  TYPES.forEach(function (t) {
-    monthTotals[t.key] = 0;
-    weeks.forEach(function (w) {
-      w.achieved[t.key] = Math.round(w.achieved[t.key]);
-      monthTotals[t.key] += w.achieved[t.key];
-    });
-  });
-
-  var daysElapsed = data.store.daysElapsed;
-  weeks.forEach(function (w) {
-    w.status = daysElapsed > w.end ? "Completed"
-      : (daysElapsed >= w.start ? "In progress" : "Upcoming");
-  });
-
-  return { monthName: monthName, weeks: weeks, totalWorkingDays: totalWorkingDays,
-    types: TYPES, monthTotals: monthTotals };
-}
-
-/** Task 49 — INDEX weekly summary: percentage view only.
- *  Completed weeks → achieved % of that week's target per revenue type;
- *  in-progress week → current % so far; upcoming weeks → the % of the MONTH
- *  target each week must still contribute (remaining balance split evenly). */
-function renderWeeklySummary_(data) {
-  var wa = computeWeeklyAnalysis_(data);
-  function r1(x) { return Math.round(x * 10) / 10; }
-  var upcoming = wa.weeks.filter(function (w) { return w.status === "Upcoming"; });
-  var nUp = upcoming.length;
-  var upPct = {};
-  wa.types.forEach(function (t) {
-    if (!nUp) { upPct[t.key] = null; return; }
-    var bal = Math.max(0, t.monthTarget - (wa.monthTotals[t.key] || 0));
-    upPct[t.key] = r1(((bal / nUp) / Math.max(1, t.monthTarget)) * 100);
-  });
-  function typeCell(w, t) {
-    if (w.status === "Upcoming") {
-      return '<td class="num muted">' + (upPct[t.key] == null ? "—" : upPct[t.key] + "%") + "</td>";
+    if (!html) {
+      // (b2) Task 55 — persistent Drive-backed pane store: survives cache
+      // evictions, so warm loads stay warm between taps.
+      try {
+        var d = paneDriveState_();
+        if (d) {
+          html = buildDashboardPage_(null, page, {
+            storeCode: d.meta ? d.meta.storeCode : "", metaText: d.meta ? d.meta.metaText : "",
+            paneJson: d.panes
+          });
+        }
+      } catch (err2) { html = null; }
     }
-    if (!w.tgt[t.key]) return '<td class="num muted">—</td>';
-    var p = r1((w.achieved[t.key] / w.tgt[t.key]) * 100);
-    var cls = p >= 100 ? "pos" : (w.status === "Completed" ? "neg" : "");
-    return '<td class="num' + (cls ? " " + cls : "") + '">' + p + "%</td>";
-  }
-  var rows = wa.weeks.map(function (w) {
-    var tag = w.status === "Completed" ? '<span class="pill pill-positive">completed</span>'
-      : w.status === "In progress" ? '<span class="pill pill-benchmark">in progress</span>'
-      : '<span class="pill">upcoming</span>';
-    return "<tr><td><b>Week " + w.idx + '</b> <span class="muted">(' + w.start + "–" + w.end + ")</span></td>" +
-      "<td>" + tag + "</td>" + wa.types.map(function (t) { return typeCell(w, t); }).join("") + "</tr>";
-  }).join("");
-  return '<section class="section" id="idx-weekly"><h2>A6. 🗓 Weekly Revenue Analysis — ' + esc_(wa.monthName) + "</h2>" +
-    '<div class="body"><div class="sec-desc">completed weeks: achieved % of each week&rsquo;s target · in-progress week: current % so far · ' +
-    "upcoming weeks: % of the month target each week must still contribute (balance split evenly) to close the month at 100%.</div>" +
-    '<div class="scroll-x"><table class="ptable"><thead><tr><th>Week</th><th>Status</th>' +
-    wa.types.map(function (t) { return '<th class="num">' + esc_(t.label) + "</th>"; }).join("") +
-    "</tr></thead><tbody>" + rows + "</tbody></table></div></div></section>";
-}
-
-/** Renders section 7 — weekly achieved vs weekly target per revenue type. */
-function renderWeeklyAnalysis_(data) {
-  var wa = computeWeeklyAnalysis_(data);
-  var TYPES = wa.types;
-
-  var head1 = '<tr><th rowspan="2" class="sticky-col">Week</th><th rowspan="2">Wrk Days</th><th rowspan="2">Status</th>';
-  var head2 = "<tr>";
-  TYPES.forEach(function (t, i) {
-    var wc = " " + t.wc;
-    head1 += '<th colspan="3" class="grp grp-' + (i % 5) + wc + '">' + esc_(t.label) + "</th>";
-    head2 += '<th class="grp grp-' + (i % 5) + wc + '">Achieved</th>' +
-      '<th class="grp grp-' + (i % 5) + wc + '">Week Target</th>' +
-      '<th class="grp grp-' + (i % 5) + wc + '">Balance</th>';
-  });
-  head1 += "</tr>";
-  head2 += "</tr>";
-
-  var body = "";
-  wa.weeks.forEach(function (w) {
-    var tr = "<tr>" +
-      '<td class="sticky-col"><b>Week ' + w.idx + "</b> " +
-      '<span class="muted">(' + w.start + "–" + w.end + " " + esc_(wa.monthName).split(" ")[0] + ")</span></td>" +
-      '<td style="text-align:center">' + w.workingDays + "</td>" +
-      '<td><span class="muted">' + esc_(w.status) + "</span></td>";
-    TYPES.forEach(function (t, i) {
-      var tk = t.key;
-      var wc = " " + t.wc;
-      var ach = w.achieved[tk], tgt = w.tgt[tk];
-      var bal = Math.max(0, tgt - ach);
-      var pill = tgt > 0
-        ? '<span class="apill ' + (ach >= tgt ? "ok" : "no") + '">' + money_(ach) + "</span>"
-        : '<span class="muted">' + money_(ach) + "</span>";
-      tr += '<td class="cell-' + (i % 5) + wc + '">' + pill + "</td>" +
-        '<td class="cell-' + (i % 5) + wc + '"><span class="tgt">' + money_(tgt) + "</span></td>" +
-        '<td class="cell-' + (i % 5) + wc + '">' + (bal > 0
-          ? '<span class="muted">' + money_(bal) + "</span>"
-          : '<span class="apill ok">done</span>') + "</td>";
-    });
-    body += tr + "</tr>";
-  });
-
-  var foot = '<tr class="total-row"><td class="sticky-col">Month</td><td style="text-align:center">' +
-    wa.totalWorkingDays + "</td><td></td>";
-  TYPES.forEach(function (t, i) {
-    var tk = t.key;
-    var wc = " " + t.wc;
-    var ach = wa.monthTotals[tk], tgt = t.monthTarget;
-    var bal = Math.max(0, tgt - ach);
-    foot += '<td class="cell-' + (i % 5) + wc + '"><b>' + money_(ach) + "</b></td>" +
-      '<td class="cell-' + (i % 5) + wc + '"><span class="tgt">' + money_(tgt) + "</span></td>" +
-      '<td class="cell-' + (i % 5) + wc + '">' + money_(bal) + "</td>";
-  });
-  foot += "</tr>";
-
-  return (
-    '<section class="section" id="sec-weekly"><h2>A6. 🗓 Weekly Revenue Analysis — ' +
-      esc_(wa.monthName) + '</h2><div class="body">' +
-    '<div class="sec-desc">Current month split into ' + wa.weeks.length + ' weeks — achieved vs weekly target, per revenue type</div>' +
-    '<div class="scroll-x" style="margin-top:12px"><table class="matrix hdr-deep">' +
-      "<thead>" + head1 + head2 + "</thead><tbody>" + body + foot + "</tbody></table></div>" +
-    "</div></section>"
-  );
-}
-
-/** Renders section 8 — the date-wise per-salesperson matrix. */
-function renderDateWiseTable_(data) {
-  var dailyTarget = data.store.dailyTarget;
-  var people = data.salespeople;
-  var TYPES = [["service", "Service"], ["accessory", "Accessory"], ["repair", "Repair"], ["grossProfit", "Gross Profit"]];
-
-  // Newest date first, so the current day and the two before it sit at the
-  // top of the table — exactly what the collapsed view shows.
-  var dated = data.days.filter(function (d) { return !d.undated; })
-    .slice().sort(function (a, b) { return b.sortKey - a.sortKey; });
-  var undated = data.days.filter(function (d) { return d.undated; });
-
-  // Collapsed view keeps the first CONFIG.COLLAPSED_DAYS rows (the most
-  // recent dates). Everything else is rendered but hidden, so expanding is
-  // instant and needs no extra server round-trip.
-  var visibleKeys = {};
-  dated.slice(0, CONFIG.COLLAPSED_DAYS).forEach(function (d) { visibleKeys[d.dateKey] = true; });
-  var hiddenCount = data.days.length - Math.min(dated.length, CONFIG.COLLAPSED_DAYS);
-
-  // ---- header: two banded rows, one per salesperson group ----
-  var head1 = '<tr><th rowspan="2" class="sticky-col">Date</th>';
-  var head2 = "<tr>";
-  // Task 40: every salesperson block alternates between a light and a dark
-  // shade (sp-a / sp-b) so neighbouring people are visually separated.
-  people.forEach(function (p, i) {
-    var sp = " sp-" + (i % 2 ? "b" : "a");
-    head1 += '<th colspan="' + TYPES.length + '" class="grp grp-' + (i % 5) + sp + '">' + esc_(p.name) + "</th>";
-    TYPES.forEach(function (pair) {
-      head2 += '<th class="grp grp-' + (i % 5) + sp + '">' + esc_(pair[1]) + "</th>";
-    });
-  });
-  head1 += "</tr>";
-  head2 += "</tr>";
-
-  // ---- body: one row per date ----
-  function dayRow(d) {
-    var byKey = {};
-    (d.people || []).forEach(function (pp) { byKey[pp.key] = pp; });
-
-    var classes = [];
-    if (d.holiday) classes.push("holiday");
-    // Rows outside the collapsed window are tagged so the toggle can show them.
-    if (!(d.undated ? false : visibleKeys[d.dateKey])) classes.push("extra-day");
-
-    var tr = '<tr class="' + classes.join(" ") + '">';
-    tr += '<td class="sticky-col"><b>' + esc_(d.undated ? "No date" : d.dateKey) + "</b>" +
-      (d.weekday ? ' <span class="muted">' + esc_(d.weekday) + "</span>" : "") +
-      (d.holiday ? ' <span class="muted">🔶</span>' : "") + "</td>";
-
-    people.forEach(function (p, i) {
-      var pd = byKey[p.key];
-      var typeMap = {};
-      if (pd) pd.types.forEach(function (t) { typeMap[t.type] = t; });
-
-      TYPES.forEach(function (pair) {
-        var tk = pair[0];
-        // Gross profit uses the flat per-day total (it has no invoice-line
-        // type rows); revenue types use their type row. Same condition.
-        var achieved = tk === "grossProfit"
-          ? (pd ? pd.grossProfit : 0)
-          : (typeMap[tk] ? typeMap[tk].value : 0);
-        var tgt = p.dailyTargets[tk] || 0;
-        // Pill around the achieved number only; the daily target stays small
-        // underneath. The met/missed condition is unchanged.
-        var figure = tgt > 0
-          ? '<span class="apill ' + (achieved >= tgt ? "ok" : "no") + '">' + money_(achieved) + "</span>"
-          : '<span class="muted">' + money_(achieved) + "</span>";
-        tr += '<td class="cell-' + (i % 5) + (i % 2 ? " sp-b" : " sp-a") + '">' + figure +
-          '<span class="tgt">/ ' + money_(tgt) + "</span></td>";
-      });
-    });
-    tr += "</tr>";
-    return tr;
   }
 
-  var body = "";
-  dated.forEach(function (d) { body += dayRow(d); });
-  undated.forEach(function (d) { body += dayRow(d); });
+  if (!html) {
+    var loaded = loadDashboardData_();
+    var perfData = loadPerformanceData_();
+    var data = loaded.data;
+    // everything is prefetched DURING the load itself —
+    // the cold load computes and embeds all four panes in one pass and caches
+    // them, so once loading completes no tab tap ever touches the sheets again.
+    var panes2 = buildAllPanes_(data, perfData);
+    cachePanes_(data, panes2);
+    html = buildDashboardPage_(data, page, { paneJson: panes2 });
+  }
+  try { paneCachePut_(cache, "dash_pg_v6_" + page, html); } catch (err3) { /* skip */ }
 
-  // ---- footer: month-to-date totals per person/type (always visible) ----
-  var foot = '<tr class="total-row"><td class="sticky-col">Month to date</td>';
-  people.forEach(function (p, i) {
-    TYPES.forEach(function (pair) {
-      var tk = pair[0];
-      foot += '<td class="cell-' + (i % 5) + (i % 2 ? " sp-b" : " sp-a") + '">' + money_(p[tk].achieved) +
-        '<span class="tgt">/ ' + money_(p[tk].target) + "</span></td>";
-    });
-  });
-  foot += "</tr>";
-
-  // ---- per-person daily target legend ----
-  var legend = people.map(function (p, i) {
-    return '<div class="legend-card cell-' + (i % 5) + (i % 2 ? " sp-b" : " sp-a") + '">' +
-      "<b>" + esc_(p.name) + '</b> <span class="muted">daily targets</span><br>' +
-      TYPES.map(function (pair) {
-        return esc_(pair[1]) + " " + money_(p.dailyTargets[pair[0]]);
-      }).join(' <span class="muted">·</span> ') +
-      "</div>";
-  }).join("");
-
-  var toggle = hiddenCount > 0
-    ? '<button class="toggle-btn" id="dwToggle" onclick="dwToggle(this)" ' +
-      'data-more="Show all ' + data.days.length + ' dates" ' +
-      'data-less="Show only last ' + CONFIG.COLLAPSED_DAYS + ' days">' +
-      '<span class="chev">▼</span><span class="txt">Show all ' + data.days.length + ' dates</span>' +
-      '<span class="count">+' + hiddenCount + ' hidden</span></button>'
-    : "";
-
-  return (
-    '<section class="section" id="sec-datewise"><h2>F1. 📆 Date-wise Sales Revenue Analysis (by salesperson)</h2><div class="body">' +
-    '<div class="cards" style="margin-bottom:14px">' +
-    '<div class="card"><div class="label">Store Daily Target</div><div class="value">' + money_(dailyTarget) +
-    '</div><div class="sub">total target ÷ ' + data.store.totalWorkingDays + " working days</div></div>" +
-    '<div class="card"><div class="label">Working Days</div><div class="value">' + data.store.totalWorkingDays +
-    '</div><div class="sub">' + data.store.consumedWorkingDays + " consumed / " + data.store.balanceWorkingDays + " left</div></div>" +
-    '<div class="card"><div class="label">Required / Day (balance)</div><div class="value">' +
-    money_(data.store.total.requiredPerDay) + '</div><div class="sub">to close the remaining gap</div></div>' +
-    "</div>" +
-    '<div class="legend-row">' + legend + "</div>" +
-    toggle +
-    '<div class="scroll-x"><table class="matrix collapsed" id="dwTable"><thead>' + head1 + head2 + "</thead><tbody>" +
-    body + foot + "</tbody></table></div>" +
-    '<p class="muted" style="font-size:12.5px;margin:12px 0 0">' +
-    "Each cell shows <b>achieved / that engineer's daily target</b> for the revenue type — " +
-    "the daily target is the <b>balance needed for the month ÷ working days remaining</b>. " +
-    "Achieved values sit inside <b>oval pills</b> that turn <b>green</b> when the day meets the target " +
-    "and <b>red</b> when it falls short. " +
-    "Collapsed view shows the latest " + CONFIG.COLLAPSED_DAYS + " days; expand for every date.</p>" +
-    "</div></section>"
-  );
+  return HtmlService.createHtmlOutput(html)
+    .setTitle("Sales Performance Dashboard")
+    .addMetaTag("viewport", "width=device-width, initial-scale=1")
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
-/* ============================================================================
+/**
+ * Server endpoint for the Refresh button.
+ *
+ * Called from the page via google.script.run, which works inside the Apps
+ * Script iframe sandbox. It recomputes from the sheet, refreshes the cached
+ * page, and hands back only the markup that changed — so refreshing swaps
+ * content in place instead of reloading the whole document.
+ *
+ * NOTE: must stay a public (no trailing underscore) top-level function,
+ * otherwise google.script.run cannot see it.
+ */
+function refreshDashboardSections() {
+  var loaded = loadDashboardData_();
+  var data = loaded.data;
+
+  var perfData = loadPerformanceData_();
+  var panes = buildAllPanes_(data, perfData);
+  // refill the per-pane caches, so the next page load (or tab
+  // navigation via anchors) is served with zero sheet reads.
+  cachePanes_(data, panes);
+
+  return JSON.stringify({
+    meta: renderMetaText_(data),
+    index: panes.index,
+    cre: panes.cre,
+    tech: panes.tech,
+    sm: panes.sm
+  });
+}
+
+/* ==========================================================================
  *  ✅  END OF FILE — SalesDashboard.gs
- * ----------------------------------------------------------------------------
+ * ------------------------------------------------------------------------ *
  *  PASTE CHECK: this banner must be the LAST thing in your Apps Script editor.
- *  If you cannot see it, your copy was cut short and the script will fail with
- *  "SyntaxError: Unexpected end of input".
- *
- *  Expected length: 2293 lines.
- *  In the Apps Script editor, press Ctrl/Cmd + End to jump to the bottom and
- *  confirm both this banner and the line number.
- *
- *  Reliable way to copy the whole file (a scrolling preview pane often copies
- *  only the part it has rendered):
- *    GitHub → open SalesDashboard.gs → click the "Copy raw file" icon
- *    (top-right of the file view), or "Download raw file".
- * ========================================================================= */
+ *  If you cannot see it, your paste was cut short and the script will fail
+ *  with the unexpected-end-of-input syntax error — copy the raw
+ *  file again (GitHub → SalesDashboard.gs → Copy raw file) and paste it whole.
+ * ======================================================================== */

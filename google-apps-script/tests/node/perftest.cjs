@@ -1162,8 +1162,8 @@ check("15-minute refresh interval retained (Task 56)",
   clientJS.indexOf("setInterval(function(){autoRefresh(false);},15*60*1000);")>-1);
 check("off-screen sections skip layout work (Task 55)",
   page.indexOf("content-visibility:auto")>-1);
-check("build marker comment present for deployment verification (Task 58)",
-  page.indexOf("BUILD TASK58")>-1);
+check("build marker comment present for deployment verification (Task 59)",
+  page.indexOf("BUILD TASK59")>-1);
 check("full page carries all four panes after load (Task 56)",
   page.indexOf('data-pane="index"')>-1&&page.indexOf('data-pane="cre"')>-1
   &&page.indexOf('data-pane="tech"')>-1&&page.indexOf('data-pane="sm"')>-1
