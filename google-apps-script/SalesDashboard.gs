@@ -24,6 +24,9 @@
  *     (dash_pane_v6_* + dash_meta_v6) and a Drive-backed 15-minute store
  *     (SalesDashboard_paneCache_v2.json) that survives cache evictions.
  *     Any pane recompute invalidates the assembled pages and Drive-merges.
+ *   • Texture is repaint-cheap: static sheens/sparkles, no backdrop-filter
+ *     blur and no perpetual CSS animations — scrolling and pane flips stay
+ *     smooth with the whole dashboard resident in the DOM.
  *   • No page-wide export: exactly seven tables carry an ⬇ Export button
  *     (store, ops, repairType, decline, jobs, margin, kpi) → one endpoint,
  *     exportDashboardSectionToSpreadsheet(key).
@@ -52,22 +55,33 @@
 
 var CONFIG = {
   CRM_SHEET_NAME: "crm",
+  // Task 79 — alias variant: the dump workbook calls the sales tab "sales_report".
+  CRM_SHEET_NAMES: ["sales_report", "sales data", "sales", "crm_report", "crm report", "crm"],
+  // Task 79 — Google Forms response sheet driving the PRODUCTIVITY page.
+  PRODUCTIVITY_SHEET_NAMES: ["form responses 2", "form responses", "productivity"],
   TARGET_SHEET_NAME: "target",
   DASHBOARD_SHEET_NAME: "Dashboard",
   // ---- Performance page source sheets ----
   // Each entry lists acceptable tab names (first match wins, case-insensitive),
   // so common spellings work without editing anything.
-  WALKIN_SHEET_NAMES: ["walkin", "walk-in", "walk in"],
-  SERVICE_SHEET_NAMES: ["service", "services"],
-  ADVANCE_SHEET_NAMES: ["advance", "advace", "advanced"],
-  COMM_SHEET_NAMES: ["comm", "communication", "communications"],
-  DECLINE_SHEET_NAMES: ["decline", "declined", "declined-repair"],
-  QUOTE_SHEET_NAMES: ["quote", "quotes", "requote"],
-  // Leave blank to always use the spreadsheet this script is bound to.
-  // Only set this if you deploy the Web App from a *different* Apps Script
-  // project than the one bound to your sheet (Extensions → Apps Script
-  // always binds it for you, so you normally don't need to touch this).
-  SPREADSHEET_ID: "",
+  WALKIN_SHEET_NAMES: ["token_report", "token data", "token", "walkin", "walk-in", "walk in"],
+  SERVICE_SHEET_NAMES: ["job_report", "service_report", "service report", "service data", "service", "services", "job", "jobs"],
+  ADVANCE_SHEET_NAMES: ["advance_payment_report", "advance paid report", "advance report", "advance_paid", "advance", "advace", "advanced"],
+  COMM_SHEET_NAMES: ["communication_details_report", "communication report", "communication_details", "comm details", "comm", "communication", "communications"],
+  DECLINE_SHEET_NAMES: ["job_report_declined", "declined report", "decline report", "declined_report", "job declined", "decline", "declined", "declined-repair"],
+  QUOTE_SHEET_NAMES: ["quotation_report", "quotation report", "quotation_report", "quotation", "quote", "quote report", "quotes", "requote"],
+  // Task 68 — Happy calling + GSX invoice dashboards.
+  CALLING_SHEET_NAMES: ["calling", "happy-calling", "calls", "call"],
+  CSAT_SHEET_NAMES: ["c-sat", "csat", "customer-sat", "c_sat"],
+  INVOICE_SHEET_NAMES: ["invoice", "invoices", "gsx-invoice", "gsx invoices"],
+  // Task 70 — happy calling is driven by service!HandOverDate: rows enter
+  // the list more than 1 day after handover and leave on day 7 (TAT window).
+  CALLING_MIN_DAYS: 2,
+  CALLING_WINDOW_DAYS: 7,
+  // Task 79 — the dashboard reads the ONE-YEAR DATA DUMP workbook (the
+  // "mdu4 - 1 year data" report export). The same conditions & logic apply;
+  // only the source workbook and its report tab names changed.
+  SPREADSHEET_ID: "14fieNDmQyYVGwv5wt6FkGCD2St_fCBCIlGGeUQLcfOA",
   // Day-of-month numbers treated as holidays / non-working days this month.
   // Edit this list to match your store's actual holiday calendar.
   HOLIDAYS: [1, 15, 28],
@@ -122,13 +136,30 @@ function getSpreadsheet_() {
   return SpreadsheetApp.getActiveSpreadsheet();
 }
 
-/** Finds a sheet by any of several acceptable names (case-insensitive). */
+/** Task 80 — resilient tab finder: names match after normalising case and
+ * collapsing spaces/underscores/hyphens/dots, so the exported workbook's
+ * "Sales Report", "sales_report", "sales report " all hit the same alias.
+ * Exact-case-normalised match still wins first. */
+function sheetNameNorm_(x) {
+  return String(x == null ? "" : x).trim().toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
 function getSheetByNames_(ss, names) {
   var all = ss.getSheets();
-  var lookup = {};
-  all.forEach(function (sh) { lookup[sh.getName().trim().toLowerCase()] = sh; });
-  for (var i = 0; i < names.length; i++) {
-    var hit = lookup[String(names[i]).trim().toLowerCase()];
+  var exact = {}, fuzzy = {};
+  all.forEach(function (sh) {
+    var raw = sh.getName().trim().toLowerCase();
+    if (!(raw in exact)) exact[raw] = sh;
+    var norm = sheetNameNorm_(sh.getName());
+    if (!(norm in fuzzy)) fuzzy[norm] = sh;
+  });
+  var i, hit;
+  for (i = 0; i < names.length; i++) {
+    hit = exact[String(names[i]).trim().toLowerCase()];
+    if (hit) return hit;
+  }
+  for (i = 0; i < names.length; i++) {
+    hit = fuzzy[sheetNameNorm_(names[i])];
     if (hit) return hit;
   }
   return null;
@@ -281,39 +312,59 @@ function mobileKey_(v) {
 
 function parseCrmRows(values) {
   if (!values || values.length < 2) return [];
-  var header = values[0];
 
-  var col = {
-    invoiceCode: findColumn_(header, [/invoice.*(code|no\.?|number|id)/i]),
-    invoiceDate: findColumn_(header, [/invoice.*date/i]),
-    salesPerson: findColumn_(header, [/sales.*person/i]),
-    revenueType: findColumn_(header, [/revenue.*type/i]),
-    itemDescription: findColumn_(header, [/item.*desc/i]),
-    subCategory: findColumn_(header, [/sub.*categ/i]),
-    schemeCode: findColumn_(header, [/scheme.*code/i]),
-    taxableAmount: findColumn_(header, [/taxable.*amount/i]),
-    grossProfit: findColumn_(header, [/gross.*profit/i]),
-    tranType: findColumn_(header, [/tran.*type/i]),
-    itemCode: findColumn_(header, [/item.*code/i]),
-    orderCode: findColumn_(header, [/^ordercode$/i, /^order\s*code$/i, /order.*(code|no|num)/i]),
-    partType: findColumn_(header, [/part.*type/i]),
-    // optional discount column feeding the GP "Discounted Cases" tile.
-    discountAmount: findColumn_(header, [/^discount\s*(amount|amt|value)?$/i, /disc.*(amount|amt|value)/i, /^discount/i]),
-  };
+  // Task 66 — header resilience. Fresh monthly exports sometimes carry a
+  // title/blank row above the real header row, and the export tool renames
+  // columns (e.g. "Taxable Value" vs TaxableAmount, "Scheme" vs SchemeCode).
+  function columnsFor(h) {
+    return {
+      invoiceCode: findColumn_(h, [/invoice.*(code|no\.?|number|id)/i]),
+      invoiceDate: findColumn_(h, [/invoice.*date/i]),
+      salesPerson: findColumn_(h, [/sales.*person/i, /sales.*man/i]),
+      revenueType: findColumn_(h, [/revenue.*type/i]),
+      itemDescription: findColumn_(h, [/item.*desc/i]),
+      subCategory: findColumn_(h, [/sub.*categ/i, /sub.?cat/i]),
+      schemeCode: findColumn_(h, [/scheme.*code/i, /^scheme/i]),
+      taxableAmount: findColumn_(h, [/taxable.*amount/i, /taxable.*value/i, /^taxable/i]),
+      grossProfit: findColumn_(h, [/gross.*profit/i, /gross.*amount/i]),
+      tranType: findColumn_(h, [/tran.*type/i, /^tran/i]),
+      itemCode: findColumn_(h, [/item.*code/i]),
+      orderCode: findColumn_(h, [/^ordercode$/i, /^order\s*code$/i, /order.*(code|no|num)/i]),
+      partType: findColumn_(h, [/part.*type/i]),
+      // optional discount column feeding the GP "Discounted Cases" tile.
+      discountAmount: findColumn_(h, [/^discount\s*(amount|amt|value)?$/i, /disc.*(amount|amt|value)/i, /^discount/i]),
+    };
+  }
+  var REQUIRED_CRM_COLS = ["invoiceDate", "salesPerson", "revenueType", "itemDescription",
+    "subCategory", "schemeCode", "taxableAmount", "grossProfit", "tranType"];
+
+  // scan the first 10 rows; the row matching the most known columns wins.
+  var hdrIdx = 0, hdrScore = -1, col = null;
+  var SCAN = Math.min(values.length, 10);
+  for (var scanR = 0; scanR < SCAN; scanR++) {
+    var cand = columnsFor(values[scanR] || []);
+    var score = 0;
+    ["invoiceCode", "invoiceDate"].forEach(function (k) { if (cand[k] !== -1) score++; });
+    REQUIRED_CRM_COLS.forEach(function (k) { if (cand[k] !== -1) score++; });
+    if (score > hdrScore) { hdrScore = score; hdrIdx = scanR; col = cand; }
+  }
 
   var missing = [];
-  ["invoiceDate", "salesPerson", "revenueType", "itemDescription", "subCategory", "schemeCode", "taxableAmount", "grossProfit", "tranType"].forEach(
-    function (k) { if (col[k] === -1) missing.push(k); },
-  );
+  REQUIRED_CRM_COLS.forEach(function (k) { if (col[k] === -1) missing.push(k); });
   if (missing.length) {
+    // show exactly what the sheet carries so it can be fixed w/o guesswork.
+    var seen = [];
+    for (var pe = 0; pe < SCAN; pe++) {
+      var txt = JSON.stringify(values[pe] || []);
+      seen.push(txt.length > 240 ? txt.slice(0, 240) + "…" : txt);
+    }
     throw new Error(
       'Could not find these required columns in "' + CONFIG.CRM_SHEET_NAME + '": ' + missing.join(", ") +
-        ". Check the header row spelling.",
-    );
+        ". Check the header row spelling. Seen in the sheet's first " + SCAN + " row(s): " + seen.join(" | "));
   }
 
   var out = [];
-  for (var r = 1; r < values.length; r++) {
+  for (var r = hdrIdx + 1; r < values.length; r++) {
     var row = values[r];
     var invoiceDateRaw = row[col.invoiceDate];
     if (!invoiceDateRaw && col.invoiceCode === -1) continue; // nothing to key this row on
@@ -415,6 +466,50 @@ function revenueTypeKey_(rt) {
 /** Row qualifies for every dashboard calculation: crm!TranType must be "SALES". */
 function isSaleRow_(r) {
   return str_(r.tranType).toUpperCase() === "SALES";
+}
+
+/**
+ * Task 79 — revenue baselines computed from the year-long dump. For every
+ * revenue type the page shows two reference numbers next to the achievement:
+ *   lm   — achievement in the LAST calendar month, counted only up to today's
+ *          day-of-month ("achievement as on day last month"),
+ *   avg3 — average MONTHLY achievement over the previous 3 complete months.
+ * The same numbers also stand in as the KPI target whenever the target sheet
+ * leaves that revenue type blank/zero.
+ */
+function computeRevenueBaselines_(allRows) {
+  var sales = (allRows || []).filter(function (r) {
+    return isSaleRow_(r) && num_(r.taxableAmount) >= 0;   // negative rows skipped, like the tiles
+  });
+  function pad2(x) { return (x < 10 ? "0" : "") + x; }
+  var now = new Date();
+  var dom = now.getDate();
+  function mk(d) { return d.getFullYear() + "-" + pad2(d.getMonth() + 1); }
+  var lmKey = mk(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+  var prev3 = {};
+  for (var k = 3; k >= 1; k--) prev3[mk(new Date(now.getFullYear(), now.getMonth() - k, 1))] = true;
+  var KEYS = ["service", "accessory", "repair", "total", "grossProfit"];
+  var lmSum = {}, p3Sum = {};
+  KEYS.forEach(function (k2) { lmSum[k2] = 0; p3Sum[k2] = 0; });
+  sales.forEach(function (r) {
+    var parts = str_(r.dayKey).split("-");                // dd-mm-yyyy
+    if (parts.length !== 3) return;
+    var mKey = parts[2] + "-" + parts[1];
+    var dd = parseInt(parts[0], 10);
+    var type = str_(r.revenueType).toLowerCase();
+    var bucket = /accessor/.test(type) ? "accessory"
+      : (/repair/.test(type) ? "repair" : (/service/.test(type) ? "service" : null));
+    if (!bucket) return;
+    var amt = num_(r.taxableAmount), gp = num_(r.grossProfit);
+    var inLM = (mKey === lmKey && dd <= dom), inP3 = !!prev3[mKey];
+    if (inLM) { lmSum[bucket] += amt; lmSum.total += amt; lmSum.grossProfit += gp; }
+    if (inP3) { p3Sum[bucket] += amt; p3Sum.total += amt; p3Sum.grossProfit += gp; }
+  });
+  var out = {};
+  KEYS.forEach(function (k3) {
+    out[k3] = { lm: Math.round(lmSum[k3]), avg3: Math.round(p3Sum[k3] / 3), lmMonth: lmKey };
+  });
+  return out;
 }
 
 /** Parse a date cell that may be a real Date object or a "DD-MM-YYYY HH:mm" string. */
@@ -523,6 +618,41 @@ function parseMoney_(s) {
   return num_(s);
 }
 
+/* Task 68 — tolerant row reader for the owner-driven sheets (calling / c-sat
+ * / invoice): find the header row within the first 10 rows (sheets may lead
+ * with a title row), resolve columns by regex aliases, then emit trimmed
+ * string rows keyed by the spec's field names. */
+function smartRows_(sheet, spec) {
+  var values = sheet.getDataRange().getValues();
+  if (!values || !values.length) return { rows: [], found: false, missing: Object.keys(spec), headerAt: -1 };
+  var scanTo = Math.min(10, values.length - 1);
+  var bestI = -1, bestScore = 0, bestCol = null;
+  for (var i = 0; i <= scanTo; i++) {
+    var col = {}, score = 0;
+    Object.keys(spec).forEach(function (f) {
+      col[f] = findColumn_(values[i] || [], spec[f]);
+      if (col[f] >= 0) score++;
+    });
+    if (score > bestScore) { bestScore = score; bestI = i; bestCol = col; }
+  }
+  if (bestI < 0 || bestScore === 0) return { rows: [], found: false, missing: Object.keys(spec), headerAt: -1 };
+  var missing = [];
+  Object.keys(spec).forEach(function (f) { if (bestCol[f] < 0) missing.push(f); });
+  var rows = [];
+  for (var r = bestI + 1; r < values.length; r++) {
+    var vals = values[r] || [];
+    var o = {}, empty = true;
+    Object.keys(spec).forEach(function (f) {
+      var c = bestCol[f];
+      var v = (c >= 0 && c < vals.length) ? String(vals[c] === null || vals[c] === undefined ? "" : vals[c]).trim() : "";
+      o[f] = v;
+      if (v !== "") empty = false;
+    });
+    if (!empty) rows.push(o);
+  }
+  return { rows: rows, found: true, missing: missing, headerAt: bestI };
+}
+
 function parseRangeLabel_(label) {
   var t = str_(label);
   var m = t.match(/^(\d+)\s*[-–]\s*(\d+)$/);
@@ -627,8 +757,8 @@ function findCell_(rows, fromCol, toCol, re) {
 }
 
 /**
- * Google review block — ANCHOR: target!A9:C10.
- *   Row  9 (A9:C9)  = headers
+ * Google review block — ANCHOR: target!A10:C11 (Task 67 — rows shifted one down).
+ *   Row 10 (A10:C10) = headers
  *   Row 10 (A10)    = previous month qty
  *   Row 10 (B10)    = current month count
  *   Row 10 (C10)    = difference
@@ -636,9 +766,9 @@ function findCell_(rows, fromCol, toCol, re) {
  */
 function parseGoogleReview_(rows) {
   function at(r, c) { return str_(rows[r] && rows[r][c]); }
-  var previousMonth = parseMoney_(at(9, 0));
-  var currentMonth = parseMoney_(at(9, 1));
-  var diffRaw = at(9, 2);
+  var previousMonth = parseMoney_(at(10, 0));
+  var currentMonth = parseMoney_(at(10, 1));
+  var diffRaw = at(10, 2);
   var difference = diffRaw !== "" ? parseMoney_(diffRaw) : currentMonth - previousMonth;
   return { previousMonth: previousMonth, currentMonth: currentMonth, difference: difference };
 }
@@ -860,11 +990,22 @@ function loadDashboardData_() {
   // (stale/partial paste), fall back to the bound spreadsheet directly.
   var ss = (typeof getSpreadsheet_ === "function") ? getSpreadsheet_()
     : SpreadsheetApp.getActiveSpreadsheet();
-  var crmSheet = ss.getSheetByName(CONFIG.CRM_SHEET_NAME);
-  var targetSheet = ss.getSheetByName(CONFIG.TARGET_SHEET_NAME);
+  var crmSheet = getSheetByNames_(ss, CONFIG.CRM_SHEET_NAMES);   // Task 79 — sales_report alias
+  var targetSheet = getSheetByNames_(ss, ["target", "targets", "store target", "kpi target"]);
 
-  if (!crmSheet) throw new Error('Sheet "' + CONFIG.CRM_SHEET_NAME + '" not found.');
-  if (!targetSheet) throw new Error('Sheet "' + CONFIG.TARGET_SHEET_NAME + '" not found.');
+  if (!crmSheet) {
+    var tabList = [];
+    try { ss.getSheets().forEach(function (x) { tabList.push(x.getName()); }); } catch (el) {}
+    throw new Error('Sales sheet not found — tried tabs: "' +
+      CONFIG.CRM_SHEET_NAMES.join('", "') + '". This workbook actually contains: ["' +
+      tabList.join('", "') + '"]. Rename the sales/CRM tab to one of the aliases ' +
+      '(any spelling variant like "Sales Report" works), then reload.');
+  }
+  // Task 82 — the dump workbook carries only the report tabs, so the target
+  // tab is OPTIONAL: without it every KPI target falls back to the trailing
+  // 3-month monthly average (Task 79) and the C-SAT/review panels show an
+  // empty note instead of killing the whole dashboard.
+  var targetMissing = !targetSheet;
 
   // getDisplayValues() returns what the cell SHOWS, so an InvoiceDate that
   // Google Sheets auto-converted to a real date under a month-first locale is
@@ -872,13 +1013,28 @@ function loadDashboardData_() {
   // so only the date column uses display text; everything else keeps its
   // native type (numbers stay numbers).
   var crmValues = mergeDisplayDates_(crmSheet);
-  var targetValues = targetSheet.getDataRange().getValues();
+  var targetValues = targetMissing ? [] : targetSheet.getDataRange().getValues();
 
   var allRows = parseCrmRows(crmValues);
   var target = parseTargetSheet(targetValues);
+  // Task 79 — compute the day-matched last-month + 3-month-average baselines
+  // from the year-long dump; a blank/zero KPI target falls back to the 3-mo avg.
+  var revenueBaselines = computeRevenueBaselines_(allRows);
+  ["service", "accessory", "repair", "total", "grossProfit"].forEach(function (bk) {
+    if (!(target.store[bk] > 0) && revenueBaselines[bk] && revenueBaselines[bk].avg3 > 0) {
+      target.store[bk] = revenueBaselines[bk].avg3;
+    }
+  });
   var result = { ss: ss, data: computeDashboard(allRows, target) };
+  result.data.store.baselines = revenueBaselines;   // Task 79 — shown on the A1 tiles
+  // Task 79 — per-person daily productivity table (Google Form responses).
+  result.data.formProductivity = computeFormProductivity_(ss);
   // D — the deck numbers ride on the same parse, current month only.
   result.data.deckAnalysis = computeDeckAnalysis_(ss, allRows);
+
+  // B3 (Task 65): AR attachment by warranty coverage — accessories revenue
+  // crm rows whose crm!OrderCode matches a service!CaseId, split WTY vs OOW.
+  result.data.arWarranty = computeArWarrantySplit_(ss, allRows);
 
   // Store name for the page title — Task 43: taken verbatim from crm!F2;
   // the "iPlanetcare" prefix is no longer glued on.
@@ -896,6 +1052,83 @@ function loadDashboardData_() {
   } catch (e) { /* walk-in stats are best-effort */ }
 
   return result;
+}
+
+/**
+ * B3 add-on (Task 65): AR attachment for accessories sold WITH repairs,
+ * split by warranty coverage taken from service!ProductWarrantyDesc —
+ * "Warranty Repair" ⇒ WTY (in warranty), "Billable" ⇒ OOW (out of warranty).
+ * A crm row counts when crm!RevenueType is "Accessories Revenue" AND
+ * crm!OrderCode matches a service!CaseId with a recognised coverage.
+ * cases = unique matched case ids; lines = accessory rows; value = Σ
+ * crm!TaxableAmount; gp = Σ crm!GrossProfit (SALES rows only).
+ */
+function computeArWarrantySplit_(ss, crmRows) {
+  var out = { available: false,
+    wty: { cases: 0, lines: 0, value: 0, gp: 0 },
+    oow: { cases: 0, lines: 0, value: 0, gp: 0 },
+    // Task 71 — which revenue type the accessory was attached TO: the
+    // service/repair revenue rows sharing crm!OrderCode decide it.
+    byType: {
+      service: { wty: { cases: 0, lines: 0, value: 0, gp: 0 }, oow: { cases: 0, lines: 0, value: 0, gp: 0 } },
+      repair: { wty: { cases: 0, lines: 0, value: 0, gp: 0 }, oow: { cases: 0, lines: 0, value: 0, gp: 0 } },
+      other: { wty: { cases: 0, lines: 0, value: 0, gp: 0 }, oow: { cases: 0, lines: 0, value: 0, gp: 0 } }
+    } };
+  try {
+    var svs = getSheetByNames_(ss, CONFIG.SERVICE_SHEET_NAMES);
+    if (!svs) return out;
+    var rd = readSheetRows_(svs, SERVICE_SPEC, ["caseDate"]);
+    var cov = {};                                    // service!CaseId → WTY | OOW
+    rd.rows.forEach(function (r) {
+      var cid = str_(r.caseId);
+      if (!cid) return;
+      var pw = str_(r.productWarranty || r.warranty);
+      if (/warranty\s*repair/i.test(pw)) cov[cid] = "WTY";
+      else if (/billable/i.test(pw)) cov[cid] = "OOW";
+    });
+    var wcodes = {}, ocodes = {};
+    // Task 71 — first pass: for every order code, memorise whether a service
+    // and/or a repair revenue line shared it (both possible).
+    var rtByOc = {};
+    (crmRows || []).forEach(function (r) {
+      if (!isSaleRow_(r)) return;
+      var key = revenueTypeKey_(r.revenueType);
+      if (key !== "service" && key !== "repair") return;
+      var oc2 = str_(r.orderCode);
+      if (!oc2) return;
+      (rtByOc[oc2] = rtByOc[oc2] || {})[key] = true;
+    });
+    var caseSeen = {};
+    (crmRows || []).forEach(function (r) {
+      if (!isSaleRow_(r)) return;
+      if (revenueTypeKey_(r.revenueType) !== "accessory") return;
+      var oc = str_(r.orderCode);
+      if (!oc || !cov[oc]) return;
+      var b  = cov[oc] === "WTY" ? out.wty : out.oow;
+      var cs = cov[oc] === "WTY" ? wcodes : ocodes;
+      if (!cs[oc]) { cs[oc] = true; b.cases++; }
+      b.lines++;
+      b.value += r.taxableAmount;
+      b.gp += r.grossProfit;
+      // Task 71 — revenue-type bucket of the attachment parent.
+      var tset = rtByOc[oc] || {};
+      var tb = tset.service ? "service" : (tset.repair ? "repair" : "other");
+      var bb = cov[oc] === "WTY" ? out.byType[tb].wty : out.byType[tb].oow;
+      var bkey = tb + "." + (cov[oc] === "WTY" ? "wty" : "oow") + "." + oc;
+      if (!caseSeen[bkey]) { caseSeen[bkey] = true; bb.cases++; }
+      bb.lines++; bb.value += r.taxableAmount; bb.gp += r.grossProfit;
+    });
+    out.available = true;
+    out.wty.value = Math.round(out.wty.value); out.wty.gp = Math.round(out.wty.gp);
+    out.oow.value = Math.round(out.oow.value); out.oow.gp = Math.round(out.oow.gp);
+    ["service", "repair", "other"].forEach(function (tb2) {
+      ["wty", "oow"].forEach(function (cb) {
+        var bb2 = out.byType[tb2][cb];
+        bb2.value = Math.round(bb2.value); bb2.gp = Math.round(bb2.gp);
+      });
+    });
+  } catch (e) { /* module is best-effort */ }
+  return out;
 }
 
 function computeDashboard(allRows, target) {
@@ -1401,35 +1634,52 @@ function shortPart_(desc) {
 function computeGpExtras_(rows) {
   var sale = (rows || []).filter(isSaleRow_);
 
-  // ---- margin leaders ----
-  var byInv = {};
-  sale.forEach(function (r) {
+  // ---- margin leaders (Task 65 exclusions) ----
+  // Top 5 — High Margin ignores lines whose crm!SubCategory is "amc charge";
+  // Top 5 — Low Margin ignores lines whose crm!ItemCode starts with "acsh".
+  // Each table re-aggregates its invoices from the surviving lines only.
+  function isAmcChargeLine_(r) { return /amc\s*charge/i.test(str_(r.subCategory)); }
+  function isAcshLine_(r) { return /^\s*acsh/i.test(str_(r.itemCode)); }
+  function trackMarginInvoice_(map, r) {
     var k = r.invoiceCode;
     if (!k) return;
-    if (!byInv[k]) byInv[k] = { invoice: k, person: r.salesPerson || "—", types: {}, parts: {}, taxable: 0, gp: 0 };
-    var b = byInv[k];
+    if (!map[k]) map[k] = { invoice: k, person: r.salesPerson || "—", types: {}, parts: {}, taxable: 0, gp: 0 };
+    var b = map[k];
     b.taxable += r.taxableAmount;
     b.gp += r.grossProfit;
-    // short part label(s) of this invoice's lines (no invoice number
-    // is shown on the GP tiles anymore).
-    b.parts[shortPart_(r.itemDescription)] = true;
+    // Task 73 — show the actual material description (crm!ItemDescription),
+    // not the shortened part code.
+    b.parts[str_(r.itemDescription) || "—"] = true;
     var tk = revenueTypeKey_(r.revenueType);
     if (tk) b.types[tk] = true;
+  }
+  function marginsOf_(map) {
+    var out = [];
+    Object.keys(map).forEach(function (k) {
+      var b = map[k];
+      if (!(b.taxable > 0)) return;
+      b.margin = (100 * b.gp) / b.taxable;
+      b.typeLabel = ["repair", "accessory", "service"].filter(function (t) { return b.types[t]; })
+        .map(function (t) { return t === "repair" ? "Repair" : t === "accessory" ? "Accessory" : "Service"; })
+        .join(" + ") || "—";
+      var pset = Object.keys(b.parts);
+      b.partLabel = pset.slice(0, 3).join(" + ") + (pset.length > 3 ? " …" : "");
+      out.push(b);
+    });
+    return out;
+  }
+  var byHigh = {}, byLow = {};
+  sale.forEach(function (r) {
+    // Task 73 — A4 tracks REPAIR and ACCESSORY revenue only; service revenue
+    // is excluded, on top of the standing exclusion lists (amc charge / acsh*).
+    var tk = revenueTypeKey_(r.revenueType);
+    if (tk !== "repair" && tk !== "accessory") return;
+    if (!isAmcChargeLine_(r)) trackMarginInvoice_(byHigh, r);
+    if (!isAcshLine_(r)) trackMarginInvoice_(byLow, r);
   });
-  var margins = [];
-  Object.keys(byInv).forEach(function (k) {
-    var b = byInv[k];
-    if (!(b.taxable > 0)) return;
-    b.margin = (100 * b.gp) / b.taxable;
-    b.typeLabel = ["repair", "accessory", "service"].filter(function (t) { return b.types[t]; })
-      .map(function (t) { return t === "repair" ? "Repair" : t === "accessory" ? "Accessory" : "Service"; })
-      .join(" + ") || "—";
-    var pset = Object.keys(b.parts);
-    b.partLabel = pset.slice(0, 3).join(" + ") + (pset.length > 3 ? " …" : "");
-    margins.push(b);
-  });
+  var margins = marginsOf_(byHigh), marginsLow = marginsOf_(byLow);
   var high = margins.slice().sort(function (a, b) { return b.margin - a.margin; }).slice(0, 5);
-  var low = margins.slice().sort(function (a, b) { return a.margin - b.margin; }).slice(0, 5);
+  var low = marginsLow.slice().sort(function (a, b) { return a.margin - b.margin; }).slice(0, 5);
 
   // ---- discounted cases ----
   var disc = {
@@ -1764,8 +2014,14 @@ var SERVICE_SPEC = {
   // Two extra repair-status columns: GSX's own status and the CRM repair status.
   gsxStatus: [/^gsxrepairstatusdescription$/i, /^gsxrepairstatus/i, /gsx.*repair.*status/i, /gsx.*status/i, /^gsx/i],
   crmRepairStatus: [/^crm_jobstatusdesc$/i, /crm.*job.*status/i, /crm.*repair.*status/i, /^crm_?job/i, /job.*status.*desc/i, /part.*used.*desc/i, /part.*used/i],
-  // Warranty / coverage classification per case — service!CoverageCodeDescription
-  // (GSXWarrantyStatusDesc kept only as a legacy fallback).
+  // Warranty / coverage classification per case — Task 79: service!BillingOption
+  // is the AUTHORITATIVE warranty-coverage value (CoverageCodeDescription then
+  // GSXWarrantyStatusDesc kept as fallbacks).
+  // Task 79 — the dump workbook carries these two explicitly:
+  //   BillingOption = the authoritative warranty coverage per case,
+  //   TechCode      = the assigned technician (shown on the E1 popup).
+  billingOption: [/^billingoption$/i, /billing.*(option|status)/i, /^billing$/i],
+  techCode: [/^[a-z]*tech_?code$/i, /^techcode$/i, /tech.*code/i, /technician/i, /assigned.*(tech|eng)/i, /engineer.*code/i],
   warranty: [/^coveragecodedescription$/i, /coverage.*code.*desc/i, /coverage/i,
     /^gsxwarrantystatusdesc$/i, /gsx.*warranty/i, /warranty.*status/i, /warranty/i],
   // Repair-type classification — service!RepairDocType (also drives the
@@ -1793,10 +2049,16 @@ var ADVANCE_SPEC = {
 };
 
 var COMM_SPEC = {
-  caseId: [/^caseid$/i, /case.*id/i, /^case$/i],
+  caseId: [/^caseid$/i, /case.*id/i, /^case$/i, /^case\s*no/i, /case\s*number/i, /customer.*case/i],
   createdDate: [/^createddate$/i, /creat.*date/i, /^date$/i, /comm.*date/i],
   remark: [/remark/i, /message/i, /note/i, /comment/i],
 };
+
+// Task 77 — normalize case ids before matching service↔comm (spaces, dashes,
+// case, stray punctuation differ between the two sheets but mean the same id).
+function normCaseKey_(v) {
+  return str_(v).toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
 
 function computeJobManagement_(ss) {
   var serviceSheet = getSheetByNames_(ss, CONFIG.SERVICE_SHEET_NAMES);
@@ -1834,7 +2096,8 @@ function computeJobManagement_(ss) {
   if (commSheet) {
     var cm = readSheetRows_(commSheet, COMM_SPEC, ["createdDate"]);
     cm.rows.forEach(function (c) {
-      var cid = str_(c.caseId);
+      var cid = normCaseKey_(c.caseId);   // Task 77 — same key space as service
+
       if (!cid) return;
       var d = parseAnyDate_(c.createdDate);
       if (!d.valid) return;
@@ -1890,7 +2153,7 @@ function computeJobManagement_(ss) {
 
     var mobile = str_(r.mobile);
     var advance = advanceByMobile[mobileKey_(mobile)] || 0;
-    var comm = commByCase[caseId] || null;
+    var comm = commByCase[normCaseKey_(caseId)] || null;   // Task 77 — service case id → comm CreatedDate
     if (!advanceByMobileCount && advanceDirectCol !== -1) {
       advance = num_(r.advanceDirect);        // service!AvailableBalance fallback
     }
@@ -1939,6 +2202,7 @@ function computeJobManagement_(ss) {
       commDate: comm ? comm.dayKey : "—",
       commTs: comm ? comm.ts : 0,
       gsxStatus: gsxStatus || "—",
+      techCode: str_(r.techCode) || "—",     // Task 79 — assigned technician
       crmRepairStatus: crmRepairStatus || "—",
       warranty: warrantyTxt || "—",
       repairType: repairTypeTxt || "—",
@@ -1993,6 +2257,7 @@ function computeJobManagement_(ss) {
       status: str_(r.status),
       repairType: str_(r.repairDocType) || "",
       warranty: str_(r.warranty) || "",
+      billing: str_(r.billingOption) || "",   // Task 79 — coverage key
       product: str_(r.product) || "",
     };
   });
@@ -2030,7 +2295,7 @@ function computeJobManagement_(ss) {
  *                    (iPhone — incl. model variants & the bare "VIN" export,
  *                    iPad, AirPods, Watch, Mac, Accessory / Non-serialized,
  *                    everything else → Other)
- *   - coverage:      service!CoverageCodeDescription
+ *   - coverage:      service!BillingOption  (Task 79 — fallback: CoverageCodeDescription)
  *   - date:          service!CaseDate (current month vs the previous 3)
  *   - turnaround:    service!CaseDate → service!Ready_For_Pickup_Date_CRM
  */
@@ -2128,8 +2393,10 @@ function computeRepairAnalytics_(serviceRows) {
     return (r.repairType || "").trim() || "Unspecified";
   });
   var productComp = dimensionAnalysis(function (r) { return productFamily_(r.product); });
+  // Task 79 — warranty coverage valuation now keys off service!BillingOption
+  // (the old CoverageCodeDescription value is only a fallback).
   var coverComp = dimensionAnalysis(function (r) {
-    return (r.warranty || "").trim() || "Unspecified";
+    return ((r.billing || r.warranty) || "").trim() || "Unspecified";
   });
 
   // Task 47 (CRE page): completed repairs this month = unique non-SNR cases
@@ -2212,7 +2479,10 @@ function computeRepairAnalytics_(serviceRows) {
  * first-column styling + a bold total row.
  */
 function computeTargetBlock_(ss) {
-  var sheet = ss.getSheetByName(CONFIG.TARGET_SHEET_NAME);
+  // Task 82 — alias-based, but tolerates mock/partial spreadsheet objects.
+  var sheet = null;
+  try { sheet = getSheetByNames_(ss, ["target", "targets", "store target", "kpi target"]); }
+  catch (e0) { try { sheet = ss.getSheetByName(CONFIG.TARGET_SHEET_NAME); } catch (e1) { sheet = null; } }
   if (!sheet) return { available: false, periodName: "", rows: [], totals: {} };
   var rows = sheet.getDataRange().getDisplayValues();
   function at(r, c) { return (rows[r] && rows[r][c] !== undefined && rows[r][c] !== null) ? String(rows[r][c]).trim() : ""; }
@@ -2237,10 +2507,23 @@ function computeTargetBlock_(ss) {
   var csatCol = findCol(/c[\-\.\s]*sat/i);
   var cfiCol = findCol(/^cfi$/i);
 
+  // Task 67 — person-name column is no longer assumed at the first column:
+  // scan the grid's first three columns and use the one whose data rows carry
+  // the most non-numeric text (live sheets have drifted right before).
+  var nameOff = 0, bestNameScore = 0;
+  for (var nci = 0; nci < 3; nci++) {
+    var nScore = 0;
+    for (var nr = FIRST_ROW + 1; nr <= LAST_ROW && nr < (rows.length || 0); nr++) {
+      var nv = at(nr, L + nci);
+      if (nv && !/^[\d\s.,%+\u2013\-\/]*$/.test(nv) && !/^total$/i.test(nv)) nScore++;
+    }
+    if (nScore > bestNameScore) { bestNameScore = nScore; nameOff = nci; }
+  }
+
   // Satisfaction categories = every column that is not name / TOTAL / C-SAT / CFI / junk.
   var catCols = [];
   for (var i = 0; i < header.length; i++) {
-    if (i === 0 || i === totalCol || i === csatCol || i === cfiCol) continue;
+    if (i === nameOff || i === totalCol || i === csatCol || i === cfiCol) continue;
     if (isJunkHeader(header[i])) continue;
     catCols.push(i);
   }
@@ -2258,7 +2541,7 @@ function computeTargetBlock_(ss) {
   var people = [];
   var totalRow = null;
   for (var r = FIRST_ROW + 1; r <= LAST_ROW && r < (rows.length || 0); r++) {
-    var name = at(r, L);
+    var name = at(r, L + nameOff);
     if (!name) continue;
     var entry = { name: name, cats: [], total: 0, csat: at(r, L + csatCol), cfi: at(r, L + cfiCol) };
     catCols.forEach(function (ci) {
@@ -2274,6 +2557,19 @@ function computeTargetBlock_(ss) {
   }
 
   if (!people.length && !totalRow && !periodName) {
+    // Task 67 — the grid may exist in a layout the parser does not recognise
+    // (extra columns, totals-only, shifted rows). If ANY cells sit in the
+    // E47:O51 window, show them verbatim instead of dropping the whole block.
+    var gridRows = [];
+    for (var gr2 = FIRST_ROW; gr2 <= LAST_ROW && gr2 < (rows.length || 0); gr2++) {
+      var grLine = [];
+      for (var gc = 0; gc < 11; gc++) grLine.push(at(gr2, L + gc));
+      if (grLine.join("") !== "") gridRows.push(grLine);
+    }
+    if (gridRows.length) {
+      return { available: true, periodName: periodName || "current period",
+        rows: [], totals: {}, labels: [], rawGrid: gridRows };
+    }
     return { available: false, periodName: periodName, rows: [], totals: {} };
   }
   // Trust the sheet TOTAL when present; otherwise derive it from the people rows.
@@ -2374,52 +2670,88 @@ function computeOperationExtras_(ss) {
       });
     }
   } catch (e) { /* module is best-effort */ }
-  // ---- win-back (Task 41) ----
+  // ---- win-back (Task 65 — owner's rule) ----
   try {
     var qs = getSheetByNames_(ss, CONFIG.QUOTE_SHEET_NAMES);
     var svs = getSheetByNames_(ss, CONFIG.SERVICE_SHEET_NAMES);
     if (qs && svs) {
       out.winback.sheetName = qs.getName();
-      // Eligible cases: carry-in / mail-in parts repair (Service Non-Repair
-      // excluded) AND out of warranty via service!ProductWarrantyDesc
-      // (CoverageCodeDescription as fallback). CaseId → serial number.
       var rdS = readSheetRows_(svs, SERVICE_SPEC, ["caseDate"]);
-      var eligibleSerial = {};             // caseId → serialNo1 (eligible only)
+      var svcCases = {};                       // every known service!CaseId
       rdS.rows.forEach(function (r) {
         var cid = str_(r.caseId);
-        if (!cid) return;
-        if (isSNRType_(str_(r.repairDocType))) return;
-        var t = str_(r.repairDocType);
-        if (!/carry|mail/i.test(t)) return;
-        var pw = (str_(r.productWarranty) || str_(r.warranty)).toLowerCase();
-        if (!/\bout\b|\bow\b|\bno\b|\bnon\b|\bnot\b|expired|void/.test(pw)) return;
-        eligibleSerial[cid] = str_(r.serialNo1) || cid;
+        if (cid) svcCases[cid] = true;
       });
-      // Quote side: Repair-Revenue rows only; for every eligible serial,
-      // need one REJECTED row and one APPROVED row (same serial won back).
       var rq = readSheetRows_(qs, {
         caseId: [/^caseid$/i, /case.*id/i],
         revenueType: [/^revenuetype$/i, /revenue.*type/i],
+        // primary: quote!QuoteStatus (Task 67); quote!lastAction kept as fallback
+        quoteStatus: [/^quotestatus$/i, /quote.*status/i],
         lastAction: [/^lastaction$/i, /last.*action/i],
       }, []);
-      var rejected = {}, approved = {};
-      rq.rows.forEach(function (r) {
-        if (!/^\s*repair\s*revenue\s*$/i.test(str_(r.revenueType))) return;
-        out.winback.matched++;
-        var cid = str_(r.caseId);
-        var sn = eligibleSerial[cid];
-        if (!sn) return;
-        var la = str_(r.lastAction).toLowerCase();
-        if (/reject/.test(la)) rejected[sn] = true;
-        else if (/approved/.test(la)) approved[sn] = true;
-      });
-      Object.keys(rejected).forEach(function (sn) {
-        if (approved[sn]) out.winback.count++;
-      });
+      // Value/GP for win-back cases come from the crm sheet — best-effort.
+      var wbCrm = [];
+      try {
+        var crmSh = getSheetByNames_(ss, CONFIG.CRM_SHEET_NAMES);   // Task 79 — sales_report alias
+        if (crmSh) wbCrm = parseCrmRows(crmSh.getDataRange().getDisplayValues());
+      } catch (ec) { wbCrm = []; }
+      var wb = winbackStats_(svcCases, rq.rows, wbCrm);
+      out.winback.matched = wb.matched;
+      out.winback.count = wb.count;
+      out.winback.rejectedCount = wb.rejected;
+      out.winback.taxable = wb.taxable;
+      out.winback.grossProfit = wb.grossProfit;
     } else if (qs) {
       out.winback.sheetName = qs.getName();
     }
   } catch (e) { /* module is best-effort */ }
+  return out;
+}
+
+/**
+ * Win-back (Task 65 — owner's rule):
+ *   a case counts as re-quoted & won back when a quote!CaseID that matches a
+ *   service!CaseId has quote!RevenueType "Repair Revenue" AND quote!lastAction
+ *   "approved". `matched` counts the Repair-Revenue quote rows scanned.
+ *   `taxable` / `grossProfit` are the Σ crm!TaxableAmount / Σ crm!GrossProfit
+ *   of the win-back cases (crm!OrderCode = case id; SALES rows only).
+ */
+function winbackStats_(svcCases, quoteRows, crmRows) {
+  // Task 67 — re-valued rule: among Repair-Revenue quote rows whose
+  // quote!CaseID matches a service!CaseId, a case is a WIN-BACK only when it
+  // was initially REJECTED and later APPROVED (quote!QuoteStatus; lastAction
+  // is the fallback column). The count is the number of UNIQUE case ids.
+  // Taxable value & GP come from the case's crm rows (crm!OrderCode).
+  var out = { matched: 0, count: 0, rejected: 0, taxable: 0, grossProfit: 0 };
+  var approved = {}, rejectedSet = {};
+  (quoteRows || []).forEach(function (r) {
+    if (!/^\s*repair\s*revenue\s*$/i.test(str_(r.revenueType))) return;
+    out.matched++;
+    var cid = str_(r.caseId);
+    if (!cid || !svcCases[cid]) return;
+    var st = str_(r.quoteStatus || r.lastAction).toLowerCase();
+    if (/approved/.test(st)) approved[cid] = true;
+    else if (/reject/.test(st)) { rejectedSet[cid] = true; out.rejected++; }
+  });
+  // both states must exist for the same case: rejected first, approved later
+  var won = {};
+  Object.keys(approved).forEach(function (cid) {
+    if (rejectedSet[cid]) won[cid] = true;
+  });
+  approved = won;
+  var cases = Object.keys(approved);
+  out.count = cases.length;
+  var set = {};
+  cases.forEach(function (c) { set[c] = true; });
+  (crmRows || []).forEach(function (r) {
+    if (!isSaleRow_(r)) return;
+    var oc = str_(r.orderCode);
+    if (!oc || !set[oc]) return;
+    out.taxable += r.taxableAmount;
+    out.grossProfit += r.grossProfit;
+  });
+  out.taxable = Math.round(out.taxable);
+  out.grossProfit = Math.round(out.grossProfit);
   return out;
 }
 
@@ -2449,6 +2781,8 @@ function loadPerformanceData_() {
     return key || "no rows";
   }
   // the freshness line also shows the TIME of the last record.
+  // Task 68 — the freshness stamp also carries the raw timestamp so the
+  // renderer can compare it with "now" and print latest / relative age.
   function latestStamp_(names, spec, field) {
     var sheet = getSheetByNames_(ss, names);
     if (!sheet) return null;
@@ -2462,14 +2796,34 @@ function loadPerformanceData_() {
         lab = d.dayKey + (d.minutes ? " " + (hh < 10 ? "0" + hh : hh) + ":" + (mi < 10 ? "0" + mi : mi) : "");
       }
     });
-    return ts ? lab : null;
+    return ts ? { ts: ts, label: lab } : null;
+  }
+  // Task 69 — ONE service-sheet read feeds both new dashboards (page load
+  // optimisation: no duplicate smartRows_ on the same sheet).
+  var svcSupport = computeServiceSupportMap_(ss);
+
+  function freshObj_(o, fallbackLabel) { return o ? { ts: o.ts, label: o.label } : { ts: 0, label: fallbackLabel }; }
+  // Task 72 — generic last-record stamp for the support sheets: scan the first
+  // date-ish column; chip then reads "no date column" when none exists.
+  function stampAny_(names) {
+    var sh = getSheetByNames_(ss, names);
+    if (!sh) return { ts: 0, label: "no sheet yet" };
+    var o = latestStamp_(names, { anyDate: [/^.*date.*$/i, /date.*$/i, /created/i, /last.*update/i, /time.*stamp/i] }, "anyDate");
+    if (o) return { ts: o.ts, label: o.label };
+    return { ts: 0, label: "no date column" };
   }
   var freshness = {
-    crm: latestStamp_([CONFIG.CRM_SHEET_NAME], { invoiceDate: [/invoice.*date/i, /^inv.*date/i] }, "invoiceDate") || "no rows",
-    walkin: latestStamp_(CONFIG.WALKIN_SHEET_NAMES, { tokenDate: WALKIN_SPEC.tokenDate }, "tokenDate") || "no rows",
-    service: latestStamp_(CONFIG.SERVICE_SHEET_NAMES, { caseDate: SERVICE_SPEC.caseDate }, "caseDate") || "no rows",
-    comm: latestStamp_(CONFIG.COMM_SHEET_NAMES, { createdDate: COMM_SPEC.createdDate }, "createdDate") || "no comm sheet",
-    advance: "no date column",
+    crm: freshObj_(latestStamp_([CONFIG.CRM_SHEET_NAME], { invoiceDate: [/invoice.*date/i, /^inv.*date/i] }, "invoiceDate"), "no rows"),
+    walkin: freshObj_(latestStamp_(CONFIG.WALKIN_SHEET_NAMES, { tokenDate: WALKIN_SPEC.tokenDate }, "tokenDate"), "no rows"),
+    service: freshObj_(latestStamp_(CONFIG.SERVICE_SHEET_NAMES, { caseDate: SERVICE_SPEC.caseDate }, "caseDate"), "no rows"),
+    comm: freshObj_(latestStamp_(CONFIG.COMM_SHEET_NAMES, { createdDate: COMM_SPEC.createdDate }, "createdDate"), "no comm sheet"),
+    advance: { ts: 0, label: "no date column" },
+    // Task 72 — every sheet the dashboard reads is stamped here.
+    decline: stampAny_(CONFIG.DECLINE_SHEET_NAMES),
+    quote: stampAny_(CONFIG.QUOTE_SHEET_NAMES),
+    invoice: stampAny_(CONFIG.INVOICE_SHEET_NAMES),
+    csat: stampAny_(CONFIG.CSAT_SHEET_NAMES),
+    calling: stampAny_(CONFIG.CALLING_SHEET_NAMES),
   };
 
   return {
@@ -2480,6 +2834,9 @@ function loadPerformanceData_() {
     freshness: freshness,
     opsExtras: opsExtras,
     refreshStamp: refreshStamp,
+    happyCalling: computeHappyCalling_(ss, svcSupport),   // Task 69/70
+    gsxInvoice: computeGsxInvoice_(ss, svcSupport),       // Task 69
+    productivity: computeProductivity_(ss),                // Task 70
     generatedAt: new Date(),
   };
 }
@@ -2923,10 +3280,15 @@ function renderStoreCards_(data) {
  */
 function renderStoreTable_(data) {
   var s = data.store;
+  // Task 79 — per-type baselines ("as on day last month" + trailing 3-mo avg).
+  var bl = (s && s.baselines) || null;
+  var BL_KEY = { "Service Revenue": "service", "Accessory Revenue": "accessory",
+    "Repair Revenue": "repair", "Total Revenue": "total", "Gross Profit": "grossProfit" };
   // Signed money like the old page: a covered target shows the excess with a
   // minus sign (−₹1,40,068) instead of a clamped zero.
   function sMoney(n) { return n < 0 ? "\u2212" + money_(-n) : money_(n); }
   function tile(title, b) {
+    var base = bl ? bl[BL_KEY[title]] : null;
     var pct = b.target > 0 ? (100 * b.achieved / b.target) : 0;
     var complete = b.target > 0 && pct >= 100;
     var signedBalance = b.target - b.achieved;
@@ -2945,6 +3307,8 @@ function renderStoreTable_(data) {
       "</div>" +
       '<div class="dreq"><span>' + esc_(dayLabel) + "</span><strong>" + dayValue + "</strong></div>" +
       '<div class="bar"><i class="bar-fill" style="width:' + width.toFixed(1) + '%"></i></div>' +
+      (base ? ('<div class="trend"><span>as-on-day last month <b>' + money_(base.lm) + "</b></span>" +
+        "<span>3-mo avg <b>" + money_(base.avg3) + '</b>/mo</span></div>') : "") +
       "</div>";
   }
   return (
@@ -2965,7 +3329,7 @@ function renderWorkingDaysCard_(data) {
   return (
     '<section class="section" id="sec-workdays"><h2>A2. 📅 Working Days (Current Month)</h2><div class="body">' +
     '<div class="sec-desc">Definition: days the store is open this month — total, already consumed, and how many selling days are left. Holiday dates come from CONFIG.</div>' +
-    '<div class="cards" style="margin-bottom:0">' +
+    '<div class="cards wd-line" style="margin-bottom:0">' +
     '<div class="card"><div class="label">Total Working Days</div><div class="value">' + s.totalWorkingDays + "</div></div>" +
     '<div class="card"><div class="label">Consumed</div><div class="value">' + s.consumedWorkingDays + "</div></div>" +
     '<div class="card"><div class="label">Balance</div><div class="value" style="color:' +
@@ -3031,7 +3395,11 @@ function renderWeeklyAnalysis_(data) {
   head2 += "</tr>";
 
   var body = "";
+  // Task 73 — an "In progress" week carries the PREVIOUS completed week's
+  // balance on top of its own (carry-forward demand).
+  var prevBal = {};
   wa.weeks.forEach(function (w) {
+    var inProg = /in progress/i.test(w.status);
     var tr = "<tr>" +
       '<td class="sticky-col"><b>Week ' + w.idx + "</b> " +
       '<span class="muted">(' + w.start + "–" + w.end + " " + esc_(wa.monthName).split(" ")[0] + ")</span></td>" +
@@ -3042,6 +3410,7 @@ function renderWeeklyAnalysis_(data) {
       var wc = " " + t.wc;
       var ach = w.achieved[tk], tgt = w.tgt[tk];
       var bal = Math.max(0, tgt - ach);
+      if (inProg) bal += (prevBal[tk] || 0);
       var pill = tgt > 0
         ? '<span class="apill ' + (ach >= tgt ? "ok" : "no") + '">' + money_(ach) + "</span>"
         : '<span class="muted">' + money_(ach) + "</span>";
@@ -3052,6 +3421,9 @@ function renderWeeklyAnalysis_(data) {
           : '<span class="apill ok">done</span>') + "</td>";
     });
     body += tr + "</tr>";
+    if (!inProg && !/^upcoming/i.test(w.status)) {
+      TYPES.forEach(function (t2) { prevBal[t2.key] = Math.max(0, w.tgt[t2.key] - w.achieved[t2.key]); });
+    }
   });
 
   var foot = '<tr class="total-row"><td class="sticky-col">Month</td><td style="text-align:center">' +
@@ -3070,7 +3442,7 @@ function renderWeeklyAnalysis_(data) {
   return (
     '<section class="section" id="sec-weekly"><h2>A6. 🗓 Weekly Revenue Analysis — ' +
       esc_(wa.monthName) + '</h2><div class="body">' +
-    '<div class="sec-desc">Current month split into ' + wa.weeks.length + ' weeks — achieved vs weekly target, per revenue type</div>' +
+    '<div class="sec-desc">Current month split into ' + wa.weeks.length + " weeks — achieved vs weekly target, per revenue type; the in-progress week also carries the previous completed week's balance (Task 73)</div>" +
     '<div class="scroll-x" style="margin-top:12px"><table class="matrix hdr-deep">' +
       "<thead>" + head1 + head2 + "</thead><tbody>" + body + foot + "</tbody></table></div>" +
     "</div></section>"
@@ -3186,7 +3558,7 @@ function renderDateWiseTable_(data) {
     : "";
 
   return (
-    '<section class="section" id="sec-datewise"><h2>F1. 📆 Date-wise Sales Revenue Analysis (by salesperson)</h2><div class="body">' +
+    '<section class="section" id="sec-datewise"><h2>F1. 📆 Date-wise Sales Revenue Analysis (by salesperson) ' + exportSectionBtn_("datewise") + '</h2><div class="body">' +
     '<div class="cards" style="margin-bottom:14px">' +
     '<div class="card"><div class="label">Store Daily Target</div><div class="value">' + money_(dailyTarget) +
     '</div><div class="sub">total target ÷ ' + data.store.totalWorkingDays + " working days</div></div>" +
@@ -3428,10 +3800,56 @@ function renderArAttachment_(data) {
     '<div class="card"><div class="label">Accessory-only Invoices</div><div class="value muted">' +
     a.accessoryOnlyInvoices + '</div><div class="sub">excluded &middot; ' + money_(a.accessoryOnlyValue) + "</div></div>" +
     "</div>" +
+    renderArWarrantySplit_(data.arWarranty) +
     '<p class="muted" style="font-size:12.5px;margin:12px 0 0">' +
     "An invoice counts as an AR attachment only when accessory revenue shares the invoice code with service or repair " +
     "revenue. Invoices carrying accessory lines alone are treated as non-attachment and excluded from the value and GP above.</p>" +
     "</div>"
+  );
+}
+
+/** B3 add-on (Task 65): the WTY / OOW breakdown table. */
+function renderArWarrantySplit_(aw) {
+  aw = aw || { available: false, wty: { cases: 0, lines: 0, value: 0, gp: 0 }, oow: { cases: 0, lines: 0, value: 0, gp: 0 } };
+  // Task 73 — ONE list: each AR attachment grouped by the revenue type it was
+  // attached to (Service / Repair / Other, service precedence, via crm!OrderCode
+  // parents) x its warranty coverage. AR Cases = number of attachments against
+  // each unique invoice code; Taxable Value & Gross Profit are the accessory
+  // totals. Accessory line-count column removed by owner request.
+  var bt = aw.byType || null;
+  function z() { return { cases: 0, value: 0, gp: 0 }; }
+  function trow(label, covLabel, buck, cls) {
+    buck = buck || z();
+    return "<tr><td>" + label + '</td><td><span class="badge ' + cls + '">' + covLabel + "</span></td>" +
+      '<td class="num">' + buck.cases + "</td>" +
+      '<td class="num">' + money_(buck.value) + "</td>" +
+      '<td class="num">' + money_(buck.gp) + "</td></tr>";
+  }
+  var total = { cases: aw.wty.cases + aw.oow.cases,
+    value: aw.wty.value + aw.oow.value, gp: aw.wty.gp + aw.oow.gp };
+  return (
+    '<div class="subpanel" style="margin-top:14px">' +
+    '<div class="subpanel-head">AR Attachment — WTY vs OOW' +
+    '<span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">' +
+    " — attachments grouped by the revenue type they were attached to (Task 73)</span></div>" +
+    '<p class="sec-desc" style="margin:0 0 10px">crm rows with RevenueType "Accessories Revenue" whose ' +
+    "crm!OrderCode matches a service!CaseId; coverage from service!ProductWarrantyDesc — " +
+    "&ldquo;Warranty Repair&rdquo; ⇒ WTY, &ldquo;Billable&rdquo; ⇒ OOW; service/repair parents " +
+    "from crm rows sharing crm!OrderCode (service precedence). AR Cases = unique invoice codes " +
+    "with attachments; value/GP = Σ of the attached accessory lines only.</p>" +
+    '<div class="scroll-x"><table class="ptable"><thead><tr><th>Attached-to revenue</th><th>Coverage</th>' +
+    '<th class="num">AR Cases</th><th class="num">Taxable Value</th>' +
+    '<th class="num">Gross Profit</th></tr></thead><tbody>' +
+    trow("Service Revenue", "WTY — Warranty Repair", bt && bt.service.wty, "good") +
+    trow("Service Revenue", "OOW — Billable", bt && bt.service.oow, "warn") +
+    trow("Repair Revenue", "WTY — Warranty Repair", bt && bt.repair.wty, "good") +
+    trow("Repair Revenue", "OOW — Billable", bt && bt.repair.oow, "warn") +
+    trow("Other / no svc-rep row", "WTY — Warranty Repair", bt && bt.other.wty, "good") +
+    trow("Other / no svc-rep row", "OOW — Billable", bt && bt.other.oow, "warn") +
+    '<tr class="totrow"><td><b>Total AR attached</b></td><td></td><td class="num"><b>' + total.cases + "</b></td>" +
+    '<td class="num"><b>' + money_(total.value) + "</b></td>" +
+    '<td class="num"><b>' + money_(total.gp) + "</b></td></tr>" +
+    "</tbody></table></div></div>"
   );
 }
 
@@ -3510,7 +3928,9 @@ function renderGpExtras_(x) {
   var marginPanel =
     '<section class="section" id="sec-gpmargin"><h2>A4. 📈 High / Low Margin ' + exportSectionBtn_("margin") + '</h2><div class="body">' +
     '<div class="sec-desc">margin % = crm!GrossProfit ÷ crm!TaxableAmount per unique invoice (SALES only; ' +
-    "zero-base invoices skipped). Top 5 at each end, across all revenue types.</div>" +
+    "zero-base invoices skipped). Top 5 at each end, repair &amp; accessory revenue only (service revenue excluded, Task 73); " +
+    "parts shown as the actual crm!ItemDescription. " +
+    "High Margin also excludes crm!SubCategory &lsquo;amc charge&rsquo; lines; Low Margin excludes crm!ItemCode starting with &lsquo;acsh&rsquo; (Task 65).</div>" +
     '<div class="hl-pair">' +
     '<div class="hl-half"><div class="subpanel-head">Top 5 — High Margin</div><div class="scroll-x">' + marginTable(hi) + "</div></div>" +
     '<div class="hl-half"><div class="subpanel-head">Top 5 — Low Margin</div><div class="scroll-x">' + marginTable(lo) + "</div></div>" +
@@ -3524,6 +3944,8 @@ function renderGpExtras_(x) {
     '</div><div class="sub">unique invoice codes</div></div>' +
     '<div class="card"><div class="label">Total Discount Value</div><div class="value neg">' + money0(discount.value) +
     '</div><div class="sub">Σ crm!DiscountAmount</div></div>' +
+    '<div class="card"><div class="label">Gross Profit Gained</div><div class="value pos">' + money0(discount.gp) +
+    '</div><div class="sub">Σ crm!GrossProfit of the discounted cases (Task 65)</div></div>' +
     '<div class="card"><div class="label">Discount ÷ Gross Profit</div><div class="value">' + discount.pct +
     '%</div><div class="sub">vs GP of the discounted lines</div></div>' +
     "</div>" +
@@ -3561,7 +3983,7 @@ function renderDateHtml_(data) {
 function renderWalkinHtml_(pd) {
   var wl = pd.walkin;
   var head =
-    '<section class="section" id="sec-walkin"><h2>C. 🚶 Walk-in Analysis &amp; Token Creation</h2><div class="body">' +
+    '<section class="section" id="sec-walkin"><h2>C. 🚶 Walk-in Analysis &amp; Token Creation ' + exportSectionBtn_("walkin") + '</h2><div class="body">' +
     '<div class="sec-desc">source: ' + esc_(wl.sheetName) +
     ". Every row is one walk-in — MobileNo identifies the visitor (Unique = distinct mobiles); a row with a CaseId counts as a case, a row with an InvoiceCode as a completed sale. The token table pins which user created each token.</div>" +
     '<div class="walkin-pair">';
@@ -3765,6 +4187,17 @@ function renderJobManagement_(jm) {
     card("Avg Job Age", t.avgAge + " d", t.aged + " job(s) " + CONFIG.JOB_AGE_CRITICAL_DAYS + "+ days old", "neg") +
     "</div>";
 
+  // Task 68 — dedicated unclaimed-device strip: the case ids are listed up
+  // front (chips open the case popup) so the list can never seem to vanish.
+  var unclaimedJobs = jm.jobs.filter(function (j) { return j.isUnclaimed; });
+  if (unclaimedJobs.length) {
+    head += '<div class="unclaimed-strip"><span class="us-title">⚠ Unclaimed Devices (' +
+      unclaimedJobs.length + ")</span>" + unclaimedJobs.map(function (j) {
+      return '<button type="button" class="caselink us-chip" data-case="' + esc_(j.caseId) +
+        '" onclick="openCaseDetails(this.dataset.case)">' + esc_(j.caseId) + "</button>";
+    }).join("") + "</div>";
+  }
+
   if (!jm.hasAdvance && !jm.advanceViaColumn) {
     head += '<div class="subnote">No advance sheet found (and no service!AvailableBalance column) — the “Advance Paid” column is showing ₹0 for every job.</div>';
   }
@@ -3802,13 +4235,18 @@ function renderJobManagement_(jm) {
   }
 
   // ---- club the jobs by CRM repair status (bucket-wise) -------------
-  // Buckets are alphabetical; within a bucket the oldest job stays first so
-  // the longest-waiting cases in each status sit at the top of their block.
+  // Buckets are alphabetical. Task 67 — INSIDE each bucket the rows re-group
+  // by repair type (N-Repair / Carry-In / Mail-In …) with their own sub-head
+  // line, oldest first within a type.
+  function rtSortKey_(x) { return (repairTypeShort_(x.repairType) || "—").toLowerCase(); }
   var grouped = jm.jobs.slice().sort(function (a, b) {
     var ga = (a.crmRepairStatus || "—").toLowerCase();
     var gb = (b.crmRepairStatus || "—").toLowerCase();
     if (ga < gb) return -1;
     if (ga > gb) return 1;
+    var ra = rtSortKey_(a), rb = rtSortKey_(b);
+    if (ra < rb) return -1;
+    if (ra > rb) return 1;
     return b.jobAge - a.jobAge;
   });
 
@@ -3824,6 +4262,7 @@ function renderJobManagement_(jm) {
     "<th>Case ID</th><th>Name</th><th>Number</th>" +
     "<th>GSX ID</th><th>S.No</th><th>Model</th><th>Comm. Updated</th>";
   var prevGroup = null;
+  var prevType = null;
   var grpAccent = "";
   var rowParts = [];
   for (var gi = 0; gi < grouped.length; gi++) {
@@ -3831,18 +4270,20 @@ function renderJobManagement_(jm) {
     var grp = j.crmRepairStatus || "—";
     if (grp !== prevGroup) {
       prevGroup = grp;
+      prevType = null;
       var bucketCount = grouped.filter(function (x) {
         return (x.crmRepairStatus || "—") === grp;
       }).length;
       grpAccent = bucketAccent_(grp);
-      // Task 45 owner's layout: Repair Bucket → bucket name → column headers,
-      // then the rows of that bucket.
-      rowParts.push('<tr class="bucket-sub-row"><th colspan="' + NCOLS + '"><span class="grphead-sub">Repair Bucket</span></th></tr>');
+      // Task 68 — the standalone "Repair Bucket" label row is removed; the
+      // bucket band itself stays.
       rowParts.push('<tr class="grphead' + (grpAccent ? " " + grpAccent : "") + '"><td colspan="' + NCOLS + '">' + esc_(grp) +
         '<span class="grphead-count">' + bucketCount + " open case" + (bucketCount === 1 ? "" : "s") +
         "</span></td></tr>");
       rowParts.push('<tr class="bucket-cols">' + BUCKET_COLS + "</tr>");
     }
+    // Task 72 — repair-type sub-bands REMOVED by owner request: every case row
+    // already carries its own Repair Type column inside the same dashboard.
     rowParts.push(buildRow_(j, grpAccent));
   }
   var rows = rowParts.join("");
@@ -3930,15 +4371,16 @@ function renderJobManagement_(jm) {
       caseId: j.caseId, createdDate: j.createdDate, repairDate: j.repairDate,
       bucket: j.crmRepairStatus, name: j.name, product: j.product,
       commDate: j.commDate, readyDate: j.readyDate || "—", gsxStatus: j.gsxStatus,
+      techCode: j.techCode || "—",   // Task 79 — service!TechCode shown in the popup
+      advancePaid: j.advance || 0,   // Task 71 — advance!MobileNo ↔ service!MobileNo
     };
   });
+  // Task 68 — island now carries a CLASS: TECH and SM both render this
+  // block, so a shared id was duplicated and the SM popup opened an invisible
+  // modal inside the hidden TECH pane. The modal itself is built once by the
+  // client script (ensureCaseModal_) at the <body> level.
   var caseBits =
-    '<div id="caseDetailData" hidden>' + JSON.stringify(cdMap).replace(/</g, "\u003c") + "</div>" +
-    '<div class="casemodal-overlay" id="caseModal" style="display:none" ' +
-    'onclick="if(event.target===this)closeCaseDetails()">' +
-    '<div class="casemodal"><div class="cm-top"><b id="cmTitle">Case details</b>' +
-    '<button type="button" onclick="closeCaseDetails()" aria-label="Close">&times;</button></div>' +
-    '<table id="cmTable"></table></div></div>';
+    '<div class="caseDetailData" hidden>' + JSON.stringify(cdMap).replace(/</g, "\u003c") + "</div>";
 
   return head + mapLine + table + caseBits;
 }
@@ -4001,16 +4443,23 @@ function renderOpsPairHtml_(ex) {
       (ex.decline.count || 0) + '</div>' +
       '<div class="sub">' + (ex.decline.sheetName ? "unique CaseIDs · from " + esc_(ex.decline.sheetName) : "no decline sheet found") + '</div></div>' +
     "</div></section>" +
-  // Requote & Win-back: eligible cases are carry-in / mail-in
-  // parts repairs, OUT of warranty (service!ProductWarrantyDesc); a win-back
-  // is a serial whose Repair-Revenue quote was rejected and later approved.
+  // Requote & Win-back (Task 67): cases that were REJECTED first and
+  // APPROVED later (quote!QuoteStatus, Repair Revenue rows only), counted as
+  // unique quote!CaseID matched against service!CaseId.
     '<section class="sec"><div class="sec-head"><h2>D4. 🔁 Requote &amp; Win-back</h2>' +
-    '<p class="sec-sub">Serials (service!SerialNo1) of out-of-warranty carry-in / mail-in cases whose ' +
-    '<b>quote</b> rows (RevenueType "Repair Revenue") show lastAction rejected and later approved for the same serial.</p></div>' +
+    '<p class="sec-sub">Unique cases (quote!CaseID × service!CaseId) whose Repair-Revenue quote rows show ' +
+    'QuoteStatus <b>rejected</b> first and <b>approved</b> later — taxable value (crm!TaxableAmount) and ' +
+    'gross profit (crm!GrossProfit) from the matching crm!OrderCode lines (SALES only).</p></div>' +
     '<div class="cards">' +
     '<div class="card"><div class="label">Win-backs</div><div class="value">' +
       (ex.winback.count || 0) + '</div>' +
-      '<div class="sub">' + (ex.winback.sheetName ? "rejected → approved · unique serials · from " + esc_(ex.winback.sheetName) : "no quote sheet found") + '</div></div>' +
+      '<div class="sub">' + (ex.winback.sheetName ? "unique case ids · rejected → approved (quote!QuoteStatus) · from " + esc_(ex.winback.sheetName) : "no quote sheet found") + '</div></div>' +
+    '<div class="card"><div class="label">Win-back Taxable Value</div><div class="value">' +
+      money_(ex.winback.taxable || 0) + '</div>' +
+      '<div class="sub">Σ crm!TaxableAmount on the win-back cases</div></div>' +
+    '<div class="card"><div class="label">Win-back Gross Profit</div><div class="value pos">' +
+      money_(ex.winback.grossProfit || 0) + '</div>' +
+      '<div class="sub">Σ crm!GrossProfit on the win-back cases</div></div>' +
     "</div></section></div>");
 }
 
@@ -4025,6 +4474,612 @@ function renderOperationHtml_(pd) {
   out.push(renderOpsPairHtml_(ex));
 
   return out.join("");
+}
+
+/* Task 69 — the service sheet is read ONCE per load and shared between the
+ * Happy-Calling and GSX-invoice dashboards (page-load optimisation). The map
+ * carries every column either dashboard needs, keyed by service!CaseId. */
+function computeServiceSupportMap_(ss) {
+  var map = {};
+  var svcSheet = getSheetByNames_(ss, CONFIG.SERVICE_SHEET_NAMES);
+  if (!svcSheet) return map;
+  var srd = smartRows_(svcSheet, {
+    caseId: [/^caseid$/i, /case.*id/i, /^case$/i],
+    gsx: [/^gsxcode$/i, /gsx.*(code|id|no)/i],
+    cov: [/^productwarrantydesc$/i, /product.*warranty/i, /warranty.*desc/i, /coverage.*desc/i],
+    billing: [/^billingoption$/i, /billing.*(option|status)/i, /^billing$/i, /^bill.*opt/i],
+    handover: [/^handoverdate$/i, /hando?ver.*date/i, /^handover\s*date$/i, /^handoff/i],
+    rdt: [/^repairdoctype$/i, /repair.*doc.*type/i, /^doc.*type/i]
+  });
+  srd.rows.forEach(function (r) {
+    if (!r.caseId || map[r.caseId]) return;
+    map[r.caseId] = { gsx: r.gsx || "—", cov: r.cov || "", billing: String(r.billing || "").trim(), handover: r.handover || "", rdt: r.rdt || "" };
+  });
+  return map;
+}
+
+/**
+ * Happy Calling (Task 69) — the FOLLOW-UP list is driven by
+ * service!HandOverDate: rows enter the dashboard the day AFTER the handover
+ * (+1 day gap) and leave on day 14. The GSX id comes from the same service
+ * row (case-id cross-check), satisfaction is pulled from c-sat!Overall
+ * Satisfaction when c-sat!Repair ID == service!GSXCode, and the lead status
+ * is enriched from calling!LeadStatus. Summary tiles: Open leads (no c-sat
+ * match, no follow-up flag) · Follow-up (lead status mentions follow) ·
+ * Closed (c-sat match found).
+ */
+function computeHappyCalling_(ss, svcMap) {
+  var out = { available: false, rows: [], missing: [], counts: { open: 0, followup: 0, closed: 0, total: 0 }, sheetName: "" };
+  svcMap = svcMap || computeServiceSupportMap_(ss);
+  var keys = Object.keys(svcMap);
+  if (!keys.length) return out;
+  out.sheetName = CONFIG.SERVICE_SHEET_NAMES[0] || "service";
+  // The calling sheet keeps ONLY the lead-status enrichment now.
+  var callSheet = getSheetByNames_(ss, CONFIG.CALLING_SHEET_NAMES);
+  var leadMap = {};
+  if (callSheet) {
+    var crd = smartRows_(callSheet, {
+      caseId: [/^uniqueid$/i, /^case\s*id$/i, /unique.*id/i],
+      leadStatus: [/^leadstatus$/i, /lead.*status/i]
+    });
+    crd.rows.forEach(function (r) { if (r.caseId && !leadMap[r.caseId]) leadMap[r.caseId] = r.leadStatus; });
+  }
+  var csatSheet = getSheetByNames_(ss, CONFIG.CSAT_SHEET_NAMES);
+  var satMap = {};
+  if (csatSheet) {
+    var srd = smartRows_(csatSheet, {
+      repairId: [/^repair\s*id$/i, /repair.*id/i, /gsx.*(code|id)/i],
+      sat: [/^overall satisfaction$/i, /overall.*satis/i, /satis/i]
+    });
+    srd.rows.forEach(function (r) { if (r.repairId && !satMap[r.repairId]) satMap[r.repairId] = r.sat; });
+  }
+  out.available = true;
+  var now = Date.now();
+  var rows = [];
+  keys.forEach(function (caseId) {
+    var svc = svcMap[caseId];
+    var ho = parseAnyDate_(svc.handover);
+    if (!ho.valid) return;
+    // Task 70 — Service Non-Repair cases (service!RepairDocType) never
+    // enter the calling list at all.
+    if (/service\s*non[\s-]?repair/i.test(svc.rdt || "")) return;
+    var ageDays = Math.floor((now - ho.ts) / 86400000);
+    // follow-up window: more than 1 day from today, at most 14 days.
+    if (ageDays < CONFIG.CALLING_MIN_DAYS || ageDays > CONFIG.CALLING_WINDOW_DAYS) return;
+    var sat = satMap[svc.gsx] || "";
+    var leadStatus = leadMap[caseId] || "—";
+    rows.push({
+      caseId: caseId,
+      created: ho.dayKey,
+      ageDays: ageDays,
+      gsxId: svc.gsx,
+      leadStatus: leadStatus,
+      sat: sat,
+      balance: Math.max(0, CONFIG.CALLING_WINDOW_DAYS - ageDays),
+    });
+  });
+  rows.sort(function (a, b) { return b.ageDays - a.ageDays; });
+  rows.forEach(function (r) {
+    if (r.sat) out.counts.closed++;
+    else if (/follow/i.test(r.leadStatus)) out.counts.followup++;
+    else out.counts.open++;
+  });
+  out.rows = rows;
+  out.counts.total = rows.length;
+  return out;
+}
+
+/**
+ * GSX invoice dashboard (Task 68) — every invoice row whose PurchaseOrder is
+ * a service case id, flagged (hit) when service!ProductWarrantyDesc is
+ * anything other than "Billable" (a warranty repair carrying a customer
+ * invoice is a billing alarm). Plus the SVC parts-incentive total: rows
+ * where invoice!OrderReason == "SVC Parts Incentive" AND the case id's first
+ * 4 letters read "mdu4", summed on invoice!LineItemAmount.
+ */
+function computeGsxInvoice_(ss, svcMap) {
+  var out = { available: false, rows: [], svcTotal: 0, svcCount: 0, missing: [], sheetName: "" };
+  var sheet = getSheetByNames_(ss, CONFIG.INVOICE_SHEET_NAMES);
+  if (!sheet) return out;
+  out.sheetName = sheet.getName() || "invoice";
+  var rd = smartRows_(sheet, {
+    caseId: [/^purchase\s*order$/i, /purchase.*order/i, /^po$/i, /^caseid$/i, /case.*id/i],
+    amount: [/^line\s*item\s*amount$/i, /line.*item.*amount/i, /^amount$/i, /total.*amount/i],
+    reason: [/^order\s*reason$/i, /order.*reason/i, /^reason$/i],
+    invCode: [/^invoice\s*(number|no|code)$/i, /invoice.*(number|no)/i, /doc.*number/i],
+    invType: [/^invoice\s*type$/i, /invoice.*type/i, /^type$/i]
+  });
+  if (!rd.found) return out;
+  out.available = true;
+  out.missing = rd.missing;
+  if (svcMap === undefined) svcMap = computeServiceSupportMap_(ss);
+  // Task 69 — the warranty-pair alarm keys on service!BillingOption: cases
+  // billed through VMI_GREEN are factory-channel jobs and drop out of the
+  // dashboard; any other non-billable billing option with a customer
+  // invoice is the highlight.
+  function vmiGreen_(b) { return /^vmi[\s_\-]?green$/i.test(String(b || "").trim()); }
+  var rows = [];
+  rd.rows.forEach(function (r) {
+    var amt = num_(r.amount);
+    // SVC-parts-incentive rows are always counted separately and never land
+    // in the warranty-pair table (owner's exclusion, unchanged).
+    if (/^svc\s*parts\s*incentive$/i.test(r.reason || "")) {
+      if (/^mdu4/i.test(r.caseId || "")) {
+        out.svcCount++;
+        out.svcTotal += amt || 0;
+      }
+      return;
+    }
+    // Task 69 — row quality gate: only Invoice / AC Rep-Debit Memo types
+    // with a POSITIVE amount (credit memos & negatives are excluded).
+    if (!/^(invoice|ac\s+rep[\-\s]?debit\s+memo)$/i.test((r.invType || "").trim())) return;
+    if (!(amt > 0)) return;
+    var svc = svcMap[r.caseId || ""];
+    if (!svc) return;
+    if (vmiGreen_(svc.billing)) return;
+    rows.push({
+      caseId: r.caseId,
+      invCode: r.invCode || r.caseId,
+      gsx: svc.gsx,
+      billing: svc.billing || "—",
+      amount: amt || 0,
+      hit: svc.billing !== "" && !/billable/i.test(svc.billing),
+    });
+  });
+  rows.sort(function (a, b) { return b.amount - a.amount; });
+  out.rows = rows;
+  return out;
+}
+
+/**
+ * computeProductivity_(ss) — Task 70, two day-wise workout views feeding the
+ * PRODUCTIVITY tab:
+ *  (a) TECHNICIAN productivity — service!CaseDate is the reference (the job
+ *      created date); per case the repair is marked "same day" when
+ *      service!RepairCreatedDate (yyyy-mm-dd hh:mm:ss) lands on the job date,
+ *      else the number of days delayed; the move to ready-for-pickup
+ *      (service!Ready_For_Pickup_Date_CRM) is likewise same-day or days
+ *      delayed from the repair created date.
+ *  (b) CRE productivity — token handling from the walk-in sheet: per token
+ *      date, productive (walkin!TokenStatus = CLOSED AND a job was created in
+ *      walkin!CaseId) vs non-productive (SERVING / IN-QUEUE) vs dead leads
+ *      (no job, no invoice in walkin!InvoiceCode, no walkin!Remark); plus the
+ *      average token→job creation time (walkin!TokenDate → walkin!JobDate).
+ */
+function fmtDurMin_(minutes) {
+  var m = Math.round(minutes);
+  if (!isFinite(m)) return "—";
+  if (m < 60) return Math.max(0, m) + " min";
+  return Math.floor(m / 60) + " hr " + (m % 60) + " min";
+}
+function avgDelayLabel_(n, sum) { return n > 0 ? (Math.round((sum / n) * 10) / 10) + " d" : "—"; }
+
+function computeProductivity_(ss) {
+  var out = {
+    tech: { available: false, sheetName: "", days: [], detail: [], totals: {} },
+    cre: { available: false, sheetName: "", days: [], totals: {}, avgTat: "—" }
+  };
+  function dayStartMs_(p) { return p.ts - (p.minutes || 0) * 60000; }
+  function dayDelta_(later, earlier) { return Math.round((dayStartMs_(later) - dayStartMs_(earlier)) / 86400000); }
+
+  // ---------- technician ----------
+  var svcSheet = getSheetByNames_(ss, CONFIG.SERVICE_SHEET_NAMES);
+  out.tech.sheetName = svcSheet ? (svcSheet.getName() || "service") : CONFIG.SERVICE_SHEET_NAMES[0];
+  if (svcSheet) {
+    var rd = smartRows_(svcSheet, {
+      caseId: [/^caseid$/i, /case.*id/i, /^case$/i],
+      caseDate: [/^casedate$/i, /case.*date/i, /job.*(created|date)/i],
+      repairCreated: [/^repaircreateddate$/i, /repair.*created/i],
+      ready: [/^ready_for_pickup_date_crm$/i, /ready.*pickup/i, /ready.*for.*pickup/i]
+    });
+    if (rd.found) {
+      out.tech.available = true;
+      // duplicate case rows keep the one with the LATER job created date —
+      // the same merger rule the job-management views use.
+      var byCase = {}, order = [];
+      rd.rows.forEach(function (r) {
+        if (!r.caseId) return;
+        if (!byCase[r.caseId]) { byCase[r.caseId] = r; order.push(r.caseId); return; }
+        var a = parseAnyDate_(r.caseDate), b = parseAnyDate_(byCase[r.caseId].caseDate);
+        if (a.valid && (!b.valid || a.ts > b.ts)) byCase[r.caseId] = r;
+      });
+      var T = { jobs: 0, repairs: 0, repairSame: 0, repDelayN: 0, repDelaySum: 0,
+        pickups: 0, pickupSame: 0, picDelayN: 0, picDelaySum: 0 };
+      var dayMap = {}, detail = [];
+      order.forEach(function (caseId) {
+        var r = byCase[caseId];
+        var cd = parseAnyDate_(r.caseDate);
+        if (!cd.valid) return;
+        var rc = parseAnyDate_(r.repairCreated);
+        var rp = parseAnyDate_(r.ready);
+        var key = cd.dayKey;
+        var d = dayMap[key] || (dayMap[key] = { dateKey: key,
+          sortKey: cd.year * 10000 + cd.month * 100 + cd.day,
+          jobs: 0, repairs: 0, repairSame: 0, repDelayN: 0, repDelaySum: 0,
+          pickups: 0, pickupSame: 0, picDelayN: 0, picDelaySum: 0 });
+        d.jobs++; T.jobs++;
+        var repTat = "—", picTat = "—";
+        if (rc.valid) {
+          d.repairs++; T.repairs++;
+          var dd = dayDelta_(rc, cd);
+          if (dd <= 0) { d.repairSame++; T.repairSame++; repTat = "same day"; }
+          else { d.repDelayN++; T.repDelayN++; d.repDelaySum += dd; T.repDelaySum += dd; repTat = dd + " d delayed"; }
+        }
+        if (rp.valid) {
+          d.pickups++; T.pickups++;
+          if (rc.valid) {
+            var pd = dayDelta_(rp, rc);
+            if (pd <= 0) { d.pickupSame++; T.pickupSame++; picTat = "same day"; }
+            else { d.picDelayN++; T.picDelayN++; d.picDelaySum += pd; T.picDelaySum += pd; picTat = pd + " d delayed"; }
+          }
+        }
+        detail.push({ caseId: caseId, job: key, jobSort: d.sortKey,
+          repair: rc.valid ? rc.dayKey : "—", repairTat: repTat,
+          ready: rp.valid ? rp.dayKey : "—", pickupTat: picTat });
+      });
+      out.tech.totals = T;
+      out.tech.days = Object.keys(dayMap).map(function (k) { return dayMap[k]; })
+        .sort(function (a, b) { return b.sortKey - a.sortKey; });
+      out.tech.detail = detail
+        .sort(function (a, b) { return b.jobSort - a.jobSort || (a.caseId < b.caseId ? -1 : 1); })
+        .slice(0, 40);
+    }
+  }
+
+  // ---------- CRE tokens ----------
+  var wlSheet = getSheetByNames_(ss, CONFIG.WALKIN_SHEET_NAMES);
+  out.cre.sheetName = wlSheet ? (wlSheet.getName() || "walkin") : CONFIG.WALKIN_SHEET_NAMES[0];
+  if (wlSheet) {
+    var rd2 = smartRows_(wlSheet, {
+      tokenDate: [/^tokendate$/i, /token.*date/i],
+      status: [/^tokenstatus$/i, /token.*status/i, /^status$/i],
+      caseId: [/^caseid$/i, /case.*id/i, /^case$/i],
+      jobDate: [/^jobdate$/i, /job.*date/i, /job.*created/i],
+      remark: [/^remark$/i, /remark/i],
+      invoiceCode: [/^invoicecode$/i, /invoice.*(code|no)/i]
+    });
+    if (rd2.found) {
+      out.cre.available = true;
+      var TC = { tokens: 0, productive: 0, nonProductive: 0, dead: 0, other: 0, tatSum: 0, tatN: 0 };
+      var wMap = {};
+      rd2.rows.forEach(function (r) {
+        var td = parseAnyDate_(r.tokenDate);
+        if (!td.valid) return;
+        var key = td.dayKey;
+        var d = wMap[key] || (wMap[key] = { dateKey: key,
+          sortKey: td.year * 10000 + td.month * 100 + td.day,
+          tokens: 0, productive: 0, nonProductive: 0, dead: 0, other: 0, tatSum: 0, tatN: 0 });
+        d.tokens++; TC.tokens++;
+        var hasCase = !!str_(r.caseId);
+        var hasInvoice = !!str_(r.invoiceCode);
+        var hasRemark = !!str_(r.remark);
+        var st = String(r.status || "").toLowerCase();
+        var productive = hasCase && /closed/.test(st);
+        var serving = /serving|in[\s\-]?queue/.test(st);
+        if (productive) {
+          d.productive++; TC.productive++;
+          var jd = parseAnyDate_(r.jobDate);
+          if (jd.valid && jd.ts >= td.ts) {
+            var mins = (jd.ts - td.ts) / 60000;
+            d.tatSum += mins; d.tatN++; TC.tatSum += mins; TC.tatN++;
+          }
+        } else if (serving) { d.nonProductive++; TC.nonProductive++; }
+        else if (!hasCase && !hasInvoice && !hasRemark) { d.dead++; TC.dead++; }
+        else { d.other++; TC.other++; }
+      });
+      out.cre.totals = TC;
+      out.cre.days = Object.keys(wMap).map(function (k) { return wMap[k]; })
+        .sort(function (a, b) { return b.sortKey - a.sortKey; });
+      out.cre.avgTat = TC.tatN ? fmtDurMin_(TC.tatSum / TC.tatN) : "—";
+    }
+  }
+  return out;
+}
+
+/**
+ * exportpayloadsfor_(pd) — sheets-style blocks for the two new dashboards
+ * (Task 68), used by the per-tile export buttons.
+ */
+function exportHappyCallingBlocks_(hc) {
+  var rows = (hc && hc.rows || []).map(function (r) {
+    return [r.caseId, r.created, r.balance + " d", r.gsxId, r.sat || "—"];
+  });
+  var counts = (hc && hc.counts) || { open: 0, followup: 0, closed: 0, total: 0 };
+  return { name: "Happy Calling", blocks: [
+    { title: "📞 Happy Calling — lead summary", headers: ["Metric", "Value"],
+      rows: [["Repairs due (cases in the calling window)", counts.total || 0],
+        ["Open leads (no c-sat match, no follow-up flag)", counts.open || 0],
+        ["Follow-up", counts.followup || 0], ["Satisfaction recorded (c-sat match)", counts.closed || 0]] },
+    { title: "📞 Happy Calling — follow-up list",
+      headers: ["Case ID", "HandOver Date", "Valid Till", "GSX ID", "Overall Satisfaction"],
+      rows: rows }]};
+}
+function exportGsxInvoiceBlocks_(gi) {
+  var rows = (gi && gi.rows || []).map(function (r) {
+    return [r.invCode, r.caseId, r.gsx, r.amount, r.billing, r.hit ? "WARRANTY HIT" : ""];
+  });
+  return { name: "GSX Invoice Data", blocks: [
+    { title: "🧾 SVC Parts Incentive", headers: ["Metric", "Value"],
+      rows: [["SVC incentive rows (SVC Parts Incentive · mdu4)", gi && gi.svcCount || 0],
+        ["SVC incentive total (Σ invoice!LineItemAmount)", gi && gi.svcTotal || 0]] },
+    { title: "GSX Invoice Data — warranty-pair check",
+      headers: ["Invoice", "Case ID (purchase order)", "GSX ID", "Amount", "Billing Option", "Flag"],
+      rows: rows }]};
+}
+
+/** 📞 Happy Calling section (Task 68) — shown on CRE & SM pages. */
+function renderHappyCallingSection_(hc) {
+  if (!hc || !hc.available) return "";
+  var rows = hc.rows.map(function (r) {
+    var balCls = r.balance <= 1 ? "neg" : (r.balance <= 3 ? "warn" : "");
+    return "<tr><td><b>" + esc_(r.caseId) + "</b></td>" +
+      "<td>" + esc_(r.created) + "</td>" +
+      '<td class="num"><span class="' + (balCls ? "bal-" + balCls : "") + '">' + r.balance + " d</span></td>" +
+      "<td>" + esc_(r.gsxId) + "</td>" +
+      "<td>" + (r.sat ? esc_(r.sat) : '<span class="muted">—</span>') + "</td></tr>";
+  }).join("");
+  var body = hc.rows.length
+    ? '<div class="scroll-x"><table class="ptable"><thead><tr>' +
+      "<th>Case ID</th><th>HandOver Date</th><th class=\"num\">Valid till</th><th>GSX ID</th>" +
+      "<th>Overall Satisfaction</th>" +
+      "</tr></thead><tbody>" + rows + "</tbody></table></div>"
+    : '<div class="empty-note">No cases in the follow-up window — a case enters ' +
+      "after its first full day from <span class=\"src-hint\">service!HandOverDate</span>" +
+      " and leaves on day " + CONFIG.CALLING_WINDOW_DAYS + " · every <i>Service Non-Repair</i> case is excluded.</div>";
+  // ---- lead-type summary tiles (Task 70) ----------------------------------
+  var ct = hc.counts || { open: 0, followup: 0, closed: 0, total: 0 };
+  var leadCards =
+    '<div class="cards wd-line" style="margin-bottom:12px">' +
+    '<div class="card"><div class="label">Repairs due</div><div class="value">' + (ct.total || 0) + '</div>' +
+    '<div class="sub">repair cases in the calling window</div></div>' +
+    '<div class="card"><div class="label">Open leads</div><div class="value">' + (ct.open || 0) + '</div>' +
+    '<div class="sub">no c-sat match yet · no follow-up flag</div></div>' +
+    '<div class="card"><div class="label">Follow-up</div><div class="value warn">' + (ct.followup || 0) + '</div>' +
+    '<div class="sub">lead status asks for a follow-up</div></div>' +
+    '<div class="card"><div class="label">Satisfaction recorded</div><div class="value pos">' + (ct.closed || 0) + '</div>' +
+    '<div class="sub">c-sat match found — calling closed</div></div>' +
+    "</div>";
+  return '<section class="section" id="sec-happy-calling"><h2>📞 Happy Calling — follow-up list ' +
+    exportSectionBtn_("happyCalling") + "</h2>" +'<div class="body">' +
+    '<div class="sec-desc">cases whose <span class="src-hint">service!HandOverDate</span> is more than 1 day and up to ' +
+    CONFIG.CALLING_WINDOW_DAYS + " days behind today · every <i>Service Non-Repair</i> case " +
+    "(<span class=\"src-hint\">service!RepairDocType</span>) is excluded · GSX id case-matched via <span class=\"src-hint\">service!GSXCode</span>" +
+    " · lead status from <span class=\"src-hint\">calling!LeadStatus</span>" +
+    " · satisfaction from <span class=\"src-hint\">c-sat!Overall Satisfaction</span> (c-sat!Repair ID ↔ GSX id).</div>" +
+    leadCards + body + "</div></section>";
+}
+
+/** 🧾 GSX invoice panel + SVC incentive (Task 68, SM page only). */
+function renderGsxInvoiceSection_(gi) {
+  if (!gi || !gi.available) return "";
+  var svcCard =
+    '<div class="cards wd-line" style="margin-bottom:12px">' +
+    '<div class="card"><div class="label">SVC incentive — total</div>' +
+    '<div class="value pos">' + money_(gi.svcTotal || 0) + "</div>" +
+    '<div class="sub">' + (gi.svcCount || 0) +
+      " rows · invoice!OrderReason = “SVC Parts Incentive” · mdu4…” · Σ invoice!LineItemAmount</div></div></div>";
+  var rowsHtml = gi.rows.length
+    ? '<div class="scroll-x"><table class="ptable"><thead><tr>' +
+      "<th>Invoice</th><th>Case ID (purchase order)</th><th>GSX ID</th>" +
+      '<th class="num">Amount</th><th>Billing Option</th></tr></thead><tbody>' +
+      gi.rows.map(function (r) {
+        return '<tr class="' + (r.hit ? "warranty-hit" : "") + '">' +
+          "<td><b>" + esc_(r.invCode) + "</b></td>" +
+          "<td>" + esc_(r.caseId) + "</td>" +
+          "<td>" + esc_(r.gsx) + "</td>" +
+          '<td class="num">' + money_(r.amount) + "</td>" +
+          "<td>" + esc_(r.billing) + (r.hit ? " ⚠" : "") + "</td></tr>";
+      }).join("") + "</tbody></table></div>"
+    : '<div class="empty-note">No invoice rows matched a service case id ' +
+      "(invoice!PurchaseOrder ↔ service!CaseId).</div>";
+  return '<section class="section" id="sec-gsx-invoice"><h2>🧾 GSX Invoice Data — warranty-pair check ' +
+    exportSectionBtn_("gsxInvoice") + "</h2>" +'<div class="body">' +
+    '<div class="sec-desc">invoices from <span class="src-hint">' + esc_(gi.sheetName || "invoice") + '</span> ' +
+    "— only <b>Invoice</b> / <b>AC Rep-Debit Memo</b> types with a POSITIVE " +
+    "<span class=\"src-hint\">Line Item Amount</span>; “SVC Parts Incentive” rows are excluded. " +
+    "Case match via <span class=\"src-hint\">service!CaseId</span>; rows in red carry a " +
+    "<span class=\"src-hint\">service!BillingOption</span> other than “Billable” — an invoice against a warranty case is a billing alarm. " +
+    "<span class=\"src-hint\">service!VMI_GREEN</span> cases are excluded entirely.</div>" +
+    svcCard + rowsHtml + "</div></section>";
+}
+
+/**
+ * PRODUCTIVITY tab (Task 70): technician repair TAT + CRE token handling,
+ * both day-wise. One pane, two sections.
+ */
+function renderProductivityPage_(data, pd) {
+  var pr = (pd && pd.productivity) || {};
+  return renderProductivityTechSection_(pr.tech) + renderProductivityCreSection_(pr.cre);
+}
+
+/**
+ * DERIVATION page (Task 71): every dashboard's rule & condition matrix in one
+ * place. The per-section derivation text is no longer repeated on the pages
+ * themselves (desc lines are hidden with CSS); this page is the single
+ * reference for "where does this number come from".
+ */
+function renderDerivationPage_(data, pd) {
+  var rows = [
+    ["INDEX", "🎯 A1 Store Target — Performance", "target!B2:B5/B3:B6 store targets vs Σ crm!TaxableAmount (TranType = SALES only, negative rows skipped) grouped by crm!RevenueType; Achievement % = achieved ÷ target; Balance = target − achieved (signed when covered); Per Day Requirement = balance ÷ working days left (today counted).", "target sheet A10:C11 review block · crm sheet"],
+    ["INDEX", "📅 A2 Working Days", "Days in the calendar month minus CONFIG holidays; consumed = weekdays passed; balance = days left.", "CONFIG.HOLIDAYS_2026"],
+    ["INDEX", "🔗 AR Attachment tile", "Same rule as B3 (SM/GP): accessory revenue sharing an invoice code with service/repair revenue.", "crm sheet"],
+    ["INDEX", "📊 C-SAT tile + review", "target!E47:O51 grid — names auto-detected (first 3 cols), categories counted, TOTAL row trusted; review tied to target!A10:C11.", "target sheet"],
+    ["CRE", "C1 Walk-in Analysis / C2 Token Creation", "Every walkin row grouped by walkin!TokenDate (dd-mm keys, no month collapse); uniques via walkin!MobileNo; case created = walkin!CaseId filled; invoice created = walkin!InvoiceCode filled.", "walkin sheet"],
+    ["CRE", "C3 Customer Source", "walkin!CustomerVisitSource pivot verbatim.", "walkin sheet"],
+    ["CRE", "C-SAT summary (CRE+SM)", "target!E47:O51 per-person counts + store total; C-SAT% & CFI% averaged from person rows when the sheet has none.", "target sheet"],
+    ["TECH", "E1 Job Management — Bucket Summary (transposed)", "Open jobs = service rows whose Status is not delivered/cancelled; buckets keyed by service!CRM_JobStatusDesc (fallback GSX desc) alphabetically; aging bands from service!JobAge (fallback: today − service!CaseDate); jobs without a readable age are excluded; empty bands hidden.", "service sheet"],
+    ["TECH", "Advance / OOW-no-advance buckets", "Advance total per case via advance!MobileNo ↔ service!MobileNo (Σ advance!AvailableBalance); OOW no-advance flagged by service!ProductWarrantyDesc.", "advance + service sheets"],
+    ["SM", "B1 Invoice valuation", "crm rows: unique invoice codes × TaxableAmount (SALES only).", "crm sheet"],
+    ["SM", "B2 Store Daily Target / per-person daily targets", "store target ÷ working days; per-person = their balance ÷ working days left.", "target sheet"],
+    ["SM", "B3 AR Attachment + WTY/OOW + revenue split", "Accessory invoice sharing a code with service/repair ⇒ attachment; coverage from service!ProductWarrantyDesc (Warranty Repair ⇒ WTY, Billable ⇒ OOW); revenue type of the parent case = service/repair crm rows sharing crm!OrderCode.", "crm + service sheets"],
+    ["SM", "B4 Incentive stack (IFS)", "target!E16:F17-style slab ladder: 95.2% pays the 11000-tier pro-rata, 100%+ floors, 110% latch etc.; service IFS ladder 11000/10000/12000.", "target sheet"],
+    ["SM", "C-SAT table (verbatim fallback)", "Unrecognised target!E47:O51 layouts render the grid as-is.", "target sheet"],
+    ["SM", "D2 Repair Types / D3 Decline / D4 Win-back", "Decline via decline sheet status; win-back = quote!QuoteStatus rejected FIRST, approved LATER per unique CaseID with RevenueType = Repair Revenue, value from crm!OrderCode (SALES only), manual sanity count = 6.", "decline + quote + crm sheets"],
+    ["SM", "F1 Date-wise matrix", "crm day buckets dd-mm-yyyy, per salesperson × revenue types; pill ok when achieved ≥ that person's daily target.", "crm sheet"],
+    ["DECK", "G1–G8 owner tables", "Current month only: sales/collections/walk-in/repair counts; invoice valuation; scheme/bundle counts when crm!SchemeCode begins with a DISC prefix; AMC when crm!SubCategory has AMC text; repair revenue pivot per crm!ItemDescription labels.", "crm + walkin + service sheets"],
+    ["CRE+SM", "📞 Happy Calling", "Cases whose service!HandOverDate is >1 day and ≤7 days old; RepairDocType Service Non-Repair excluded; GSX via service!GSXCode; satisfaction via c-sat!Repair ID → c-sat!Overall Satisfaction; lead status via calling!LeadStatus; Valid till = days left in the 7-day window.", "service + calling + c-sat sheets"],
+    ["SM", "🧾 GSX Invoice — warranty-pair check", "Only invoice!Invoice Type Invoice / AC Rep-Debit Memo with positive invoice!Line Item Amount; SVC Parts Incentive rows kept separate (mdu4** prefix, summed); hit when service!BillingOption is set and ≠ Billable; service!BillingOption VMI_GREEN excluded entirely.", "invoice + service sheets"],
+
+    ["ALL", "Task 79 source workbook", "One-year data dump: sales_report (invoices) · job_report (service) · token_report (walk-ins) · job_report_declined (declined repairs) · communication_details_report (comms) · advance_payment_report (advances) · quotation_report (quotes) · Form Responses 2 (productivity page). Same conditions & logic as before — only the source workbook changed (CONFIG.SPREADSHEET_ID = 14fieNDmQyYVGwv5wt6FkGCD2St_fCBCIlGGeUQLcfOA).", "the dump workbook"],
+    ["ALL", "Revenue baselines (Task 79)", "For walk-in / sales / repair achievement the page also shows 'as-on-day last month' (last calendar month up to today's day number) and the trailing 3-complete-month average; a blank KPI target falls back to that 3-mo average.", "sales_report + target sheet"],
+    ["ALL", "Open access", "No login gate: anyone with the link can view the dashboard (deploy as Execute as: Me + Who has access: Anyone; the sheet is read with the owner authority).", "Deployment setting,"],
+    ["ALL", "Caches & tabs", "Six-plus-one panes pre-rendered at load; whole-page cache + per-pane chunk caches + Drive mirror; tabs flip prefetched markup — taps never hit the server.", "—"]
+  ];
+  var body = rows.map(function (r) {
+    return "<tr><td><span class=\"badge info\">" + esc_(r[0]) + "</span></td><td><b>" + esc_(r[1]) + "</b></td>" +
+      "<td>" + esc_(r[2]) + "</td><td><span class=\"src-hint\">" + esc_(r[3]) + "</span></td></tr>";
+  }).join("");
+  return '<section class="section" id="sec-logic"><h2>📐 Logic — every dashboard rule &amp; condition</h2><div class="body">' +
+    '<p class="muted" style="margin:0 0 10px">Single source of truth: how every number on this dashboard is computed, which columns feed it, ' +
+    "and which conditions are applied. All subtitles, footers, condition and description lines are no longer shown on the pages themselves — they all live here.</p>" +
+    '<div class="scroll-x"><table class="ptable"><thead><tr><th>Page</th><th>Dashboard</th><th>Rule / condition</th><th>Source columns</th></tr></thead><tbody>' +
+    body + "</tbody></table></div></div></section>";
+}
+
+/** global tile renderer for the productivity page (card() is fn-local elsewhere). */
+function prodCard_(label, value, sub, cls) {
+  return '<div class="card"><div class="label">' + esc_(label) + '</div><div class="value' +
+    (cls ? " " + cls : "") + '">' + esc_(value) + '</div><div class="sub">' + esc_(sub || "") + "</div></div>";
+}
+
+/** 🛠 Technician productivity — day-wise repair TAT from the service sheet. */
+function renderProductivityTechSection_(tp) {
+  if (!tp || !tp.available) {
+    return '<section class="section" id="sec-tech-prod"><h2>🛠 Technician productivity — day-wise ' +
+      exportSectionBtn_("productivityTech") + "</h2><div class=\"body\">" +
+      emptyPerf_("service", "Add a service sheet with CaseDate / RepairCreatedDate / Ready_For_Pickup_Date_CRM to see technician productivity.") +
+      "</div></section>";
+  }
+  var T = tp.totals || {};
+  var tiles =
+    '<div class="cards wd-line" style="margin-bottom:12px">' +
+    prodCard_("Jobs created", T.jobs || 0, "grouped by service!CaseDate", "") +
+    prodCard_("Repairs created", T.repairs || 0, "same day: " + (T.repairSame || 0) + " · avg delay " + avgDelayLabel_(T.repDelayN || 0, T.repDelaySum || 0) + " · service!RepairCreatedDate", "pos") +
+    prodCard_("Pickup ready", T.pickups || 0, "same day: " + (T.pickupSame || 0) + " · avg delay " + avgDelayLabel_(T.picDelayN || 0, T.picDelaySum || 0) + " · service!Ready_For_Pickup_Date_CRM", "pos") +
+    "</div>";
+  var dayRows = (tp.days || []).map(function (d) {
+    return "<tr><td><b>" + esc_(d.dateKey) + "</b></td>" +
+      '<td class="num">' + d.jobs + "</td>" +
+      '<td class="num">' + d.repairs + "</td>" +
+      '<td class="num">' + d.repairSame + "</td>" +
+      '<td class="num">' + avgDelayLabel_(d.repDelayN, d.repDelaySum) + "</td>" +
+      '<td class="num">' + d.pickups + "</td>" +
+      '<td class="num">' + d.pickupSame + "</td>" +
+      '<td class="num">' + avgDelayLabel_(d.picDelayN, d.picDelaySum) + "</td></tr>";
+  }).join("");
+  var dayTable = dayRows
+    ? '<div class="scroll-x"><table class="ptable"><thead><tr>' +
+      "<th>Job created date</th><th class=\"num\">Jobs</th><th class=\"num\">Repairs created</th>" +
+      "<th class=\"num\">Same day</th><th class=\"num\">Delayed (avg)</th><th class=\"num\">Pickup ready</th>" +
+      "<th class=\"num\">Same day</th><th class=\"num\">Delayed (avg)</th></tr></thead><tbody>" +
+      dayRows + "</tbody></table></div>"
+    : '<div class="empty-note">No dated service rows yet.</div>';
+  var detailRows = (tp.detail || []).map(function (r) {
+    var repCls = r.repairTat === "same day" ? "pos" : (r.repairTat === "—" ? "muted" : "neg");
+    var picCls = r.pickupTat === "same day" ? "pos" : (r.pickupTat === "—" ? "muted" : "neg");
+    return "<tr><td><b>" + esc_(r.caseId) + "</b></td>" +
+      "<td>" + esc_(r.job) + "</td>" +
+      "<td>" + esc_(r.repair) + "</td>" +
+      '<td><span class="' + repCls + '">' + esc_(r.repairTat) + "</span></td>" +
+      "<td>" + esc_(r.ready) + "</td>" +
+      '<td><span class="' + picCls + '">' + esc_(r.pickupTat) + "</span></td></tr>";
+  }).join("");
+  var detailTable = detailRows
+    ? (((tp.detail || []).length >= 40 ? '<div class="empty-note" style="margin:2px 0 6px">most recent 40 cases by job created date</div>' : "") +
+      '<div class="scroll-x"><table class="ptable"><thead><tr>' +
+      "<th>Case ID</th><th>Job created date</th><th>Repair created</th><th>Repair TAT</th>" +
+      "<th>Pickup ready</th><th>Pickup TAT</th></tr></thead><tbody>" +
+      detailRows + "</tbody></table></div>")
+    : "";
+  return '<section class="section" id="sec-tech-prod"><h2>🛠 Technician productivity — day-wise ' +
+    exportSectionBtn_("productivityTech") + "</h2><div class=\"body\">" +
+    '<div class="sec-desc">reference date = job created date <span class="src-hint">service!CaseDate</span> · repair created ' +
+    '<span class="src-hint">service!RepairCreatedDate</span> · moved to ready on <span class="src-hint">service!Ready_For_Pickup_Date_CRM</span> · ' +
+    'a repair finished on the job date reads <b>same day</b>, otherwise the number of days delayed shows.</div>' +
+    tiles + dayTable + detailTable + "</div></section>";
+}
+
+/** 🎫 CRE productivity — token handling date-wise from the walkin sheet. */
+function renderProductivityCreSection_(cp) {
+  if (!cp || !cp.available) {
+    return '<section class="section" id="sec-cre-tokens"><h2>🎫 CRE productivity — token handling, date-wise ' +
+      exportSectionBtn_("productivityCre") + "</h2><div class=\"body\">" +
+      emptyPerf_("walkin", "Add a walkin sheet with TokenDate / TokenStatus / CaseId / JobDate / Remark / InvoiceCode to see token productivity.") +
+      "</div></section>";
+  }
+  var T = cp.totals || {};
+  var tiles =
+    '<div class="cards wd-line" style="margin-bottom:12px">' +
+    prodCard_("Tokens handled", T.tokens || 0, "grouped by walkin!TokenDate", "") +
+    prodCard_("Productive", T.productive || 0, "status CLOSED + job created", "pos") +
+    prodCard_("Non-productive", T.nonProductive || 0, "status SERVING / IN-QUEUE", "warn") +
+    prodCard_("Dead leads", T.dead || 0, "no job · no invoice · no remark", "neg") +
+    prodCard_("Avg token → job", cp.avgTat || "—", "token creation to job creation", "") +
+    "</div>";
+  var rows = (cp.days || []).map(function (d) {
+    return "<tr><td><b>" + esc_(d.dateKey) + "</b></td>" +
+      '<td class="num">' + d.tokens + "</td>" +
+      '<td class="num">' + d.productive + "</td>" +
+      '<td class="num">' + d.nonProductive + "</td>" +
+      '<td class="num">' + d.dead + "</td>" +
+      '<td class="num">' + d.other + "</td>" +
+      '<td class="num">' + (d.tatN ? fmtDurMin_(d.tatSum / d.tatN) : "—") + "</td></tr>";
+  }).join("");
+  var table = rows
+    ? '<div class="scroll-x"><table class="ptable"><thead><tr>' +
+      "<th>Token date</th><th class=\"num\">Tokens</th><th class=\"num\">Productive</th>" +
+      "<th class=\"num\">Non-productive</th><th class=\"num\">Dead leads</th><th class=\"num\">Others</th>" +
+      "<th class=\"num\">Avg token → job</th></tr></thead><tbody>" +
+      rows + "</tbody></table></div>"
+    : '<div class="empty-note">No dated tokens yet.</div>';
+  return '<section class="section" id="sec-cre-tokens"><h2>🎫 CRE productivity — token handling, date-wise ' +
+    exportSectionBtn_("productivityCre") + "</h2><div class=\"body\">" +
+    '<div class="sec-desc">a token counts as <b>productive</b> when <span class="src-hint">walkin!TokenStatus</span> reads CLOSED ' +
+    "and a job was created (<span class=\"src-hint\">walkin!CaseId</span>) · <b>non-productive</b> while the status reads SERVING / IN-QUEUE · " +
+    "a <b>dead lead</b> when nothing came of it — no job, no invoice (<span class=\"src-hint\">walkin!InvoiceCode</span>), no <span class=\"src-hint\">walkin!Remark</span> · " +
+    "the average spans <span class=\"src-hint\">walkin!TokenDate</span> → <span class=\"src-hint\">walkin!JobDate</span> on productive tokens.</div>" +
+    tiles + table + "</div></section>";
+}
+
+/** Per-table export payloads for the productivity page (Task 70). */
+function exportProductivityTechBlocks_(tp) {
+  var T = (tp && tp.totals) || {};
+  var dayRows = (tp && tp.days || []).map(function (d) {
+    return [d.dateKey, d.jobs, d.repairs, d.repairSame, avgDelayLabel_(d.repDelayN, d.repDelaySum),
+      d.pickups, d.pickupSame, avgDelayLabel_(d.picDelayN, d.picDelaySum)];
+  });
+  var detRows = (tp && tp.detail || []).map(function (r) {
+    return [r.caseId, r.job, r.repair, r.repairTat, r.ready, r.pickupTat];
+  });
+  return { name: "Technician Productivity", blocks: [
+    { title: "🛠 Technician productivity — totals", headers: ["Metric", "Value"],
+      rows: [["Jobs created (grouped by service!CaseDate)", T.jobs || 0],
+        ["Repairs created", T.repairs || 0], ["Repair created same day", T.repairSame || 0],
+        ["Avg repair delay (days)", avgDelayLabel_(T.repDelayN || 0, T.repDelaySum || 0)],
+        ["Pickup ready", T.pickups || 0], ["Pickup ready same day", T.pickupSame || 0],
+        ["Avg pickup delay (days)", avgDelayLabel_(T.picDelayN || 0, T.picDelaySum || 0)]] },
+    { title: "🛠 Technician productivity — day-wise",
+      headers: ["Job created date", "Jobs", "Repairs created", "Same day", "Delayed (avg)", "Pickup ready", "Same day", "Delayed (avg)"],
+      rows: dayRows },
+    { title: "🛠 Case TAT detail (latest 40)",
+      headers: ["Case ID", "Job created date", "Repair created", "Repair TAT", "Pickup ready", "Pickup TAT"],
+      rows: detRows }]};
+}
+function exportProductivityCreBlocks_(cp) {
+  var T = (cp && cp.totals) || {};
+  var rows = (cp && cp.days || []).map(function (d) {
+    return [d.dateKey, d.tokens, d.productive, d.nonProductive, d.dead, d.other,
+      d.tatN ? fmtDurMin_(d.tatSum / d.tatN) : "—"];
+  });
+  return { name: "CRE Token Productivity", blocks: [
+    { title: "🎫 CRE productivity — totals", headers: ["Metric", "Value"],
+      rows: [["Tokens handled", T.tokens || 0], ["Productive (CLOSED + job created)", T.productive || 0],
+        ["Non-productive (SERVING / IN-QUEUE)", T.nonProductive || 0],
+        ["Dead leads (no job / invoice / remark)", T.dead || 0], ["Other", T.other || 0],
+        ["Avg token → job creation", (cp && cp.avgTat) || "—"]] },
+    { title: "🎫 Token handling — date-wise",
+      headers: ["Token date", "Tokens", "Productive", "Non-productive", "Dead leads", "Others", "Avg token → job"],
+      rows: rows }]};
 }
 
 /** DECK page (Task 36): full rework — the owner's 8 tables, current month
@@ -4132,7 +5187,7 @@ function renderDeckHtml_(data, pd) {
   for (var pi = 0; pi < sections.length; pi += 2) {
     grid += '<div class="deck-pair">' + sections[pi] + (sections[pi + 1] || "") + "</div>";
   }
-  return '<section class="sec"><div class="sec-head"><h2>G. 🗂 Deck — ' + esc_(month || "Current Month") + " " + stamp + '</h2>' +
+  return '<section class="sec"><div class="sec-head"><h2>G. 🗂 Deck — ' + esc_(month || "Current Month") + " " + stamp + exportSectionBtn_("deck") + '</h2>' +
     '<p class="sec-sub">Owner order — revenue · walk-in · repair · accessories · service · GP · walk-in analysis · coverage. ' +
     "Current month only; previous months are kept manually by the owner. SALESRETURN is excluded everywhere.</p></div></section>" +
     grid;
@@ -4146,6 +5201,25 @@ function renderJobsHtml_(pd) {
 /** Renders the C-SAT block: summary tiles + styled table + repair strip. */
 function renderTargetBlock_(tb, ra) {
   if (!tb.available) return "";
+
+  // Task 67 — verbatim fallback: when the E47:O51 grid exists but does not
+  // match the standard (names + rating columns) layout, draw it raw so the
+  // block is ALWAYS mapped onto the page.
+  if (tb.rawGrid) {
+    var rawHead = tb.rawGrid[0];
+    var rawRows = tb.rawGrid.slice(1).map(function (gr) {
+      return "<tr>" + gr.map(function (cell, ci) {
+        return ci === 0 ? "<td>" + esc_(cell) + "</td>" : '<td class="num">' + esc_(cell) + "</td>";
+      }).join("") + "</tr>";
+    }).join("");
+    return '<section class="sec"><div class="sec-head"><h2>Customer Satisfaction — ' +
+      esc_(tb.periodName || "current period") + "</h2></div>" +
+      '<div class="body"><div class="sec-desc">C-SAT grid from ' +
+      '<span class="src-hint">target!E47:O51</span> does not match the standard layout, so it is mapped verbatim — every cell of the grid is printed as-is.</div>' +
+      '<div class="scroll-x"><table class="ptable csat-table"><thead><tr>' +
+      rawHead.map(function (cell) { return "<th>" + esc_(cell) + "</th>"; }).join("") +
+      "</tr></thead><tbody>" + rawRows + "</tbody></table></div></div></section>";
+  }
   var title = "Customer Satisfaction — " + (tb.periodName || "current period");
 
   function pctOf(part, whole) { return whole > 0 ? Math.round((part / whole) * 100) : 0; }
@@ -4168,7 +5242,7 @@ function renderTargetBlock_(tb, ra) {
     // narrow target!E47:F51 report — no satisfaction buckets; show
     // the store C-SAT (sheet total, else average of the per-CRE values) and
     // how many CREs were rated.
-    if (tb.csat) chips.push(chip("info", "Store C-SAT", tb.csat, "from target!F48:F51"));
+    if (tb.csat) chips.push(chip("info", "Store C-SAT", tb.csat, "from target!F48:F51 (narrow sheets) / E48:O51 (wide grid)"));
     chips.push(chip("", "CREs rated", tb.people.length, "rows from target!E48:F51"));
     if (tb.cfi) chips.push(chip("info", "CFI", tb.cfi, "as recorded in sheet"));
   }
@@ -4208,7 +5282,7 @@ function renderTargetBlock_(tb, ra) {
   return '<section class="sec"><div class="sec-head">' +
     "<h2>🎯 D1. " + esc_(title) + "</h2>" +
     '<p class="sec-sub">Every feedback response lands in a satisfaction bucket. Period name from ' +
-    '<span class="src-hint">target!D47</span>, table from <span class="src-hint">target!E47:F51</span> ' +
+    '<span class="src-hint">target!D47</span>, table from <span class="src-hint">target!E47:O51</span> ' +
     '(auto-extends up to <span class="src-hint">:O51</span> when the full satisfaction grid is filled) — ' +
     "cleaned and re-presented (junk columns dropped, totals verified).</p></div>" +
     table + "</section>";
@@ -4256,6 +5330,7 @@ function renderIndexHtml_(data, perfData) {
     '<div class="cards">' +
       storeCard("Total Revenue", s.total) + storeCard("Service Revenue", s.service) +
       storeCard("Accessories Revenue", s.accessory) + storeCard("Repair Revenue", s.repair) +
+      storeCard("Gross Profit", s.grossProfit) +
     "</div>");
 
   // ---- 2) Total walk-ins  +  3) invoices in each revenue type ---------------
@@ -4307,11 +5382,18 @@ function renderIndexHtml_(data, perfData) {
 
   // ---- 6) AR Attachment — total count ----------------------------------------
   var aa = inv.arAttachment || {};
+  // Task 67 — the index AR panel also prints the warranty / out-of-warranty
+  // attachment counts (full WTY vs OOW split lives next to the KPI table).
+  var aw67 = data.arWarranty || { wty: { cases: 0, value: 0, gp: 0 }, oow: { cases: 0, value: 0, gp: 0 } };
   var arSec = idxSection("idx-ar", "🔗 AR Attachment",
     "invoices that carried an accessory together with a service / repair.",
     '<div class="cards">' +
       statCard("AR Attachments", "<b>" + (aa.attachedInvoices || 0) + "</b>",
         "of " + (aa.attachableInvoices || 0) + " service / repair invoices · " + (aa.attachRate || 0) + "% attach rate") +
+      statCard("WTY Attachments", "<b>" + (aw67.wty.cases || 0) + "</b>",
+        money_(aw67.wty.value) + " taxable · " + money_(aw67.wty.gp) + " GP · warranty repairs with accessory") +
+      statCard("OOW Attachments", "<b>" + (aw67.oow.cases || 0) + "</b>",
+        money_(aw67.oow.value) + " taxable · " + money_(aw67.oow.gp) + " GP · out-of-warranty repairs with accessory") +
     "</div>");
 
   // ---- 7) Sales Person Performance — % of achievement only --------------------
@@ -4328,12 +5410,21 @@ function renderIndexHtml_(data, perfData) {
     '<th class="num">Gross Profit %</th><th class="num">Total %</th></tr></thead><tbody>' +
     spRows + "</tbody></table></div>");
 
+  // ---- C-SAT tile: the index shows ONLY the total response count --------
+  var tbIdx = perfData && perfData.targetBlock;
+  var csatSec = (tbIdx && tbIdx.available) ? idxSection("idx-csat", "😊 Customer Satisfaction (C-SAT) — total",
+    "total number of feedback responses this period — the full report (categories, C-SAT & CFI) is printed on the CRE and SM pages.",
+    '<div class="cards">' +
+      statCard("Total C-SAT Responses", "<b>" + ((tbIdx.totalRow && tbIdx.totalRow.total) || 0) + "</b>",
+        esc_(tbIdx.periodName || "current period") + " · target!E47:O51") +
+    "</div>") : "";
+
   // ---- 8/9/10) decline repairs · win-backs · open jobs ------------------------
   var opsSec = idxSection("idx-ops", "📉 Repairs & Jobs — counts",
     "headline counts from the service / decline / quote / job sources (details on the SM and TECH pages).",
-    '<div class="cards">' +
+    '<div class="cards wd-line">' +
       statCard("Declined Repairs", "<b>" + (ex.decline.count || 0) + "</b>", "unique decline!CaseId · local approver rejected", "neg") +
-      statCard("Requote Win-backs", "<b>" + (ex.winback.count || 0) + "</b>", "rejected → approved · unique serials", "pos") +
+      statCard("Requote Win-backs", "<b>" + (ex.winback.count || 0) + "</b>", "rejected → approved · unique case ids (Task 67)", "pos") +
       statCard("Open Jobs", "<b>" + (jbT ? jbT.openJobs : 0) + "</b>",
         jbT ? ("communication updated " + jbT.communicated + " · pending " + jbT.notCommunicated) : "service sheet not found") +
     "</div>");
@@ -4345,7 +5436,7 @@ function renderIndexHtml_(data, perfData) {
 
   return (
     '<section class="index-hero"><h2>Store Performance Dashboard</h2></section>' +
-    storeSec + wdSec + walkinSec + weeklySec + kpiSec + arSec + personSec + opsSec +
+    storeSec + wdSec + walkinSec + weeklySec + kpiSec + arSec + personSec + csatSec + opsSec +
     freshnessLineHtml_(data, perfData)
   );
 }
@@ -4360,7 +5451,7 @@ function renderCreHtml_(data, pd) {
   var wl = pd.walkin || { available: false };
   var c1 = !wl.available
     ? emptyPerf_(CONFIG.WALKIN_SHEET_NAMES[0], "Add a walk-in sheet to see the C1 walk-in analysis.")
-    : '<section class="section" id="sec-cre-walkin"><h2>C. 🚶 Walk-in Analysis &amp; Token Creation</h2><div class="body">' +
+    : '<section class="section" id="sec-cre-walkin"><h2>C. 🚶 Walk-in Analysis &amp; Token Creation ' + exportSectionBtn_("walkin") + '</h2><div class="body">' +
       '<div class="wp-left"><div class="wp-head">C1. 🚶 Walk-in Analysis</div>' +
       '<p class="sec-desc" style="margin:-2px 0 10px">month-to-date walk-in summary — each metric&rsquo;s % of the month&rsquo;s walk-in tokens.</p>' +
       renderWalkinAnalysis_(wl) + "</div></div></section>";
@@ -4371,11 +5462,12 @@ function renderCreHtml_(data, pd) {
     // B · B1 · B2 · B3
     '<div class="kpi-pair"><div class="kp-left">' + renderKpiSection_(data) + "</div>" +
       '<div class="kp-right">' + renderIncentiveTable_(data) + "</div></div>" +
-      renderSalespersonCards_(data) + renderArSection_(data) +
-    // C · C1
-    c1 +
-    // D1
-    renderTargetBlock_(pd.targetBlock, pd.repair)
+      renderSalespersonCards_(data).replace('class="section" id="sec-person"', 'class="section spb25" id="sec-person"') + renderArSection_(data) +
+    // C · C1 + D1 side by side (Task 67 — walk-in left, C-SAT right)
+    '<div class="cre-cw-pair"><div class="cw-left">' + c1 + '</div><div class="cw-right">' +
+      renderTargetBlock_(pd.targetBlock, pd.repair) + "</div></div>" +
+    // Task 68 — happy calling follow-up list on the CRE page too
+    renderHappyCallingSection_(pd.happyCalling)
   );
 }
 
@@ -4411,26 +5503,39 @@ function renderTechHtml_(pd) {
 
   // Alphabetical bucket order — mirrors the band order of the detailed SM table.
   order.sort();
-  function cell(n) { return n ? ('<td class="num">' + n + "</td>") : '<td class="num muted">—</td>'; }
-  var rows = order.map(function (b) {
-    var r = map[b];
-    return "<tr><td><b>" + esc_(b) + "</b></td>" +
-      BANDS.map(function (_, i2) { return cell(r.bands[i2]); }).join("") + cell(r.noAge) +
-      '<td class="num"><b>' + r.total + "</b></td></tr>";
-  }).join("");
+
+  // Task 68 — an aging-band column only appears when at least one open job
+  // actually sits in it; all-empty bands (e.g. 31–45 / 46–60 / 61–100 / 100+
+  // on the live sheet) are dropped from the summary entirely.
+  var bandUsed = [];
+  BANDS.forEach(function (_, bi) {
+    var bandTotal = 0;
+    order.forEach(function (b) { bandTotal += map[b].bands[bi]; });
+    if (bandTotal > 0) bandUsed.push(bi);
+  });
   var g = BANDS.map(function () { return 0; }), gNoAge = 0, gTotal = 0;
   order.forEach(function (b) {
     var r = map[b];
     BANDS.forEach(function (_, i2) { g[i2] += r.bands[i2]; });
     gNoAge += r.noAge; gTotal += r.total;
   });
+  // Task 70 — TRANSPOSED: aging bands run DOWN the rows, repair buckets run
+  // ACROSS the columns; the last row totals each bucket, the last column
+  // totals each band, "Age —" collects jobs without a readable age.
+  function cell(n) { return n ? ('<td class="num">' + n + "</td>") : '<td class="num muted"></td>'; }
+  var rows = bandUsed.map(function (i2) {
+    return "<tr><td><b>" + BANDS[i2][2] + "</b></td>" +
+      order.map(function (b) { return cell(map[b].bands[i2]); }).join("") +
+      '<td class="num"><b>' + g[i2] + "</b></td></tr>";
+  }).join("");
+  // Task 73 — the "Age —" band is removed (no data is expected there by the
+  // owner); totals now count only jobs inside a readable aging band.
   var tot = '<tr class="totrow"><td><b>All open jobs</b></td>' +
-    g.map(function (n) { return '<td class="num"><b>' + n + "</b></td>"; }).join("") +
-    '<td class="num"><b>' + (gNoAge || 0) + "</b></td>" +
-    '<td class="num"><b>' + gTotal + "</b></td></tr>";
+    order.map(function (b) { return '<td class="num"><b>' + (map[b].total - map[b].noAge) + "</b></td>"; }).join("") +
+    '<td class="num"><b>' + (gTotal - gNoAge) + "</b></td></tr>";
 
   var commCards =
-    '<div class="cards">' +
+    '<div class="cards wd-line">' +
     '<div class="card"><div class="label">Open jobs</div><div class="value">' + (t.openJobs || gTotal) +
     '</div><div class="sub">across ' + order.length + " repair bucket" + (order.length === 1 ? "" : "s") + '</div></div>' +
     '<div class="card"><div class="label">Communication updated</div><div class="value pos">' + (t.communicated || 0) +
@@ -4441,20 +5546,30 @@ function renderTechHtml_(pd) {
 
   return d2 + d34 +
     '<section class="section" id="sec-tech-jobs"><h2>E1. 🔧 Job Management — Open Jobs · Bucket Summary</h2><div class="body">' +
-    '<div class="sec-desc">open jobs per repair bucket with aging inside each bucket (Jobs without a readable age are ' +
-    'listed in a separate column); then communication updated vs not updated for all open jobs.</div>' +
+    '<div class="sec-desc">transposed view — aging bands run down the rows, repair buckets across the columns ' +
+    "(jobs without a readable age are not counted in this summary); then communication updated vs not updated for all open jobs.</div>" +
     commCards +
-    '<div class="scroll-x"><table class="ptable"><thead><tr><th>Repair Bucket</th>' +
-    BANDS.map(function (bd) { return '<th class="num">' + bd[2] + "</th>"; }).join("") +
-    '<th class="num">Age —</th><th class="num">Total</th></tr></thead><tbody>' +
+    '<div class="scroll-x"><table class="ptable"><thead><tr><th>Aging Band</th>' +
+    order.map(function (b) { return '<th class="num">' + esc_(b) + "</th>"; }).join("") +
+    '<th class="num">All buckets</th></tr></thead><tbody>' +
     rows + tot + "</tbody></table></div></div></section>" +
     renderJobsHtml_(pd);
 }
 
 /**
- * SM page: the full & detailed master report. Every section of the
- * legacy pages in the owner's master order A → G, separated by group banners.
+ * SM page: the full & detailed master report. Sections of the legacy pages
+ * in the owner's master order A → F, separated by group banners.
+ * (Group G — DECK — lives in its own tab since Task 65.)
  */
+
+/**
+ * DECK page (Task 65): the current-month summary tables (group G) moved out
+ * of the SM master report into their own tab.
+ */
+function renderDeckPage_(data, pd) {
+  return roleBanner_("G", "DECK — current-month summary tables") +
+    renderDeckHtml_(data, pd);
+}
 function renderSmHtml_(data, pd) {
   return (
     roleBanner_("A", "GP — store target · working days · valuation · margin · discount · weekly") +
@@ -4469,8 +5584,9 @@ function renderSmHtml_(data, pd) {
       renderJobsHtml_(pd) +
     roleBanner_("F", "DATE — date-wise sales revenue by salesperson") +
       renderDateHtml_(data) +
-    roleBanner_("G", "DECK — current-month summary tables") +
-      renderDeckHtml_(data, pd)
+    // Task 68 — happy calling + GSX invoice panels close the SM page
+    renderHappyCallingSection_(pd.happyCalling) +
+    renderGsxInvoiceSection_(pd.gsxInvoice)
   );
 }
 
@@ -4479,13 +5595,33 @@ function freshnessLineHtml_(data, perfData) {
   var bits = [];
   // every chip reads the sheet's own LAST record date AND time.
   var fr = perfData && perfData.freshness ? perfData.freshness : {};
-  bits.push(["crm (sales)", fr.crm || "no rows"]);
-  bits.push(["target (plan)", "refreshed " +
-    Utilities.formatDate(data.generatedAt, Session.getScriptTimeZone(), "dd-MM-yyyy HH:mm" )]);
-  bits.push(["walkin", fr.walkin || "no rows"]);
-  bits.push(["service", fr.service || "no rows"]);
-  bits.push(["advance", fr.advance || "—"]);
-  bits.push(["comm", fr.comm || "—"]);
+  // Task 68 — each chip is relative to now: refreshed within the last
+  // 30 minutes reads "latest"; otherwise the age is printed
+  // ("updated 45 min old report" / "updated 2 d old report").
+  // Task 73 — chips age the REPORT itself (when this dashboard was last
+  // regenerated), never the newest record date inside each sheet.
+  function relFresh_(f) {
+    var gen = data.generatedAt ? data.generatedAt.getTime() : Date.now();
+    var ageMs = Math.max(0, Date.now() - gen);
+    if (ageMs <= 30 * 60000) return "latest";
+    var mins = Math.round(ageMs / 60000);
+    var rel = mins < 60 ? (mins + " min")
+      : (mins < 1440 ? Math.round(mins / 60) + " hr"
+      : Math.round(mins / 1440) + " d");
+    return "updated " + rel + " old report";
+  }
+  // Task 72 — every data source named with its role + last-updated aging.
+  bits.push(["crm (sales)", relFresh_(fr.crm)]);
+  bits.push(["target (plan)", relFresh_(fr.target)]);
+  bits.push(["walkin (tokens)", relFresh_(fr.walkin)]);
+  bits.push(["service (jobs)", relFresh_(fr.service)]);
+  bits.push(["advance (payments)", relFresh_(fr.advance)]);
+  bits.push(["comm (messages)", relFresh_(fr.comm)]);
+  bits.push(["decline (rejects)", relFresh_(fr.decline)]);
+  bits.push(["quote (requotes)", relFresh_(fr.quote)]);
+  bits.push(["invoice (billing)", relFresh_(fr.invoice)]);
+  bits.push(["c-sat (surveys)", relFresh_(fr.csat)]);
+  bits.push(["calling (follow-ups)", relFresh_(fr.calling)]);
   var li = bits.map(function (b) {
     return '<span class="fresh-chip"><i>' + esc_(b[0]) + "</i><b>" + esc_(b[1]) + "</b></span>";
   }).join("");
@@ -4504,12 +5640,103 @@ function freshnessLineHtml_(data, perfData) {
  * cache pane markup through this one builder, so the paths can never
  * drift apart.
  */
+/**
+ * Task 79 — PRODUCTIVITY page model: the Google Forms response dump
+ * "Form Responses 2" is grouped per person and listed DATE-WISE (latest day
+ * first). Header auto-detection: the date column matches Timestamp/Date, the
+ * person column matches name/person/employee/technician — everything else is
+ * rendered as answer columns, so the form can change questions freely.
+ */
+function computeFormProductivity_(ss) {
+  var sh = getSheetByNames_(ss, CONFIG.PRODUCTIVITY_SHEET_NAMES);
+  if (!sh) return { available: false, sheetName: CONFIG.PRODUCTIVITY_SHEET_NAMES[0], persons: [] };
+  var values = sh.getDataRange().getValues();
+  if (!values || values.length < 2) {
+    return { available: false, sheetName: sh.getName(), persons: [] };
+  }
+  var hi = 0;
+  for (var r0 = 0; r0 < Math.min(10, values.length); r0++) {
+    var filled = 0;
+    values[r0].forEach(function (c) { if (str_(c) !== "") filled++; });
+    if (filled >= 2) { hi = r0; break; }
+  }
+  var header = values[hi].map(function (h) { return str_(h); });
+  var dateCol = 0, personCol = -1;
+  header.forEach(function (h, i) { if (/timestamp|^date$|submitted/i.test(h)) dateCol = i; });
+  header.forEach(function (h, i) {
+    if (i !== dateCol && /name|person|employee|staff|member|engineer|technician|^who\b/i.test(h)) personCol = i;
+  });
+  if (personCol === -1) personCol = (dateCol === 0 ? 1 : 0);
+  var cols = [];
+  header.forEach(function (h, i) { if (i !== dateCol && h !== "") cols.push(i); });
+  var people = {};
+  for (var rr = hi + 1; rr < values.length; rr++) {
+    var d = parseAnyDate_(values[rr][dateCol]);
+    if (!d.valid) continue;
+    var person = str_(values[rr][personCol]) || "—";
+    var entry = { dayKey: d.dayKey, ts: d.ts, cells: {} };
+    cols.forEach(function (i2) {
+      entry.cells[header[i2].trim() || ("Column " + (i2 + 1))] = str_(values[rr][i2]);
+    });
+    if (!people[person]) people[person] = { name: person, entries: [] };
+    people[person].entries.push(entry);
+  }
+  var persons = Object.keys(people).map(function (k2) { return people[k2]; })
+    .sort(function (a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); });
+  var daySet = {}, totalEntries = 0;
+  persons.forEach(function (pp) {
+    pp.entries.sort(function (a, b) { return b.ts - a.ts; });
+    pp.entries.forEach(function (e) { daySet[e.dayKey] = 1; totalEntries++; });
+  });
+  return { available: true, sheetName: sh.getName(), persons: persons,
+    totals: { entries: totalEntries, persons: persons.length, days: Object.keys(daySet).length } };
+}
+
+/** Task 79 — PRODUCTIVITY page: tiles + one day-wise table per person. */
+function renderProductivityHtml_(data) {
+  var pd = (data && data.formProductivity) || null;
+  var head = '<section class="section" id="sec-prod">' +
+    '<h2>P1. 🗓️ Daily Productivity — per person, date wise</h2><div class="body">' +
+    '<div class="sec-desc">Source: the “' + esc_(CONFIG.PRODUCTIVITY_SHEET_NAMES[0]) +
+    '” form-responses tab — every entry grouped per person, latest day first.</div>';
+  if (!pd || !pd.available) {
+    return head + '<div class="empty-note">Add a tab named “' +
+      esc_(CONFIG.PRODUCTIVITY_SHEET_NAMES[0]) +
+      '” with a Timestamp/Date column and a person-name column; every other column shows as an answer.</div></div></section>';
+  }
+  var t = pd.totals;
+  var tiles = '<div class="cards">' +
+    '<div class="card"><div class="label">Form entries</div><div class="value">' + t.entries +
+    '</div><div class="sub">all rows in ' + esc_(pd.sheetName) + "</div></div>" +
+    '<div class="card"><div class="label">People</div><div class="value">' + t.persons +
+    '</div><div class="sub">unique names on the form</div></div>' +
+    '<div class="card"><div class="label">Active days</div><div class="value">' + t.days +
+    '</div><div class="sub">days with at least one entry</div></div></div>';
+  var perPerson = pd.persons.map(function (pp) {
+    var labels = {}; pp.entries.forEach(function (e) { for (var k2 in e.cells) labels[k2] = true; });
+    var cols = Object.keys(labels);
+    var rows = pp.entries.map(function (e) {
+      return "<tr><td><b>" + esc_(e.dayKey) + "</b></td>" +
+        cols.map(function (c) { return "<td>" + (esc_(e.cells[c]) || "—") + "</td>"; }).join("") + "</tr>";
+    }).join("");
+    return '<div class="subpanel" style="margin-top:12px"><div class="subpanel-head">' +
+      esc_(pp.name) + " · day-wise entries (" + pp.entries.length + ')</div>' +
+      '<div class="scroll-x"><table class="ptable"><thead><tr><th>Date</th>' +
+      cols.map(function (c) { return "<th>" + esc_(c) + "</th>"; }).join("") +
+      "</tr></thead><tbody>" + rows + "</tbody></table></div></div>";
+  }).join("");
+  return head + tiles + perPerson + "</div></section>";
+}
+
 function buildAllPanes_(data, perfData) {
   return {
     index: renderIndexHtml_(data, perfData),
     cre: renderCreHtml_(data, perfData),
     tech: renderTechHtml_(perfData),
-    sm: renderSmHtml_(data, perfData)
+    sm: renderSmHtml_(data, perfData),
+    deck: renderDeckPage_(data, perfData),
+    productivity: renderProductivityHtml_(data),
+    logic: renderDerivationPage_(data, perfData)
   };
 }
 
@@ -4566,8 +5793,12 @@ function exportBlocksFor_(key) {
     return [
       ["Declined Repairs — unique decline!CaseId · local approver rejected",
         ex.decline ? ex.decline.count || 0 : 0],
-      ["Requote Win-backs — serials rejected → approved",
+      ["Requote Win-backs — rejected → approved, unique case ids (Task 67)",
         ex.winback ? ex.winback.count || 0 : 0],
+      ["Win-back taxable value (Σ crm on those cases)",
+        ex.winback ? ex.winback.taxable || 0 : 0],
+      ["Win-back gross profit (Σ crm on those cases)",
+        ex.winback ? ex.winback.grossProfit || 0 : 0],
       ["Open Jobs", t.openJobs || 0],
       ["Communication updated", t.communicated || 0],
       ["Update pending", t.notCommunicated || 0]];
@@ -4606,7 +5837,7 @@ function exportBlocksFor_(key) {
   var BANDS = [[0, 2, "0–2 d"], [3, 5, "3–5 d"], [6, 10, "6–10 d"], [11, 15, "11–15 d"],
     [16, 30, "16–30 d"], [31, 45, "31–45 d"], [46, 60, "46–60 d"], [61, 100, "61–100 d"], [101, 1e12, "100+ d"]];
   function bucketHeaders_() {
-    return ["Repair Bucket"].concat(BANDS.map(function (bd) { return bd[2]; })).concat(["Age —", "Total"]);
+    return ["Repair Bucket"].concat(BANDS.map(function (bd) { return bd[2]; })).concat(["Total"]);
   }
   function bucketRows_() {
     var jobs = (pd.jobs && pd.jobs.available && pd.jobs.jobs) ? pd.jobs.jobs : [];
@@ -4622,7 +5853,7 @@ function exportBlocksFor_(key) {
     bOrder.sort();
     return bOrder.map(function (b) {
       var r = bMap[b];
-      return [b].concat(r.bands).concat([r.noAge, r.total]);
+      return [b].concat(r.bands).concat([r.total - r.noAge]);
     });
   }
   function marginRows_(mk) {
@@ -4669,12 +5900,187 @@ function exportBlocksFor_(key) {
     { title: "B. KPI Target — Store KPI Parameters",
       headers: ["KPI", "Category", "Target", "Achieved", "%", "Balance", "Approx Balance Value", "Achieved Value", "Achieved GP"],
       rows: kpiTargetRows_() }] };
+  if (key === "walkin") {
+    var wl2 = pd.walkin || { available: false };
+    var wt = wl2.totals || { walkins: 0, unique: 0, cases: 0, invoices: 0, remarks: 0, deadLeads: 0 };
+    function wcontrib(n) { return wt.walkins > 0 ? (Math.round((1000 * n) / wt.walkins) / 10) + "%" : "0%"; }
+    return { name: "Walk-in Analysis", blocks: [
+      { title: "C1. Walk-in Analysis (as shown)", headers: ["Metric", "Value", "% of walk-ins"],
+        rows: [
+          ["Total Walk-ins", wt.walkins || 0, wt.walkins > 0 ? "100%" : "0%"],
+          ["Unique Walk-ins", wt.unique || 0, wcontrib(wt.unique || 0)],
+          ["Cases Created", wt.cases || 0, wcontrib(wt.cases || 0)],
+          ["Invoices Created", wt.invoices || 0, wcontrib(wt.invoices || 0)],
+          ["Remarks Updated", wt.remarks || 0, wcontrib(wt.remarks || 0)],
+          ["Dead Leads", wt.deadLeads || 0, wcontrib(wt.deadLeads || 0)]] }] };
+  }
+  if (key === "datewise") {
+    var ppl2 = data.salespeople || [];
+    var nameByKey = {};
+    ppl2.forEach(function (p) { nameByKey[p.key] = p.name; });
+    var drows = [];
+    (data.days || []).forEach(function (d) {
+      if (d.undated) return;
+      (d.people || []).forEach(function (pp) {
+        var tm = {};
+        (pp.types || []).forEach(function (t) { tm[t.type] = t.value; });
+        drows.push([d.dateKey, nameByKey[pp.key] || pp.key, Math.round(tm.service || 0),
+          Math.round(tm.accessory || 0), Math.round(tm.repair || 0), Math.round(pp.grossProfit || 0)]);
+      });
+    });
+    drows.sort(function (a, b) { return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0); });
+    return { name: "Date-wise Sales Revenue", blocks: [
+      { title: "F1. Date-wise Sales Revenue Analysis (by salesperson)",
+        headers: ["Date", "SalesPerson", "Service", "Accessory", "Repair", "Gross Profit"],
+        rows: drows }] };
+  }
+  // Task 68 — export blocks for the two new dashboards.
+  if (key === "happycalling") return exportHappyCallingBlocks_(pd.happyCalling);
+  if (key === "gsxinvoice") return exportGsxInvoiceBlocks_(pd.gsxInvoice);
+  if (key === "productivitytech") return exportProductivityTechBlocks_(pd.productivity && pd.productivity.tech);
+  if (key === "productivitycre") return exportProductivityCreBlocks_(pd.productivity && pd.productivity.cre);
+
+  if (key === "deck") {
+    var dk2 = data.deckAnalysis || {};
+    function lvRows(x) { return (x.rows || []).map(function (r) { return [r.label, r.count, r.value]; }); }
+    function lvTot(x, t) { return [["Total", t ? t.count : (x.totalCount || 0),
+      t ? Math.round(t.value) : (x.totalValue || 0)]]; }
+    var blocks2 = [];
+    var sr2 = dk2.salesRev || { rows: [] };
+    blocks2.push({ title: "G1. Sales Revenue Analysis", headers: ["Revenue Type", "Count", "Value"],
+      rows: lvRows(sr2).concat(lvTot(sr2, sr2.total)) });
+    var wk2 = dk2.walkins || {};
+    blocks2.push({ title: "G2. Walk-in Details", headers: ["Metric", "Count"],
+      rows: [["No. Of Walkin (unique)", wk2.unique || 0], ["Unique Invoice", wk2.uniqBills || 0]] });
+    var rr2 = dk2.repairRev || { rows: [] };
+    blocks2.push({ title: "G3. Repair Revenue Analysis", headers: ["Product", "Count", "Value"],
+      rows: lvRows(rr2).concat(lvTot(rr2, rr2.total)) });
+    var acc2 = dk2.accessoriesRev || { rows: [] };
+    blocks2.push({ title: "G4. Accessories Revenue Analysis", headers: ["Product", "Count", "Value"],
+      rows: lvRows(acc2).concat(lvTot(acc2, acc2.total)) });
+    var sv2 = dk2.serviceRev || { rows: [] };
+    blocks2.push({ title: "G5. Service Revenue Analysis", headers: ["Item Code", "Count", "Value"],
+      rows: lvRows(sv2).concat(lvTot(sv2, sv2.total)) });
+    var gp2 = dk2.gpValue || { rows: [] };
+    blocks2.push({ title: "G6. Gross Profit Analysis — Value", headers: ["Revenue Type", "Invoice Value", "GP Value", "GP %"],
+      rows: (gp2.rows || []).map(function (r) { return [r.label, r.value, r.gp, r.pct.toFixed(1) + "%"]; })
+        .concat(gp2.total ? [["Total", gp2.total.value, gp2.total.gp, gp2.total.pct.toFixed(1) + "%"]] : []) });
+    blocks2.push({ title: "G7. Walk-in Analysis", headers: ["Metric", "Count"],
+      rows: (dk2.walkinAnalysis || []).map(function (r) { return [r.label, r.value]; }) });
+    var cv2 = dk2.coverage || { rows: [] };
+    blocks2.push({ title: "G8. Coverage Analysis | LOB", headers: ["Product", "Cases", "W", "NW"],
+      rows: (cv2.rows || []).map(function (r) { return [r.label, r.count, r.w, r.nw]; })
+        .concat(cv2.total ? [["Total", cv2.total.count, cv2.total.w, cv2.total.nw]] : []) });
+    return { name: "DECK — Current Month Summary", blocks: blocks2 };
+  }
   return null;
+}
+
+/**
+ * Task 65 — exports carry the pivot SOURCE data, not just the summary blocks:
+ * every key gets a "Source rows" sheet with the underlying detail rows.
+ */
+function exportRawFor_(key) {
+  key = str_(key).trim().toLowerCase();
+  var ss = null;
+  try { ss = (typeof getSpreadsheet_ === "function") ? getSpreadsheet_() : SpreadsheetApp.getActiveSpreadsheet(); }
+  catch (e) { ss = null; }
+  if (!ss) return null;
+
+  var CRM_HEADERS = ["InvoiceCode", "Date", "SalesPerson", "RevenueType", "ItemDescription",
+    "SubCategory", "ItemCode", "OrderCode", "Taxable", "Gross Profit"];
+  function crmSheet_() {
+    try { return getSheetByNames_(ss, CONFIG.CRM_SHEET_NAMES); } catch (e) { return null; }
+  }
+  function crmLines(monthOnly) {
+    var sh = crmSheet_();
+    if (!sh) return null;
+    var rows = parseCrmRows(sh.getDataRange().getDisplayValues());
+    var now = new Date(), cm = now.getMonth() + 1, cy = now.getFullYear();
+    var out = [];
+    rows.forEach(function (r) {
+      if (!isSaleRow_(r)) return;
+      if (monthOnly && !(r.month === cm && r.year === cy)) return;
+      out.push([r.invoiceCode, r.dayKey, r.salesPerson, r.revenueType, r.itemDescription,
+        r.subCategory, r.itemCode, r.orderCode, r.taxableAmount, r.grossProfit]);
+    });
+    return { title: "Pivot source — crm " + (monthOnly ? "current-month " : "") + "SALE lines (crm!*)",
+      headers: CRM_HEADERS, rows: out };
+  }
+  function sheetDump(names, label) {
+    var sh2 = getSheetByNames_(ss, names);
+    if (!sh2) return null;
+    var v = sh2.getDataRange().getDisplayValues();
+    if (!v || !v.length) return null;
+    var rows = [];
+    for (var r = 1; r < v.length && rows.length < 4000; r++) {
+      rows.push(v[r].map(function (c) { return (c === 0 || c === null || c === undefined) ? "" : String(c); }));
+    }
+    return { title: label, headers: v[0].map(function (h) { return str_(h); }), rows: rows };
+  }
+  function svcDump(openOnly, label) {
+    var sh3 = getSheetByNames_(ss, CONFIG.SERVICE_SHEET_NAMES);
+    if (!sh3) return null;
+    var rd = readSheetRows_(sh3, SERVICE_SPEC, ["caseDate"]);
+    var out = [];
+    rd.rows.forEach(function (r) {
+      if (openOnly && !/open/i.test(str_(r.status))) return;
+      out.push([r.caseId, r.caseDate, r.status, r.gsxStatus, r.crmRepairStatus, r.repairDocType,
+        r.product, r.mobile, r.serialNo1, r.productWarranty || r.warranty]);
+    });
+    return { title: label,
+      headers: ["CaseId", "CaseDate", "Status", "GSX Status", "CRM Repair Status", "Repair Type",
+        "Product", "Mobile", "Serial", "ProductWarrantyDesc"],
+      rows: out };
+  }
+  function marginAll() {
+    var sh4 = crmSheet_();
+    if (!sh4) return null;
+    var rows = parseCrmRows(sh4.getDataRange().getDisplayValues()).filter(isSaleRow_);
+    var byInv = {};
+    rows.forEach(function (r) {
+      var k = r.invoiceCode;
+      if (!k) return;
+      if (!byInv[k]) byInv[k] = { invoice: k, person: r.salesPerson || "—", types: {}, taxable: 0, gp: 0 };
+      var b = byInv[k];
+      b.taxable += r.taxableAmount;
+      b.gp += r.grossProfit;
+      var tk = revenueTypeKey_(r.revenueType);
+      if (tk) b.types[tk] = true;
+    });
+    var list = [];
+    Object.keys(byInv).forEach(function (k) {
+      var b = byInv[k];
+      if (!(b.taxable > 0)) return;
+      list.push([b.invoice, b.person, Object.keys(b.types).join(" + "), b.taxable, b.gp,
+        (Math.round((1000 * b.gp) / b.taxable) / 10) + "%"]);
+    });
+    list.sort(function (a, b) { return (b[3] > 0 ? b[4] / b[3] : 0) - (a[3] > 0 ? a[4] / a[3] : 0); });
+    return { title: "Pivot source — margin % per invoice, ALL invoices (no Top-5 cut)",
+      headers: ["Invoice", "SalesPerson", "Revenue Types", "Taxable", "Gross Profit", "Margin %"], rows: list };
+  }
+
+  if (key === "walkin") return sheetDump(CONFIG.WALKIN_SHEET_NAMES, "Pivot source — walkin tokens (walkin!*)");
+  if (key === "decline") return sheetDump(CONFIG.DECLINE_SHEET_NAMES, "Pivot source — decline rows (decline!*)");
+  if (key === "ops") return sheetDump(CONFIG.DECLINE_SHEET_NAMES, "Pivot source — decline rows (decline!*)");
+  if (key === "jobs") return svcDump(true, "Pivot source — open service rows (service!*)");
+  if (key === "repairtype") return svcDump(false, "Pivot source — all service rows (service!*)");
+  if (key === "margin") return marginAll();
+  if (key === "deck") return crmLines(true);
+  // store / kpi / datewise are crm-driven
+  return crmLines(false);
+}
+
+function exportBlocksWithRaw_(key) {
+  var spec = exportBlocksFor_(key);
+  if (!spec) return null;
+  spec.raw = exportRawFor_(key);
+  return spec;
 }
 
 /** Public endpoint called by the per-table "⬇ Export" buttons. */
 function exportDashboardSectionToSpreadsheet(key) {
-  var spec = exportBlocksFor_(key);
+  var spec = exportBlocksWithRaw_(key);
   if (!spec) {
     if (key === null || key === undefined || str_(key).trim() === "") {
       throw new Error("No export table was specified. This function takes a " +
@@ -4695,6 +6101,14 @@ function exportDashboardSectionToSpreadsheet(key) {
     if (b.rows.length) sh.getRange(r + 2, 1, b.rows.length, b.headers.length).setValues(b.rows);
     r += 2 + b.rows.length + 1;
   });
+  // Task 65 — second sheet carries the pivot SOURCE data (the details behind
+  // the summary), so the export is never "just what the dashboard shows".
+  if (spec.raw && spec.raw.rows && spec.raw.rows.length) {
+    var rs = book.insertSheet("Source rows");
+    rs.getRange(1, 1).setValue(spec.raw.title || "Pivot source rows").setFontWeight("bold");
+    rs.getRange(2, 1, 1, spec.raw.headers.length).setValues([spec.raw.headers]).setFontWeight("bold");
+    rs.getRange(3, 1, spec.raw.rows.length, spec.raw.headers.length).setValues(spec.raw.rows);
+  }
   return JSON.stringify({ name: book.getName(), url: book.getUrl() });
 }
 
@@ -4972,7 +6386,7 @@ function chatInvoiceRowsForMobile(ss, mobile) {
     });
   }
   // Also: invoices whose TranType is INVOICE and InvoiceCode appears in walkin service sheets — but for a pure mobile answer we only need the codes we just found.
-  var crmSheet = getSheetByNames_(ss, [CONFIG.CRM_SHEET_NAME]);
+  var crmSheet = getSheetByNames_(ss, CONFIG.CRM_SHEET_NAMES);   // Task 79
   if (crmSheet) {
     var values = parseCrmRows(chatSheetData(crmSheet).allValues);
     var found = {};
@@ -5234,14 +6648,14 @@ function paneDriveMerge_(single, meta) {
 function paneDriveState_() {
   var d = paneDriveGetAll_();
   if (!d || !d.panes) return null;
-  var all = ["index", "cre", "tech", "sm"].every(function (pg) { return !!d.panes[pg]; });
+  var all = ["index", "cre", "tech", "sm", "deck", "productivity", "logic"].every(function (pg) { return !!d.panes[pg]; });
   return all ? d : null;
 }
 
 function cachePanes_(data, panes) {
   try {
     var cache = CacheService.getScriptCache();
-    ["index", "cre", "tech", "sm"].forEach(function (pg) {
+    ["index", "cre", "tech", "sm", "deck", "productivity", "logic"].forEach(function (pg) {
       if (panes[pg]) paneCachePut_(cache, "dash_pane_v6_" + pg, panes[pg]);
     });
     cache.put("dash_meta_v6", JSON.stringify({
@@ -5250,7 +6664,7 @@ function cachePanes_(data, panes) {
     }), 900);
     // Fresh panes ⇒ previously assembled pages are stale; drop them.
     try {
-      cache.removeAll(["dash_pg_v7_index", "dash_pg_v7_cre", "dash_pg_v7_tech", "dash_pg_v7_sm"]);
+      cache.removeAll(["dash_pg_v7_index", "dash_pg_v7_cre", "dash_pg_v7_tech", "dash_pg_v7_sm", "dash_pg_v7_deck", "dash_pg_v7_productivity", "dash_pg_v7_logic"]);
     } catch (e2) { /* non-fatal */ }
     // also persist to the Drive-backed store (merge, timestamped).
     paneDriveMerge_(panes, {
@@ -5282,27 +6696,29 @@ function buildDashboardPage_(data, initialPage, opts) {
   var ACTIVE = "index";
   PAGES_ACTIVE: {
     var rq = String(initialPage || "index").toLowerCase();
-    if (["index", "cre", "tech", "sm"].indexOf(rq) !== -1) ACTIVE = rq;
+    if (["index", "cre", "tech", "sm", "deck", "logic"].indexOf(rq) !== -1) ACTIVE = rq;
   }
   var clockStamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd-MM-yyyy hh:mm:ss a");
 
-  // the eight legacy pages are replaced by four ROLE pages.
+  // the eight legacy pages are replaced by five ROLE pages.
   // INDEX - overall store performance at a glance; CRE - minimum basic
   // details; TECH - job management basics only; SM - the full master report
-  // (groups A-G). Fine-grained per-role gating per target!X1:Y50 follows in
-  // the next iteration.
+  // (groups A-F); DECK - the current-month summary tables (group G).
   var cached = opts.paneJson || null;
   var PAGES = [
     // [tab label, data-page id, main id, html, meta-subtitle]
     ["INDEX", "index", "pageIndex", cached ? cached.index : renderIndexHtml_(data, perfData), "Overall store performance — every dashboard at a glance"],
     ["CRE",   "cre",   "pageCre",   cached ? cached.cre : renderCreHtml_(data, perfData),     "CRE — walk-in tokens · jobs & invoices created · C-SAT summary"],
     ["TECH",  "tech",  "pageTech",  cached ? cached.tech : renderTechHtml_(perfData),         "TECH — job buckets · bucket aging · communication status"],
-    ["SM",    "sm",    "pageSm",    cached ? cached.sm : renderSmHtml_(data, perfData),       "SM — full & detailed master report (groups A-G)"],
+    ["SM",    "sm",    "pageSm",    cached ? cached.sm : renderSmHtml_(data, perfData),       "SM — full & detailed master report (groups A-F)"],
+    ["DECK",  "deck",  "pageDeck",  cached ? cached.deck : renderDeckPage_(data, perfData),   "DECK — current-month summary tables (group G)"],
+    ["PRODUCTIVITY", "productivity", "pageProductivity", cached ? cached.productivity : renderProductivityHtml_(data), "PRODUCTIVITY — per-person daily entries, date wise (Form Responses 2)"],
+    ["LOGIC", "logic", "pageLogic", cached ? cached.logic : renderDerivationPage_(data, perfData), "LOGIC — how every dashboard is computed"],
   ];
   // Full renders also warm the pane caches (Task 51b) so repeat page loads
   // and tab clicks skip all server compute.
   if (!cached && data) {
-    cachePanes_(data, { index: PAGES[0][3], cre: PAGES[1][3], tech: PAGES[2][3], sm: PAGES[3][3] });
+    cachePanes_(data, { index: PAGES[0][3], cre: PAGES[1][3], tech: PAGES[2][3], sm: PAGES[3][3], deck: PAGES[4][3], productivity: PAGES[5][3], logic: PAGES[6][3] });
   }
 
   // tabs are plain <button>s — a tap can ONLY flip the panes that
@@ -5335,7 +6751,7 @@ function buildDashboardPage_(data, initialPage, opts) {
     "}" +
     // Pane routing: flip the active tab, show the matching <main>, swap the
     // subtitle from its data-meta. Panes are keyed by data-pane.
-    "function paneId(page){return {index:'pageIndex',cre:'pageCre',tech:'pageTech',sm:'pageSm'}[page]||'pageIndex';}" +
+    "function paneId(page){return {index:'pageIndex',cre:'pageCre',tech:'pageTech',sm:'pageSm',deck:'pageDeck',logic:'pageLogic'}[page]||'pageIndex';}" +
     "function paneEl(page){return document.getElementById(paneId(page));}" +
     "function currentPage(){var a=document.querySelector('.tab-btn.active');return a?a.dataset.page:'index';}" +
     "function showPane(page){" +
@@ -5375,9 +6791,39 @@ function buildDashboardPage_(data, initialPage, opts) {
     "  for(var i=0;i<tabs.length;i++){(function(t){t.addEventListener('click',function(ev){ev.preventDefault();switchPage(t);});})(tabs[i]);}" +
     "}" +
     "try{bindTabs();}catch(e){}" +
+    "try{injectXlsButtons_();}catch(e){}" +
+    // Boot-time island pre-parse (Task 69): the JSON maps are resolved once at
+    // page load, so the first case popup opens instantly — no per-click parse.
+    "try{caseDetailsMap_();}catch(e){}" +
     // Back/forward buttons only flip the already-loaded panes — no reload.
     "try{window.addEventListener('popstate',function(){var m=((window.location&&location.search)||'').match(/[?&]page=(index|cre|tech|sm)/);if(m)gotoPage(m[1],null);});}catch(e){}" +
-    "try{tickClock(); setInterval(tickClock,1000);}catch(e){}" +
+    "function setViewMode(m){" +
+    "  var b=document.body||document.documentElement; if(!b||!b.classList){return;}" +
+    "  if(m!=='mob'){m='pc';}" +
+    "  try{if(window.localStorage){window.localStorage.setItem('vmode',m);}}catch(e0){}" +
+    "  b.classList.toggle('v-mob',m==='mob');" +
+    "  ['vmPc','vmMob'].forEach(function(id){var el=document.getElementById(id);" +
+    "    if(el&&el.classList){el.classList.toggle('on',(m==='mob')===(id==='vmMob'));}});}" +
+    "function initViewMode(){" +
+    "  var m='';" +
+    "  try{if(window.localStorage){m=window.localStorage.getItem('vmode')||'';}}catch(e1){m='';}" +
+    "  if(m!=='mob'&&m!=='pc'){" +
+    "    m='pc';" +
+    "    try{if(window.innerWidth&&window.innerWidth<=760){m='mob';}}catch(e2){}" +
+    "  }" +
+    "  setViewMode(m);}" +
+    "function boostPcts(){" +
+    "  if(!document.createTreeWalker||!document.body){return;}" +
+    "  var w=document.createTreeWalker(document.body,4);" +
+    "  var n,list=[];" +
+    "  while((n=w.nextNode())){" +
+    "    if(n.nodeValue&&n.nodeValue.length<=60&&n.nodeValue.indexOf('%')>-1&&/\\d\\s*%/.test(n.nodeValue)){list.push(n);}" +
+    "  }" +
+    "  list.forEach(function(t){" +
+    "    if(!t.parentNode){return;}" +
+    "    var s=document.createElement('span');s.className='pct-big';s.textContent=t.nodeValue;" +
+    "    t.parentNode.replaceChild(s,t);});}" +
+    "try{tickClock(); setInterval(tickClock,1000); boostPcts();}catch(e){}" +
     "" +
     // silent background updater: right after the page paints it
     // fills every pane (so tab switches become pure display flips), and from
@@ -5449,7 +6895,37 @@ function buildDashboardPage_(data, initialPage, opts) {
     "    .refreshDashboardSections();" +
     "}" +
     "" +
-    "// Task 54: per-table export buttons call the single-table endpoint." +
+    // --- Excel export helpers (Task 68): every tile downloads a real .xls
+    "function dashXlsFromSec_(sec,name){" +
+    "  if(!sec||!sec.querySelectorAll){return;}" +
+    "  var esc=escText_;" +
+    "  var body='';" +
+    "  var cards=sec.querySelectorAll('.card');" +
+    "  if(cards.length){body+='<table border=1><tr><th>Tile</th><th>Value</th><th>Note</th></tr>';" +
+    "    for(var i=0;i<cards.length;i++){var c=cards[i];" +
+    "      var L=c.querySelector('.label'),V=c.querySelector('.value'),S=c.querySelector('.sub');" +
+    "      body+='<tr><td>'+esc(L?L.textContent:'')+'</td><td>'+esc(V?V.textContent:'')+'</td><td>'+esc(S?S.textContent:'')+'</td></tr>';}" +
+    "    body+='</table>';}" +
+    "  var tabs=sec.querySelectorAll('table');for(var t=0;t<tabs.length;t++){body+=tabs[t].outerHTML;}" +
+    "  if(!body){body='<table><tr><td>'+esc(sec.textContent.slice(0,2000))+'</td></tr></table>';}" +
+    "  var full='<html xmlns:x=\"urn:schemas-microsoft-com:office:excel\"><head><meta charset=\"utf-8\" /></head><body>'+body+'</body></html>';" +
+    "  var fn=(name||'dashboard').replace(/[\\/:*?\"<>|]/g,'').slice(0,60)||'dashboard';" +
+    "  var blob=new Blob(['\ufeff'+full],{type:'application/vnd.ms-excel'});" +
+    "  var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=fn+'.xls';" +
+    "  document.body.appendChild(a);a.click();" +
+    "  setTimeout(function(){URL.revokeObjectURL(a.href);if(a.parentNode)a.parentNode.removeChild(a);},500);}" +
+    // every section that has no server-routed ⬇ Export button yet gets an
+    // in-place ⬇ Excel button — all tiles on every page become exportable.
+    "function injectXlsButtons_(){" +
+    "  var secs=document.querySelectorAll('section');" +
+    "  for(var i=0;i<secs.length;i++){var s=secs[i];var h2=s.querySelector('h2');" +
+    "    if(!h2||h2.querySelector('.mini-export')||h2.querySelector('.xl-inject-btn'))continue;" +
+    "    var b=document.createElement('button');b.type='button';" +
+    "    b.className='mini-export xl-inject-btn';b.textContent='\u2B07 Excel';" +
+    "    b.title='Download this tile as an Excel file';" +
+    "    (function(secn,btn){btn.addEventListener('click',function(ev){ev.preventDefault();" +
+    "      dashXlsFromSec_(secn,(secn.querySelector('h2')||{textContent:'dashboard'}).textContent);});})(s,b);" +
+    "    h2.appendChild(b);}}" +
     "function dashExportSection(key,btn){" +
     "  if(btn&&btn.getAttribute){var dk=btn.getAttribute('data-export-key'); if(dk&&typeof key!=='string') key=dk;}" +
     "  if(!key){var n0=document.getElementById('note'); if(n0){n0.textContent='Nothing to export — use the ⬇ Export button on a table.'; n0.className='note err';} return;}" +
@@ -5468,6 +6944,9 @@ function buildDashboardPage_(data, initialPage, opts) {
     "      if(n) n.textContent='Export failed: '+(err && err.message ? err.message : err);" +
     "      btn.disabled=false; btn.textContent=old; })" +
     "    .exportDashboardSectionToSpreadsheet(key);" +
+    "  try{var sec2=(btn&&btn.closest)?btn.closest('section'):null;" +
+    "    var h2=(sec2?sec2.querySelector('h2'):null);" +
+    "    dashXlsFromSec_(sec2,(h2?h2.textContent:'dashboard'));}catch(e){}" +
     "}" +
     "" +
     // ---- chat bot: toggle / send / answer ----
@@ -5516,22 +6995,31 @@ function buildDashboardPage_(data, initialPage, opts) {
     "function escText_(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}" +
     "var CASE_DETAILS_CACHE=null;" +
     "function caseDetailsMap_(){if(CASE_DETAILS_CACHE===null){" +
-    "  var el=document.getElementById('caseDetailData');" +
-    "  try{CASE_DETAILS_CACHE=el?JSON.parse(el.textContent||'{}'):{};}catch(e){CASE_DETAILS_CACHE={};}" +
-    "}return CASE_DETAILS_CACHE;}" +
+    "  CASE_DETAILS_CACHE={};var els=document.querySelectorAll('.caseDetailData');" +
+    "  for(var ei=0;ei<els.length;ei++){try{var m2=JSON.parse(els[ei].textContent||'{}');" +
+    "  for(var k2 in m2){CASE_DETAILS_CACHE[k2]=m2[k2];}}catch(e){}}}" +
+    "return CASE_DETAILS_CACHE;}" +
     "function openCaseDetails(cid){" +
     "  var d=(caseDetailsMap_()||{})[cid]; if(!d)return;" +
     "  var rows=[['Case ID',d.caseId],['Job Created Date',d.createdDate]," +
     "    ['Repair Created Date',d.repairDate],['Repair Bucket',d.bucket]," +
     "    ['Customer Name',d.name],['Product',d.product]," +
     "    ['Communication Updated',d.commDate],['Ready For Pickup',d.readyDate]," +
-    "    ['GSX Repair Status',d.gsxStatus]];" +
+    "    ['Assigned To (Tech)',d.techCode],['GSX Repair Status',d.gsxStatus]," +
+    "    ['Advance Paid',(d.advancePaid>0?('₹'+Number(d.advancePaid).toLocaleString('en-IN')):'No advance')]];" +
     "  var h='';for(var i=0;i<rows.length;i++){" +
     "    h+='<tr><td>'+escText_(rows[i][0])+'</td><td>'+escText_(rows[i][1])+'</td></tr>';}" +
+    "  var mm=ensureCaseModal_();" +
     "  document.getElementById('cmTable').innerHTML=h;" +
     "  document.getElementById('cmTitle').textContent='CASE '+d.caseId;" +
-    "  document.getElementById('caseModal').style.display='flex';" +
+    "  mm.style.display='flex';" +
     "}" +
+    "function ensureCaseModal_(){var m=document.getElementById('caseModal');if(m)return m;" +
+    "  m=document.createElement('div');m.id='caseModal';m.className='casemodal-overlay';m.style.display='none';" +
+    "  m.innerHTML='<div class=\"casemodal\"><div class=\"cm-top\"><b id=\"cmTitle\">Case details</b>' +" +
+    "    '<button type=\"button\" onclick=\"closeCaseDetails()\">&times;</button></div><table id=\"cmTable\"></table></div>';" +
+    "  m.addEventListener('click',function(e){if(e.target===m)closeCaseDetails();});" +
+    "  document.body.appendChild(m);return m;}" +
     "function closeCaseDetails(){var m=document.getElementById('caseModal');if(m)m.style.display='none';}" +
     "document.addEventListener('keydown',function(e){if(e.key==='Escape')closeCaseDetails();});" +
     "</script>";
@@ -5539,7 +7027,7 @@ function buildDashboardPage_(data, initialPage, opts) {
   var bizMeta = (opts.metaText !== undefined) ? opts.metaText : renderMetaText_(data);
 
   return (
-    "<!-- BUILD TASK61 · export keys pinned on buttons + caches rebased · prefetched panes · tabs never navigate -->" +
+    "<!-- BUILD TASK71-79 · one-year dump sources · uniform typography · productivity page · open access · A1-tile template everywhere · uniform colorful theme + e1 comm fix · fonts&colors matched to the deployed page · colorful presentable theme · screenshot-matched tile fonts (navy 3D4A6C tiles · chips F4F6FC · labels 5A6688 · % slate · per-day label AEBDD0) · optimised light palette · AR by-revenue-type list (AR cases per invoice) · report-age freshness chips · E1 Age-band removed · A4 margin = repair/accessory only + full descriptions · A6 in-progress carries prev balance · clock centred -->" +
     "<!DOCTYPE html><html><head><base target=\"_top\"><meta charset=\"utf-8\">" +
     "<title>" + esc_(pageTitle) + "</title><style>" + css + "</style></head><body>" +
     // plain dark-ash backdrop for EVERY page — no image at all.
@@ -5560,6 +7048,7 @@ function buildDashboardPage_(data, initialPage, opts) {
     // place. No ?refresh=1 navigation, no full page load.
     '<button type="button" class="refresh-btn" onclick="dashRefresh(this);return false;">' +
     '<span class="spin"></span><span class="txt">↻ Refresh data</span></button>' +
+    // Task 72 — PC/mobile switchover removed by owner request; one uniform view.
     // ---- tabs: Index / GP / KPI / Walk-in / Operation / Open Jobs / Date ----
     '<div class="tabs-row"><div class="tabs tabs-wide" role="tablist">' + tabs + "</div></div>" +
     "</div></header>" +
@@ -5594,73 +7083,1024 @@ function buildDashboardPage_(data, initialPage, opts) {
 }
 
 function getDashboardCss_() {
-  // Presentation-only replacement. All business rules, calculations,
-  // renderers, markup generators, endpoints and client-side handlers remain unchanged.
-  return [
-    ":root{--page:#eef2f7;--ink:#17263a;--muted:#64748b;--line:#dbe3ec;--surface:#ffffff;--navy:#172b43;--navy2:#203a58;--achieved:#16a879;--target:#3488d8;--balance:#c58a18;--percent:#8a57c2;--accent:#2689a6;--danger:#d94c59;--completed:#16a879;--radius:14px;--shadow:0 5px 18px rgba(20,40,65,.07);--f-th:.66rem;--f-td:.72rem;--f-label:.62rem;--f-val:1.12rem}",
-    "*{box-sizing:border-box}",
-    "html{font-size:16px;scroll-behavior:smooth}",
-    "body{margin:0;min-height:100vh;background:linear-gradient(180deg,#f4f7fb 0%,#edf2f7 100%) fixed;color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;line-height:1.5}",
-    "button,input,select,textarea{font:inherit}",
-    ".wrap{width:min(100%,1800px);margin:0 auto;padding:22px clamp(14px,2vw,30px) 48px;overflow:visible}",
-    ".topbar{position:sticky;top:0;z-index:50;padding:14px clamp(14px,2vw,30px) 12px;background:rgba(255,255,255,.96);border-bottom:1px solid #dce4ed;box-shadow:0 3px 14px rgba(20,40,65,.05)}",
-    ".topbar-inner{position:relative;width:min(100%,1800px);margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap}",
-    ".topbar-left{display:flex;flex-direction:column;gap:3px;min-width:220px}",
-    ".brand{font-size:clamp(1.35rem,2.1vw,1.8rem);font-weight:850;letter-spacing:-.045em;line-height:1.12;color:#172b43}",
-    ".brand-sub{color:#64748b;font-size:.75rem;font-weight:700;letter-spacing:.04em}",
-    ".topbar .meta{font-size:.72rem;color:#64748b;font-weight:600}",
-    ".topbar .note{min-height:14px;font-size:.7rem;font-weight:650}",
-    ".topbar .note.ok{color:#087c58}.topbar .note.err{color:#c53b48}",
-    ".topbar-clock{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:.78rem;font-weight:750;color:#415875;font-variant-numeric:tabular-nums;white-space:nowrap}",
-    ".tabs-row{width:100%;display:flex;justify-content:center;margin-top:12px}",
-    ".tabs{display:flex;gap:4px;width:min(900px,100%);padding:5px;border:1px solid #dfe6ef;border-radius:12px;background:#f3f6fa;box-shadow:inset 0 1px 2px rgba(20,40,65,.035)}",
-    ".tab-btn{appearance:none;flex:1;min-width:0;border:0;border-radius:9px;padding:10px 12px;background:transparent;color:#53657a;font-size:.73rem;font-weight:800;letter-spacing:.025em;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s,box-shadow .15s}",
-    ".tab-btn:hover{background:#e7edf5;color:#172b43}.tab-btn.active{background:#172b43;color:#fff;box-shadow:0 3px 8px rgba(23,43,67,.18)}",
-    ".refresh-btn{flex-shrink:0;display:inline-flex;align-items:center;gap:8px;border:1px solid #172b43;border-radius:9px;padding:9px 14px;background:#172b43;color:#fff;font-size:.73rem;font-weight:800;cursor:pointer;box-shadow:0 3px 9px rgba(23,43,67,.14)}",
-    ".refresh-btn:hover{background:#254360}.refresh-btn:disabled{opacity:.6;cursor:wait}.refresh-btn .spin{display:none;width:12px;height:12px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}.refresh-btn.loading .spin{display:inline-block}@keyframes spin{to{transform:rotate(360deg)}}",
-    ".section{margin:0 0 26px;overflow:visible}.section h2{margin:0 0 12px;padding:0 0 9px;background:none!important;color:#1c3048!important;border-bottom:1px solid #dce5ef;border-radius:0!important;box-shadow:none!important;font-size:.96rem;font-weight:850;letter-spacing:-.015em}.section .body{padding:0}",
-    ".cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,205px),1fr));gap:12px;margin:0 0 18px}",
-    ".card{position:relative;min-width:0;overflow:hidden;padding:15px;background:#fff!important;color:#20334b!important;border:1px solid #e0e7ef!important;border-radius:13px!important;box-shadow:var(--shadow)!important}",
-    ".card:before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:#b8c9dc;opacity:.8}",
-    ".card.rtile.done:before,.card.done:before{background:#18a879}",
-    ".card .label{display:block;color:#718198!important;font-size:.61rem!important;font-weight:800!important;letter-spacing:.055em!important;line-height:1.25!important;text-transform:uppercase!important;white-space:normal}",
-    ".card .value{display:block;margin-top:6px;color:#172b43!important;font-size:1.3rem!important;font-weight:850!important;letter-spacing:-.035em;line-height:1.15;font-variant-numeric:tabular-nums;white-space:nowrap}",
-    ".card .sub,.card .muted{color:#738197!important;font-size:.66rem}",
-    ".metric{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:9px;padding:8px 10px;border:1px solid #edf1f5!important;border-radius:8px;background:#f7f9fc!important}",
-    ".metric span{color:#718198!important;font-size:.61rem!important;font-weight:750!important}.metric strong{font-size:.78rem!important;font-weight:850!important;font-variant-numeric:tabular-nums;color:#283e58}",
-    ".metric.t strong,.tgt,.grphead-count{color:#3488d8!important}.metric.a strong,.value.pos,.pos{color:#13996e!important}.metric.p strong,.pct{color:#8656bd!important}.metric.b strong{color:#b17b13!important}",
-    ".dreq{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:9px;padding:9px 10px;background:#f5f8fc!important;border:1px solid #e5ebf2!important;border-left:3px solid #83a9d2!important;border-radius:8px}",
-    ".dreq span{font-size:.62rem!important;font-weight:750!important;color:#718198!important}.dreq strong{font-size:.82rem!important;font-weight:850!important;color:#203a58!important;font-variant-numeric:tabular-nums}",
-    ".trend{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.trend span{flex:1;min-width:90px;padding:6px 8px;border:1px solid #e8edf3;border-radius:7px;background:#f7f9fc;font-size:.58rem;font-weight:700;color:#738197}.trend b{color:#263c56;font-variant-numeric:tabular-nums;white-space:nowrap}",
-    ".subpanel{min-width:0;margin:0 0 14px;padding:14px;background:#fff!important;border:1px solid #e0e7ef!important;border-radius:13px;box-shadow:var(--shadow)!important;color:#263a52!important}",
-    ".subpanel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;color:#263a52!important;font-size:.82rem!important;font-weight:850!important}",
-    ".rt-head h3{margin:0;color:#263a52!important;font-size:.85rem!important;font-weight:850!important}",
-    ".legend-card{padding:10px 12px;background:#f7f9fc!important;border:1px solid #e5ebf2!important;border-radius:10px;color:#43546a!important;box-shadow:none!important}",
-    ".legend,.small,.note{font-size:.68rem;font-weight:550;color:#68788f!important}.muted{color:#718198!important}",
-    ".status,.badge{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:999px;background:#edf3f9!important;color:#47617d!important;font-size:.58rem!important;font-weight:800!important;letter-spacing:.025em;text-transform:uppercase;border:1px solid #e2eaf2!important}",
-    ".status.on,.badge.good{background:#e8f7f1!important;color:#087b58!important;border-color:#cdeee0!important}.status.pending,.badge.warn{background:#fff6df!important;color:#956b12!important;border-color:#f7e8bc!important}.badge.bad{background:#fff0f0!important;color:#b83e48!important;border-color:#f4d5d7!important}",
-    ".comm-yes{color:#0f9a70!important}.neg{color:#cf4653!important}.bal-neg,.bal-warn,.age-warn{color:#ac7611!important}",
-    ".scroll-x{width:100%;overflow-x:auto;overscroll-behavior-x:contain;border-radius:10px}",
-    "table{max-width:100%;border-collapse:separate;border-spacing:0;font-variant-numeric:tabular-nums}",
-    "table.ptable,table.matrix,table.jobtable,table.csat-table{width:100%;min-width:760px;table-layout:auto;background:#fff!important;border:1px solid #e0e7ef!important;border-radius:11px;overflow:hidden;box-shadow:0 3px 12px rgba(20,40,65,.045)!important}",
-    "table th{position:sticky;top:0;padding:10px 11px;background:#eef3f8!important;color:#405671!important;border-bottom:1px solid #dce5ef!important;text-align:left;font-size:var(--f-th)!important;font-weight:850!important;letter-spacing:.045em!important;text-transform:uppercase}",
-    "table td{padding:9px 11px;background:#fff!important;color:#34485f!important;border-bottom:1px solid #edf1f5!important;font-size:var(--f-td)!important;font-weight:600!important}",
-    "tbody tr:nth-child(even) td{background:#f8fafc!important}tbody tr:hover td{background:#f0f5fa!important}tbody tr:last-child td{border-bottom:0}",
-    "table.hdr-deep tr.total-row td{background:#eaf0f7!important;color:#1c3048!important;font-weight:850!important}.grphead td{background:#eaf0f7!important;color:#405671!important;font-weight:850!important}",
-    ".card .small,.card .note,.subpanel .small,.subpanel .note,table .small,table .note{color:#718198!important}.card a,.subpanel a{color:#286ea9}",
-    ".empty-note,.sec-desc2{color:#718198!important}.sec-desc,p.defline,.grphead-sub{color:#718198}.grphead-sub{font-size:.65rem}",
-    ".chat-widget{z-index:100}.chat-fab{border:1px solid #dbe4ed!important;background:#172b43!important;color:#fff!important;box-shadow:0 7px 22px rgba(23,43,67,.2)!important;border-radius:999px!important}.chat-panel{border:1px solid #dbe4ed!important;background:#fff!important;color:#253951!important;box-shadow:0 14px 42px rgba(23,43,67,.2)!important;border-radius:14px!important}.chat-head{background:#172b43!important;color:#fff!important}.chat-sub{color:#d2deeb!important}.chat-msg{border-radius:10px}.chat-msg.bot{background:#f1f5f9!important;color:#263b54!important}.chat-inputrow{background:#fff!important;border-top:1px solid #e5ebf2}.chat-input{border:1px solid #dce5ef!important;border-radius:8px!important;color:#20364f!important}.chat-send{background:#172b43!important;color:#fff!important;border-radius:8px!important}",
-    ".export-btn,.section button:not(.tab-btn):not(.refresh-btn){border-radius:8px}",
-    ".scroll-x::-webkit-scrollbar{height:9px}.scroll-x::-webkit-scrollbar-thumb{background:#c5d1df;border-radius:99px}.scroll-x::-webkit-scrollbar-track{background:#f0f3f7}",
-    ".wrap img,.wrap svg,.wrap video{max-width:100%}",
-    ".sec-desc,p.defline{display:none}",
-    "@media(min-width:1500px){.cards{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}.wrap{padding-left:30px;padding-right:30px}}",
-    "@media(max-width:900px){.topbar-clock{position:static;transform:none;margin-left:auto}.topbar-inner{gap:10px}.tabs{overflow-x:auto;justify-content:flex-start}.tab-btn{flex:0 0 auto;padding:10px 13px}.wrap{padding:16px 14px 36px}}",
-    "@media(max-width:600px){.topbar{padding:12px}.topbar-left{min-width:0;width:calc(100% - 120px)}.topbar-clock{order:3;width:100%;margin:0;text-align:left}.refresh-btn{font-size:.68rem;padding:8px 10px}.tabs-row{margin-top:9px}.tabs{width:100%;border-radius:10px}.tab-btn{font-size:.67rem;padding:9px 11px}.cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.card{padding:12px}.card .value{font-size:1.1rem!important}.section{margin-bottom:20px}.subpanel{padding:11px}.wrap{padding:13px 10px 30px}}",
-    "@media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;animation-duration:.01ms!important;transition-duration:.01ms!important}}"
+  // =========================================================================
+  // Visual design ported 1:1 from the previous "script page" the user shared:
+  // light grey page, dark navy cards, Inter font stack, and these exact
+  // palette tokens —
+  //   achieved #63e6b7 · target #8fc7ff · balance #ffd477 · percent #dfb2ff
+  //   muted #aebdd0 · white #f8fbff · line #3a5575 · danger #ff9da7
+  // Only looks changed; no condition or data logic was touched.
+  // =========================================================================
+  return (
+    ":root { --page:#eef2f6; --surface:#17263a; --surface-2:#20344d; --surface-3:#263e5b;" +
+    " --line:#3a5575; --muted:#aebdd0; --white:#f8fbff; --achieved:#63e6b7; --target:#8fc7ff;" +
+    " --balance:#ffd477; --percent:#dfb2ff; --accent:#45d9f5; --danger:#ff9da7; --completed:#63efbb; }" +
+    "* { box-sizing:border-box; }" +
+    // +2 points across the whole page: every size below is rem-based, so a
+    // slightly larger root font scales all text up evenly.
+    "html { font-size:20.7px; }" +
+    "body { margin:0; min-height:100vh;" +
+    " background:linear-gradient(180deg,#edf2f7 0%,#e7edf3 100%); color:#17263a;" +
+    " font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }" +
+    // ---- page frame ----
+    ".wrap { max-width:1720px; margin:0 auto; padding:20px 22px 40px; }" +
+    // ---- top bar (light, like the old page header) ----
+    ".topbar { position:sticky; top:0; z-index:20; padding:14px 22px 12px;" +
+    " background:rgba(238,242,246,.97); border-bottom:1px solid #d5dde6; }" +
+    ".topbar-inner { max-width:1720px; margin:0 auto; display:flex; align-items:center;" +
+    " justify-content:space-between; gap:20px; flex-wrap:wrap; }" +
+    ".topbar-left { display:flex; flex-direction:column; gap:4px; min-width:0; }" +
+    ".brand { color:#16263a; font-size:clamp(1.45rem,2.5vw,2rem); font-weight:850;" +
+    ".brand-sub { color:#5a6c9e; font-size:.85rem; font-weight:700; letter-spacing:.04em; }" +
+    " letter-spacing:-.035em; line-height:1.1; }" +
+    ".topbar .meta { color:#64748b; font-size:.78rem; font-weight:600; }" +
+    ".topbar .note { font-size:.74rem; min-height:15px; font-weight:600; }" +
+    ".topbar .note.ok { color:#0d7d56; } .topbar .note.err { color:#c2393f; }" +
+    // page slider: a wide pill bar, centered on the page under the title
+    ".tabs-row { width:100%; display:flex; justify-content:center; margin-top:10px; }" +
+    ".tabs { display:flex; background:#ffffff; border:1px solid #d5dde6; border-radius:999px; padding:5px;" +
+    " gap:6px; width:min(760px,100%); box-shadow:0 3px 10px rgba(15,23,42,.06); }" +
+    ".tab-btn { appearance:none; border:none; background:transparent; color:#475569; font-size:.92rem;" +
+    " font-weight:800; padding:13px 18px; border-radius:999px; cursor:pointer; transition:all .16s ease;" +
+    " flex:1; text-align:center; white-space:nowrap; }" +
+    ".tab-btn:hover { color:#16263a; background:#eef2f6; }" +
+    ".tab-btn.active { background:#172b43; color:#fff; box-shadow:0 3px 8px rgba(15,23,42,.18); }" +
+    // ---- refresh button: ported exact ----
+    ".refresh-btn { flex-shrink:0; border:0; border-radius:8px; padding:9px 14px; background:#172b43;" +
+    " color:#ffffff; cursor:pointer; font-size:.76rem; font-weight:800; white-space:nowrap;" +
+    " box-shadow:0 5px 14px rgba(15,23,42,.16); display:inline-flex; align-items:center; gap:8px; }" +
+    ".refresh-btn:hover { background:#223b59; }" +
+    ".refresh-btn:disabled { opacity:.6; cursor:wait; }" +
+    ".refresh-btn .spin { display:none; width:12px; height:12px; border:2px solid rgba(255,255,255,.4);" +
+    " border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; }" +
+    ".refresh-btn.loading .spin { display:inline-block; }" +
+    "@keyframes spin { to { transform:rotate(360deg); } }" +
+    // ---- section headings: the old .section-heading look (no coloured band) ----
+    ".section { margin-bottom:26px; overflow:visible; }" +
+    ".section h2 { margin:0 0 9px; padding:0; background:none; color:#182a40;" +
+    " font-size:1rem; font-weight:850; letter-spacing:-.015em; text-transform:none; }" +
+    ".section .body { padding:0; }" +
+    // ---- cards: the old .kpi-card dark navy tile ----
+    ".cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,225px),1fr)); gap:10px; margin-bottom:16px; }" +
+    ".card { background:rgba(28,43,82,.60);" +
+    " border:1px solid var(--line); border-radius:12px; box-shadow:0 16px 38px rgba(2,4,18,.55), inset 0 1px 0 rgba(255,255,255,.14);" +
+    " min-width:0; overflow:hidden; padding:13px; }" +
+    ".card .label { color:var(--muted); display:block; font-size:.6rem; font-weight:800;" +
+    " letter-spacing:.06em; line-height:1.15; text-transform:uppercase; white-space:nowrap;" +
+    " overflow:hidden; text-overflow:ellipsis; }" +
+    ".card .value { display:block; margin-top:4px; color:var(--white);" +
+    " font-size:clamp(1rem,1.6vw,1.3rem); font-weight:850; letter-spacing:-.02em; line-height:1.1;" +
+    " font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }" +
+    ".card .sub { display:block; margin-top:4px; color:var(--muted); font-size:.72rem; font-weight:500; }" +
+    ".card .value.pos { color:var(--achieved); } .card .value.neg { color:var(--danger); }" +
+    ".card-unclaimed { background:rgba(28,43,82,.60); }" +
+    ".card-unclaimed .value { color:var(--white); }" +
+    // ---- Section 1 store tiles: 1:1 port of the old page's kpi-card pieces ----
+    ".rgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,225px),1fr)); gap:10px; }" +
+    ".rtile { padding:11px; }" +
+    ".rtile.done { background:rgba(28,43,82,.60); }" +
+    ".rt-head { align-items:center; display:flex; gap:6px; justify-content:space-between; margin-bottom:8px; min-width:0; }" +
+    ".rt-head h3 { color:#fff; font-size:.88rem; font-weight:850; letter-spacing:-.015em; margin:0;" +
+    " min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }" +
+    ".status { border-radius:999px; flex-shrink:0; font-size:.55rem; font-weight:850;" +
+    " padding:3px 6px; text-transform:uppercase; }" +
+    ".status.on { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".status.pending { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".mg { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; width:100%; }" +
+    ".metric { background:rgba(255,255,255,.055); border-radius:7px; min-width:0; padding:7px 6px; }" +
+    ".metric span { color:var(--muted); display:block; font-size:.56rem; font-weight:800;" +
+    " letter-spacing:.045em; line-height:1.1; text-transform:uppercase; white-space:nowrap; }" +
+    ".metric strong { display:block; margin-top:3px; font-size:.82rem; font-weight:850;" +
+    " letter-spacing:-.02em; line-height:1.15; font-variant-numeric:tabular-nums; white-space:nowrap; }" +
+    ".metric.t strong { color:var(--target); } .metric.a strong { color:var(--achieved); }" +
+    ".metric.p strong { color:var(--percent); } .metric.b strong { color:var(--balance); }" +
+    ".dreq { background:rgba(255,255,255,.055); border-left:3px solid rgba(120,160,255,.7); border-radius:7px;" +
+    " margin-top:6px; padding:6px 8px; width:100%; }" +
+    ".dreq span { color:var(--muted); display:block; font-size:.54rem; font-weight:800;" +
+    " letter-spacing:.045em; line-height:1.1; text-transform:uppercase; }" +
+    ".dreq strong { color:#e9fbff; display:block; font-size:.82rem; font-variant-numeric:tabular-nums;" +
+    " line-height:1.15; margin-top:2px; white-space:nowrap; }" +
+    ".rtile .bar { margin-top:7px; }" +
+        ".sec-desc { color:#64748b; font-size:.72rem; margin:-3px 0 10px; }" +
+    // ---- badges / status pills: old .status pills ----
+    ".badge { display:inline-block; padding:3px 10px; border-radius:999px; font-weight:850;" +
+    " font-size:.66rem; text-transform:uppercase; letter-spacing:.02em; }" +
+    ".badge.good { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".badge.info { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".badge.warn { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".badge.bad { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    // ---- progress bars: 3D loading-slider look — dark inset track,
+    // glossy gradient fill with a glow halo and a travelling light streak ----
+    ".bar { height:11px; border-radius:999px; background:#12141f; overflow:hidden; min-width:70px;" +
+    " box-shadow:inset 0 2px 5px rgba(0,0,0,.7), inset 0 -1px 2px rgba(255,255,255,.08), 0 1px 0 rgba(255,255,255,.08); }" +
+    ".bar-fill { position:relative; height:100%; border-radius:inherit; display:block; overflow:hidden;" +
+    " background:linear-gradient(90deg,#2f8dff,#3ce3b4);" +
+    " box-shadow:0 0 12px var(--barg, rgba(88,190,255,.55)), inset 0 -2px 3px rgba(0,0,0,.28); }" +
+    // top gloss: the "3D" dome highlight
+    ".bar-fill::before { content:''; position:absolute; left:1px; right:1px; top:1px; height:44%;" +
+    " border-radius:999px 999px 40% 40%; background:linear-gradient(180deg,rgba(255,255,255,.85),rgba(255,255,255,.04)); }" +
+    // static sheen — same glass feel, zero repaint (Task 62: no perpetual animation)
+    ".bar-fill::after { content:''; position:absolute; top:0; bottom:0; left:48%; width:26%;" +
+    " background:linear-gradient(90deg,transparent,rgba(255,255,255,.16),transparent);" +
+    " transform:skewX(-18deg); }" +
+                    // ---- generic text tones ----
+    ".pos { color:var(--achieved); font-weight:700; } .neg { color:var(--danger); font-weight:700; }" +
+    ".muted { color:var(--muted); }" +
+    "table .muted { color:#94a2d2; }" +
+    // ---- tables: old .date-report dark surface ----
+    // ==== pricing-chart palette for every table: glow-blue header over deep navy rows ====
+    // Deep variant: on the owner's request the Invoice Valuation + Weekly
+    // tables get a header a few shades darker — still clearly separate from
+    // the navy body cells.
+    "table.hdr-deep thead th, table.hdr-deep thead th.grp, table.hdr-deep thead .sticky-col {" +
+    " background:#1c2b52 !important; }" +
+    "table.hdr-deep tr.total-row td { background:#101a38 !important; border-top:2px solid rgba(120,150,255,.45); }" +
+    "table { width:100%; border-collapse:separate; border-spacing:0; font-size:.8rem;" +
+    " background:rgba(28,43,82,.60); border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
+    " box-shadow:0 10px 26px rgba(8,12,48,.38), 0 2px 10px rgba(76,111,255,.14); }" +
+    "th { text-align:right; background:#1c2b52; color:#ffffff;" +
+    " font-size:.68rem; font-weight:800; text-shadow:0 1px 2px rgba(12,20,70,.65);" +
+    " letter-spacing:.05em; text-transform:uppercase; padding:9px 10px;" +
+    " border-bottom:2px solid #8eaaff; box-shadow:inset 0 1px 0 rgba(255,255,255,.25), 0 2px 8px rgba(76,111,255,.30); }" +
+    "th:first-child, td:first-child { text-align:left; }" +
+    "td { padding:8px 10px; text-align:right; color:#e9edff; font-size:.8rem; font-weight:400;" +
+    " font-variant-numeric:tabular-nums; background:rgba(34,43,90,.92);" +
+    " border-bottom:1px solid rgba(105,132,255,.16); }" +
+    "tbody tr:last-child td { border-bottom:none; }" +
+    "tbody tr:hover td { background:rgba(46,56,112,.95); }" +
+        ".status-chip { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:700; }" +
+    ".status-chip.ok { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".status-chip.warn { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".status-chip.muted-chip { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".src-hint { font-family:ui-monospace,Consolas,monospace; font-size:12px; background:rgba(120,130,150,.14);" +
+    " padding:1px 6px; border-radius:6px; }" +
+    ".walksum { max-width:640px; }" +
+    ".walksum td:not(.num) { text-align:left; }" +
+    ".walksum tr.deadsum td { background:rgba(34,43,90,.92); }" +
+    ".targetblock th, .targetblock td { text-align:left; }" +
+    ".repair-strip { display:flex; flex-wrap:wrap; gap:18px; align-items:center; margin-top:12px;" +
+    " padding:12px 16px; border:1px solid #d5dde6; border-radius:10px; background:#f6f9fd; }" +
+    ".rs-item { display:flex; flex-direction:column; gap:2px; }" +
+    ".rs-label { font-size:12px; color:#5b6675; font-weight:600; }" +
+    ".rs-value { font-size:20px; font-weight:800; color:#17263a; }" +
+    ".csat-chips { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:12px; }" +
+    ".csat-chip { flex:1 1 150px; background:#fff; border:1px solid #d5dde6; border-radius:10px;" +
+    " padding:10px 14px; display:flex; flex-direction:column; gap:2px; box-shadow:0 2px 6px rgba(15,23,42,.06); }" +
+    // navy chip → light text so labels stay readable.
+    ".csat-chip .cc-label { font-size:11.5px; font-weight:700; color:#9fb4e8; text-transform:uppercase; letter-spacing:.05em; }" +
+    ".csat-chip .cc-value { font-size:1.5rem; font-weight:800; color:#f4f8ff; }" +
+    ".csat-chip .cc-sub { font-size:11.5px; color:#93a5d4; }" +
+    ".csat-chip.pos { border-left:4px solid #2fb97f; } .csat-chip.pos .cc-value { color:#4fe0a8; }" +
+    ".csat-chip.neg { border-left:4px solid #e25567; } .csat-chip.neg .cc-value { color:#ff8fa1; }" +
+    ".csat-chip.warn { border-left:4px solid #e0a12d; }" +
+    ".csat-chip.info { border-left:4px solid #2f5aa8; }" +
+    // C-SAT: columns size to their DATA, long headers wrap instead of
+    // stretching the table (owner's "fit the data, not the header").
+    "table.csat-table { width:auto; min-width:320px; max-width:100%; }" +
+    "table.csat-table th { white-space:normal; overflow-wrap:break-word; vertical-align:bottom;" +
+    " line-height:1.25; min-width:62px; max-width:150px; text-align:center; }" +
+    "table.csat-table th:first-child { text-align:left; min-width:150px; }" +
+    "table.csat-table td { width:1%; white-space:nowrap; }" +
+    "table.csat-table td:first-child { text-align:left; white-space:normal; width:auto; }" +
+    "table.csat-table td.num { font-variant-numeric:tabular-nums; text-align:center; }" +
+    ".csat-table .totrow td { background:#101a38 !important; color:#ffffff; font-weight:800; border-top:1px solid rgba(142,170,255,.6); }" +
+    ".csat-pos { color:#52e9ac; font-weight:700; } .csat-neg { color:#ff8f9d; font-weight:700; } .csat-mid { color:#ffd477; font-weight:600; }" +
+    "table.vmatrix { width:100%; border-collapse:collapse; background:rgba(28,43,82,.60);" +
+    " border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
+    " box-shadow:0 10px 26px rgba(8,12,48,.38), 0 2px 10px rgba(76,111,255,.14); }" +
+    "table.vmatrix th, table.vmatrix td { padding:8px 12px; border-bottom:1px solid rgba(105,132,255,.16); font-size:.85rem; }" +
+    "table.vmatrix thead th { background:#1c2b52; color:#ffffff; text-align:center; font-size:.76rem;" +
+    " font-weight:800; text-shadow:0 1px 2px rgba(12,20,70,.65);" +
+    " text-transform:uppercase; letter-spacing:.04em; position:sticky; top:0; z-index:2; border-bottom:2px solid #8eaaff; }" +
+    "table.vmatrix td { background:rgba(34,43,90,.92); color:#e9edff; }" +
+    "table.vmatrix td.num, table.vmatrix th.num { text-align:right; font-variant-numeric:tabular-nums; }" +
+    "table.vmatrix td.muted { color:#8f9ecf; }" +
+    "table.vmatrix .sticky-col { position:sticky; left:0; z-index:1; background:#232a63; color:#e9edff; text-align:left; font-weight:700; }" +
+    "table.vmatrix thead .sticky-col { z-index:3; background:#3350c2; color:#ffffff; }" +
+    "table.vmatrix tbody tr:hover td { background:rgba(46,56,112,.95); }" +
+    "table.vmatrix tbody tr:hover .sticky-col { background:#2b336f; }" +
+    ".vmtotal { background:rgba(84,116,255,.16) !important; color:#ffffff; font-weight:800; }" +
+    "tr.vmtotrow td { background:#101a38 !important; color:#fff; font-weight:800; border-top:1px solid rgba(142,170,255,.6); }" +
+    "tr.vmavgrow td { background:rgba(84,116,255,.12); color:#a9b8ff; font-weight:700; font-style:italic; }" +
+    ".vmavg { color:#a9b8ff; }" +
+    "tr.total-row td { background:#101a38 !important; color:#ffffff; font-weight:900; border-top:2px solid rgba(120,150,255,.45); }" +
+    // ---- salesperson cards ----
+    ".person-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr)); gap:10px; }" +
+    ".person-card { background:rgba(12,29,53,.94); border:1px solid var(--line); border-radius:11px;" +
+    " min-width:0; padding:12px; }" +
+    ".person-card h3 { color:#ffffff; font-size:.92rem; font-weight:850; margin:0 0 9px; min-width:0; }" +
+    ".row-line { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:7px 0 3px;" +
+    " color:var(--white); font-size:.82rem; font-weight:600; font-variant-numeric:tabular-nums; }" +
+    ".row-line .muted { color:var(--muted); }" +
+    ".scroll-x { overflow-x:auto; border-radius:11px; }" +
+    // Performance-page tile row: one navy card per bucket, fits any width.
+    ".tile-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr)); gap:10px; margin-bottom:14px; }" +
+    ".tile { background:rgba(28,43,82,.60);" +
+    " border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 20px rgba(0,0,0,.18);" +
+    " min-width:0; overflow:hidden; padding:13px; }" +
+    ".tile .label { color:var(--muted); display:block; font-size:.6rem; font-weight:800;" +
+    " letter-spacing:.06em; line-height:1.15; text-transform:uppercase; white-space:nowrap;" +
+    " overflow:hidden; text-overflow:ellipsis; }" +
+    ".tile .value { display:block; margin-top:4px; color:var(--white); font-size:1.35rem; font-weight:800; }" +
+    ".tile .sub { display:block; margin:4px 0 6px; color:var(--muted); font-size:.72rem; font-weight:500; }" +
+    // Pivoted matrices keep numbers right-aligned and columns tight when space allows.
+    "table.matrix td, table.matrix th { text-align:right; }" +
+    "table.matrix td.sticky-col, table.matrix th.sticky-col, table.matrix td:first-child { text-align:left; }" +
+    "table.ptable { width:100%; border-collapse:collapse; }" +
+    "table.ptable th.num, table.ptable td.num { text-align:right; }" +
+    ".foot { text-align:center; color:#64748b; font-size:.74rem; padding:14px 0 26px; font-weight:500; }" +
+    // ---- incentive gate notes inside person cards ----
+    ".gate { margin-top:10px; padding:9px 11px; border-radius:8px; font-size:.78rem; line-height:1.45; }" +
+    ".gate.met { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.35); color:#cfe0ff; }" +
+    ".gate.blocked { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.35); color:#cfe0ff; }" +
+    ".incentive-line { display:flex; justify-content:space-between; font-size:.78rem; margin-top:6px;" +
+    " color:var(--white); font-variant-numeric:tabular-nums; padding-bottom:5px;" +
+    " border-bottom:1px solid rgba(58,85,117,.45); }" +
+    ".incentive-line .muted { color:var(--muted); }" +
+    // ---- date-wise per-person grouping (wide business table) ----
+    "table.detail td, table.detail th { font-size:.8rem; }" +
+    "tr.date-head td { background:#2b336f !important; color:#ffffff; font-weight:750;" +
+    " border-top:1px solid rgba(105,132,255,.35); }" +
+    "td.person-cell { font-weight:700; border-left:4px solid transparent; }" +
+    ".sp-0 { border-left-color:#8fc7ff !important; }" +
+    ".sp-1 { border-left-color:#fbbf24 !important; }" +
+    ".sp-2 { border-left-color:#63e6b7 !important; }" +
+    ".sp-3 { border-left-color:#dfb2ff !important; }" +
+    ".sp-4 { border-left-color:#ff9da7 !important; }" +
+    "tr.person-band-0 td { background:rgba(34,43,90,.92); }" +
+    "tr.person-band-1 td { background:rgba(34,43,90,.92); }" +
+    "tr.person-band-2 td { background:rgba(34,43,90,.92); }" +
+    "tr.person-band-3 td { background:rgba(34,43,90,.92); }" +
+    "tr.person-band-4 td { background:rgba(34,43,90,.92); }" +
+    // Oval achievement pills — exact old-page look: an oval around the
+    // achieved number, mint/salmon fill with dark readable text inside.
+    // The condition is unchanged (met the daily target → green, else red).
+    ".apill { display:inline-flex; align-items:center; justify-content:center; min-width:72px;" +
+    " max-width:100%; padding:4px 11px; border-radius:999px; font-size:.78rem; font-weight:800;" +
+    " line-height:1; white-space:nowrap; font-variant-numeric:tabular-nums; box-sizing:border-box; }" +
+    ".apill.ok { background:#63e6b7; color:#12352d; box-shadow:0 1px 3px rgba(18,53,45,.16); }" +
+    ".apill.no { background:#ff9da7; color:#5f2028; box-shadow:0 1px 3px rgba(95,32,40,.16); }" +
+    // ---- section 7 date-by-date matrix ----
+    "table.matrix { font-size:.8rem; border-collapse:separate; border-spacing:0; }" +
+    "table.matrix th, table.matrix td { white-space:nowrap; padding:8px 10px; }" +
+    "table.matrix tbody td { border-bottom:1px solid rgba(58,85,117,.45); }" +
+    "table.matrix thead th { position:sticky; top:0; z-index:3; }" +
+    "table.matrix th.grp { text-align:center; border-left:1px solid var(--line); }" +
+    "table.matrix .sticky-col { position:sticky; left:0; z-index:2; background:rgba(34,43,90,.92);" +
+    " text-align:left; border-right:1px solid rgba(105,132,255,.35); }" +
+    "table.matrix thead .sticky-col { z-index:4; background:#1c2b52; }" +
+    "table.matrix td .tgt { display:block; font-size:.66rem; font-weight:600; color:#94a2d2; margin-top:2px; }" +
+    // one flat colour set for every table — per-person column bands removed
+                            "table.matrix tr.total-row td { background:#101a38 !important; border-top:2px solid rgba(142,170,255,.6); }" +
+    // ---- AR attachment sub-panel inside section 6 (light panel like old summary items) ----
+    ".subpanel { margin-top:14px; padding:13px 15px; border-radius:10px;" +
+    " border:1px solid #d5dde6; background:rgba(255,255,255,.92); box-shadow:0 3px 10px rgba(15,23,42,.05); }" +
+    ".subpanel-head { font-size:.68rem; font-weight:850; text-transform:uppercase; letter-spacing:.08em;" +
+    " color:#475569; margin:0 0 12px; }" +
+    ".subpanel-head .muted { color:#718096; }" +".subpanel .muted { color:#718096; }" +
+    ".legend-row { display:flex; flex-wrap:wrap; gap:10px; margin:0 0 12px; }" +
+    // ============ TASK 67 — alignment, pairing, fit, readability ==========
+    ".wd-line{display:flex !important;flex-wrap:nowrap;gap:10px;overflow-x:auto;width:100%}" +
+    ".wd-line .card{flex:1 1 0;min-width:150px}" +
+    ".cre-cw-pair{display:flex;gap:16px;align-items:flex-start;width:100%}" +
+    ".cre-cw-pair>.cw-left{flex:1.15;min-width:0}" +
+    ".cre-cw-pair>.cw-right{flex:1;min-width:0}" +
+    "@media (max-width:920px){.cre-cw-pair{flex-direction:column}.cre-cw-pair>div{width:100%}.wd-line .card{min-width:120px}}" +
+    ".rtype-sub td{background:rgba(72,103,205,.16);border-left:4px solid rgba(126,156,255,.6);color:#dbe7ff;font-weight:800;font-size:.74rem;letter-spacing:.05em;text-transform:uppercase;padding:5px 12px}" +
+    ".rtype-tag{color:#9fb8ff;font-weight:700;margin-right:8px;font-size:.68rem;text-transform:none;letter-spacing:0}" +
+    ".spb25 .row-line>span:last-child{font-size:125% !important}" +
+    ".spb25 .row-line>span:last-child .pct-badge{font-size:102% !important}" +
+    ".wrap{max-width:100% !important}" +
+    // ============ TASK 68 — mobile header scrolls, KPI zoom, unclaimed strip =====
+    "body.v-mob .topbar{position:static;padding:10px 14px 8px}" +
+    "#idx-store .card .value b{font-size:130%}" +
+    "#idx-store .card .sub b{font-size:130%}" +
+    ".unclaimed-strip{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0 4px;" +
+      "padding:10px 12px;border:1px solid rgba(255,96,96,.45);border-radius:10px;background:rgba(255,96,96,.08)}" +
+    ".unclaimed-strip .us-title{font-weight:800;color:#ffb3b3;margin-right:6px;white-space:nowrap}" +
+    ".us-chip{border:1px solid rgba(255,140,140,.5);background:rgba(255,255,255,.06);border-radius:999px;" +
+      "padding:5px 11px;font-weight:800;color:#ffd9d9;cursor:pointer;font-size:.8rem}" +
+    ".us-chip:hover,.us-chip:focus{color:#fff;border-color:#ffb3b3}" +
+    ".warranty-hit td{background:rgba(255,96,96,.10) !important}" +
+    ".warranty-hit td:first-child{border-left:4px solid #ff9c9c}" +
+    ".bal-neg{color:#ff9c9c;font-weight:800}.bal-warn{color:#ffc46b;font-weight:800}" +
+    ".xl-inject-btn{float:none !important;font-size:.66rem;padding:2px 9px !important;margin-left:6px}" +
+    "body.v-mob .xl-inject-btn{padding:2px 8px !important;font-size:.62rem}" +
+    "body.v-mob .wd-line .card{min-width:122px}" +
+    "body.v-mob .legend-card{font-size:.68rem;padding:6px 9px}" +
+    "body.v-mob .csat-chip .cc-value{font-size:1.02rem}" +
+
+    ".legend-card { font-size:.76rem; padding:8px 12px; border-radius:8px; border:1px solid #d5dde6;" +
+    " line-height:1.5; background:rgba(255,255,255,.92); color:#1f2937; text-align:center;" +
+    " box-shadow:0 3px 10px rgba(15,23,42,.04); font-variant-numeric:tabular-nums; }" +
+    ".legend-card b { color:#111827; }" +
+    ".legend-card .muted { color:#475569; }" +
+    // ---- section 7 collapse / expand ----
+    ".toggle-btn { display:inline-flex; align-items:center; gap:9px; margin:0 0 12px;" +
+    " background:#172b43; color:#fff; border:none; border-radius:8px; padding:9px 14px;" +
+    " font-size:.76rem; font-weight:800; cursor:pointer; box-shadow:0 5px 14px rgba(15,23,42,.16); }" +
+    ".toggle-btn:hover { background:#223b59; }" +
+    ".toggle-btn .chev { display:inline-block; font-size:10px; transition:transform .18s ease; }" +
+    ".toggle-btn.open .chev { transform:rotate(180deg); }" +
+    ".toggle-btn .count { background:rgba(255,255,255,.18); border-radius:999px;" +
+    " padding:2px 10px; font-size:.68rem; font-weight:800; }" +
+    ".toggle-btn.open .count { display:none; }" +
+    "table.matrix.collapsed tbody tr.extra-day { display:none; }" +
+    // ---- process page panels: light cards like the old summary strip ----
+    ".sec { background:rgba(255,255,255,.92); border:1px solid #d5dde6; border-radius:9px;" +
+    " padding:14px 15px 12px; margin-bottom:16px; box-shadow:0 3px 10px rgba(15,23,42,.05); }" +
+    ".sec-head h2 { margin:0 0 4px; color:#182a40; font-size:1rem; font-weight:850; letter-spacing:-.015em; }" +
+    ".sec-sub { margin:0 0 12px; color:#64748b; font-size:.78rem; font-weight:500; }" +
+    ".sec .muted { color:#64748b; }" +
+
+    // dark tables inside the process page (jobs / tokens), matching the old date-report
+    ".ptable { border-collapse:separate; border-spacing:0; width:100%; font-size:.8rem;" +
+    " background:rgba(28,43,82,.60); border:1px solid rgba(105,132,255,.34); border-radius:11px; overflow:hidden;" +
+    " box-shadow:0 10px 26px rgba(8,12,48,.38), 0 2px 10px rgba(76,111,255,.14); }" +
+    ".ptable th, .ptable td { text-align:left; padding:8px 11px; border-bottom:1px solid rgba(105,132,255,.16);" +
+    " vertical-align:top; white-space:nowrap; font-weight:400; color:#e9edff; }" +
+    ".ptable td { background:rgba(34,43,90,.92); }" +
+    ".ptable thead th { background:#1c2b52; color:#ffffff; font-size:.68rem;" +
+    " font-weight:800; text-shadow:0 1px 2px rgba(12,20,70,.65);" +
+    " text-transform:uppercase; letter-spacing:.05em; position:sticky; top:0; border-bottom:2px solid #8eaaff;" +
+    " box-shadow:inset 0 1px 0 rgba(255,255,255,.25); }" +
+    ".ptable tbody tr:hover td { background:rgba(46,56,112,.95); }" +
+    ".ptable td.num { text-align:right; font-variant-numeric:tabular-nums; }" +
+    ".ptable .daycell { min-width:110px; }" +
+    ".jobtable th, .jobtable td { font-size:.78rem; }" +
+    ".jobtable .sticky-col { position:sticky; left:0; background:rgba(34,43,90,.92); }" +
+    ".jobtable thead .sticky-col { background:#1c2b52; }" +
+    ".chip { display:inline-block; background:rgba(255,255,255,.08); color:#cfe0ff; border-radius:999px;" +
+    " padding:3px 9px; font-size:.68rem; margin:1px 2px 1px 0; font-weight:600; }" +
+    ".chip b { color:#ffffff; }" +
+    // walk-in / comm status colours on the dark tables
+    ".comm-yes { color:var(--achieved); font-weight:700; }" +
+    ".comm-no { color:#fbbf24; font-weight:700; }" +
+    ".comm-pos { color:#0f5a37 !important; background:#b9f2cf !important; font-weight:800; }" +
+    ".comm-neg { color:#8a1d28 !important; background:#ffd6da !important; font-weight:800; }" +
+    // right here — bucket-row tints (.jobtable tr.bk-* td) once overrode these.
+".jobtable tbody tr td.comm-pos { color:#0f5a37 !important; background:#bbf0d0 !important; font-weight:800; }" +
+".jobtable tbody tr td.comm-neg { color:#a01220 !important; background:#ffd3d7 !important; font-weight:800; }" +
+    // unclaimed devices: keeps the amber identity, tuned for the dark table
+    ".unclaimed-row td { background:rgba(255,212,119,.10) !important; }" +
+    ".unclaimed-row:hover td { background:rgba(255,212,119,.16) !important; }" +
+    ".unclaimed-row .sticky-col { box-shadow:inset 4px 0 0 #eab308; }" +
+    ".badge-unclaimed { display:inline-block; background:rgba(255,255,255,.08); color:#cfe0ff; font-weight:850;" +
+    " font-size:.68rem; padding:3px 10px; border-radius:999px; white-space:nowrap; text-transform:uppercase; }" +
+    ".badge-unclaimed.sm { font-size:.62rem; padding:2px 7px; background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".undated-row td { background:rgba(223,178,255,.10); }" +
+    // walk-in day rows: one flat navy, no per-day tint (Task 31)
+    ".walkintable tbody td { background-color: rgba(34,43,90,.92) !important; }" +
+    ".walkintable tbody tr:hover td { background-color: rgba(46,56,112,.95) !important; box-shadow: inset 0 0 0 999px rgba(84,116,255,.14); }" +
+    ".walkintable .totrow td { background:#101a38 !important; border-top:1px solid rgba(142,170,255,.6); color:#ffffff; font-weight:800; }" +
+    ".walkintable td.dead { color:#ff9daa; font-weight:700; }" +
+    ".walkintable td.uniq { color:#7edbff; font-weight:700; }" +
+    ".walkintable thead th { text-align:center; }" +
+    ".walkintable thead th.grp { background:#1c2b52; text-align:center; }" +
+    ".walkintable th:first-child, .walkintable td.daycell { text-align:left; }" +
+    ".tokentable .totrow td { background:#101a38 !important; color:#ffffff; font-weight:900; border-top:1px solid rgba(142,170,255,.6); }" +
+    ".age-warn { color:var(--balance); font-weight:600; }" +
+    ".age-crit { color:var(--danger); font-weight:700; }" +
+    ".subnote { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.32); border-radius:8px; padding:9px 12px;" +
+    " font-size:.78rem; color:#6b5410; margin-bottom:12px; font-weight:500; }" +
+    ".empty-perf { background:rgba(28,43,82,.60); border:1px dashed rgba(170,190,255,.4); border-radius:9px; padding:22px; color:#a9b6d8;" +
+    " text-align:center; font-size:.82rem; color:#64748b; font-weight:500; }" +
+    // one distinguishable colour per owner-named repair bucket.
+    ".grphead.bk-estimate td { background:linear-gradient(180deg,#f6a21c 0%,#c97a08 55%,#a25f06 100%) !important; }" +
+    ".grphead.bk-ready td { background:linear-gradient(180deg,#2fd475 0%,#17a558 55%,#0f8145 100%) !important; }" +
+    ".grphead.bk-process td { background:linear-gradient(180deg,#22c2e3 0%,#0f91c0 55%,#0b7197 100%) !important; }" +
+    ".grphead.bk-unclaimed td { background:linear-gradient(180deg,#f05858 0%,#d02e2e 55%,#a81f1f 100%) !important; }" +
+    ".grphead[class*=bk-] .grphead-count { color:#ffffff; }" +
+    // the whole row under a bucket wears a LIGHT tint of its colour.
+    ".jobtable tr.bk-estimate td { background:rgba(246,162,28,.16) !important; }" +
+    ".jobtable tr.bk-ready td { background:rgba(47,212,117,.15) !important; }" +
+    ".jobtable tr.bk-process td { background:rgba(34,194,227,.15) !important; }" +
+    ".jobtable tr.bk-unclaimed td { background:rgba(240,88,88,.16) !important; }" +
+    ".jobtable td.bucket-cell.bk-estimate { color:#ffd894 !important; box-shadow:inset 3px 0 0 0 #f6a21c; }" +
+    ".jobtable td.bucket-cell.bk-ready { color:#9af0bd !important; box-shadow:inset 3px 0 0 0 #2fd475; }" +
+    ".jobtable td.bucket-cell.bk-process { color:#a8e2f7 !important; box-shadow:inset 3px 0 0 0 #22c2e3; }" +
+    ".jobtable td.bucket-cell.bk-unclaimed { color:#ffc6c6 !important; box-shadow:inset 3px 0 0 0 #f05858; }" +
+    ".grphead td { background:#1c2b52 !important; color:#ffffff; font-weight:850; font-size:.7rem;" +
+    " letter-spacing:.07em; text-transform:uppercase; padding:8px 12px; border-bottom:2px solid #9db4ff;" +
+    " box-shadow:0 3px 10px rgba(84,111,255,.35); }" +
+    ".grphead-count { float:right; color:var(--target); font-weight:800; text-transform:none; letter-spacing:0; }" +
+    ".norepair-row td { background:rgba(255,157,167,.12) !important; }" +
+    ".norepair-row .sticky-col { box-shadow:inset 4px 0 0 var(--danger); }" +
+    ".badge-norepair { display:inline-block; background:rgba(255,255,255,.08); color:#cfe0ff; font-weight:850;" +
+    " font-size:.62rem; padding:2px 7px; border-radius:999px; white-space:nowrap; }" +
+    ".oow-nopay-row td { background:rgba(223,178,255,.13) !important; }" +
+    ".oow-nopay-row .sticky-col { box-shadow:inset 4px 0 0 var(--percent); }" +
+    ".badge-oow { display:inline-block; background:rgba(223,178,255,.20); color:var(--percent); font-weight:850;" +
+    " font-size:.62rem; padding:2px 7px; border-radius:999px; white-space:nowrap; }" +
+    ".badge.completed { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".map-line { font-size:.68rem; color:#64748b; margin:0 0 10px; font-weight:500; line-height:1.6; }" +
+    ".map-line b { color:#17263a; font-weight:750; }" +
+    ".map-missing { color:#c2393f; font-weight:800; }" +
+    // ---- wider tab bar (six pages + index) ----
+    ".tabs.tabs-wide { width:min(1180px,100%); flex-wrap:wrap; }" +
+    ".tabs.tabs-wide .tab-btn { font-size:.82rem; padding:11px 13px; }" +
+    // ---- KPI page: table sizes to CONTENT, incentive fills the right ----
+    ".kpi-pair { display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap; }" +
+    ".kpi-pair .kp-left { flex:0 0 auto; min-width:0; }" +
+    ".kpi-pair .kp-left table { width:auto; min-width:min(100%,760px); }" +
+    ".kpi-pair .kp-right { flex:1 1 520px; min-width:340px; }" +
+    ".inc-cat { margin-bottom:14px; }" +
+    ".inc-cat-title { font-size:.78rem; font-weight:850; color:#33415c; letter-spacing:.04em;" +
+    " text-transform:uppercase; margin:0 0 8px; }" +
+    ".inc-cat table { width:100%; }" +
+    // ---- walk-in page: both halves share the width EQUALLY ----
+    ".walkin-pair { display:flex; gap:16px; align-items:stretch; margin-top:2px; flex-wrap:wrap; }" +
+    ".walkin-pair .wp-left { flex:1 1 50%; min-width:320px; }" +
+    ".walkin-pair .wp-right { flex:1 1 50%; min-width:320px; display:flex; flex-direction:column; }" +
+    ".wp-head { font-size:.92rem; font-weight:850; color:#182a40; margin:0 0 4px; letter-spacing:-.015em; }" +
+    ".jobtable td.bucket-cell { font-weight:800; color:#bcd0ff; }" +
+    // ============ INDEX LANDING — LIQUID GLASS tiles ============
+    // Frosted translucent panes laid over a soft gradient backdrop (Apple
+    // "liquid glass" look): blurred, edge-lit, gently refracted. Groups run
+    // left→right as columns; each group's sub-tiles stack one below one.
+    ".index-hero h2 { margin:0 0 6px; font-size:1.3rem; font-weight:850; letter-spacing:-.03em; color:#16263a; }" +
+    ".index-sub { margin:0 0 4px; color:#5b6b84; font-size:.86rem; font-weight:500; }" +
+    ".tile-board { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));" +
+    " gap:18px; margin:14px 0 8px; padding:18px; border-radius:22px;" +
+    " background:linear-gradient(135deg,#c9d6f8 0%,#dfe7fb 42%,#cde4f4 70%,#d9d2f4 100%);" +
+    " box-shadow:inset 0 1px 0 rgba(255,255,255,.6), 0 14px 34px rgba(30,45,90,.18); }" +
+    ".tile-group { display:flex; flex-direction:column; gap:10px; }" +
+    ".tile-group-head { margin:0; font-size:.92rem; font-weight:850; letter-spacing:.02em; color:#22336a; text-transform:none; }" +
+    ".tile-group-link { background:none; border:none; padding:0; margin:0; font:inherit; color:#22336a;" +
+    " cursor:pointer; letter-spacing:-.02em; }" +
+    ".tile-group-link:hover { color:#3f5ce0; }" +
+    ".tile-col { display:flex; flex-direction:column; gap:12px; }" +
+    // --- the tile: liquid glass — clear, blurred, with a luminous rim ---
+    ".glass-tile { position:relative; display:flex; flex-direction:column; gap:5px; text-align:left;" +
+    " min-height:158px; padding:14px 14px 36px; border-radius:18px; cursor:pointer; color:#22336a;" +
+    " background:linear-gradient(135deg,rgba(255,255,255,.62) 0%,rgba(226,237,255,.34) 55%,rgba(255,255,255,.5) 100%);" +
+    " border:1px solid rgba(255,255,255,.75);" +
+    " box-shadow:0 10px 24px rgba(40,60,120,.16), inset 0 1px 0 rgba(255,255,255,.95)," +
+    " inset 0 -10px 18px rgba(120,150,255,.10), inset 0 0 0 1px rgba(255,255,255,.3);" +
+    "" +
+    " overflow:hidden; opacity:.9;" +
+    " transition:opacity .16s ease, transform .16s ease, box-shadow .16s ease; }" +
+    // refracted top-light rim
+    ".glass-tile::before { content:''; position:absolute; inset:0 0 auto 0; height:46%; border-radius:18px 18px 60% 60%;" +
+    " background:linear-gradient(180deg,rgba(255,255,255,.7),rgba(255,255,255,0)); pointer-events:none; }" +
+    // golden glitter film — hidden until hover
+    ".tile-sparkle { position:absolute; inset:0; border-radius:inherit; pointer-events:none; opacity:0;" +
+    " background:" +
+      "radial-gradient(2px 2px at 18% 30%,rgba(255,221,120,.95),rgba(255,221,120,0) 60%)," +
+      "radial-gradient(2px 2px at 38% 70%,rgba(255,196,64,.95),rgba(255,196,64,0) 60%)," +
+      "radial-gradient(2.5px 2.5px at 58% 22%,rgba(255,232,150,.95),rgba(255,232,150,0) 60%)," +
+      "radial-gradient(2px 2px at 74% 55%,rgba(255,203,80,.95),rgba(255,203,80,0) 60%)," +
+      "radial-gradient(2.5px 2.5px at 86% 28%,rgba(255,240,180,.95),rgba(255,240,180,0) 60%)," +
+      "radial-gradient(2px 2px at 64% 82%,rgba(255,221,120,.95),rgba(255,221,120,0) 60%)," +
+      "radial-gradient(1.8px 1.8px at 26% 58%,rgba(255,232,150,.95),rgba(255,232,150,0) 60%)," +
+      "radial-gradient(22% 40% at 50% 0%,rgba(255,230,150,.35),rgba(255,230,150,0) 70%);" +
+    " background-repeat:no-repeat; }" +
+    ".glass-tile:hover, .glass-tile:focus-visible { opacity:1; transform:translateY(-3px); outline:none;" +
+    " box-shadow:0 16px 34px rgba(40,60,120,.28), inset 0 1px 0 rgba(255,255,255,1)," +
+    " inset 0 -12px 20px rgba(255,214,120,.18), 0 0 26px rgba(255,205,90,.35); }" +
+    // on hover the glitter holds bright — static, no perpetual animation (Task 62)
+    ".glass-tile:hover .tile-sparkle, .glass-tile:focus-visible .tile-sparkle { opacity:1; }" +
+    ".tile-icon { font-size:2.5rem; line-height:1.1; position:relative; z-index:1; }" +
+    ".tile-title { font-size:1rem; font-weight:850; color:#1d2f63; letter-spacing:-.005em; position:relative; z-index:1; }" +
+    ".tile-blurb { font-size:.76rem; color:#45558a; line-height:1.45; position:relative; z-index:1; }" +
+    // hidden numbers that fade in when the tile brightens on hover
+    ".tile-data { margin-top:2px; opacity:0; max-height:0; overflow:hidden; position:relative;" +
+    " transition:opacity .18s ease, max-height .22s ease; }" +
+    ".glass-tile:hover .tile-data, .glass-tile:focus-visible .tile-data { opacity:1; max-height:180px; }" +
+    ".tile-stat { display:flex; justify-content:space-between; gap:8px; font-size:.7rem; color:#3a4a7d;" +
+    " padding:3px 0; border-top:1px solid rgba(120,140,220,.3); }" +
+    ".tile-stat b { color:#1d2f63; font-weight:800; }" +
+    ".tile-soon { margin-top:6px; font-size:.76rem; font-weight:800; color:#8a5b00; }" +
+    ".tile-soon-sub { font-size:.68rem; color:#4d5d8a; }" +
+    ".tile-go { position:absolute; left:14px; bottom:11px; font-size:.7rem; font-weight:800; color:#3f5ce0; }" +
+    ".glass-tile:hover .tile-go { color:#1d2f63; }" +
+    // --- pie under each group title ---
+    ".gpie-wrap { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.32); border-radius:14px;" +
+    " padding:10px; box-shadow:0 6px 16px rgba(40,60,120,.12), inset 0 1px 0 rgba(255,255,255,.8); }" +
+    ".gpie-title { font-size:.7rem; font-weight:800; color:#c9d4f5; text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px; }" +
+    ".gpie-body { display:flex; align-items:center; gap:10px; }" +
+    "svg.gpie { width:88px; height:88px; flex-shrink:0; }" +
+    ".gpie-leg { display:flex; flex-direction:column; gap:3px; min-width:0; }" +
+    ".gpie-leg-item { display:flex; align-items:center; gap:6px; font-size:.72rem; font-weight:600; color:#e3eafd; white-space:nowrap;" +
+    " overflow:hidden; text-overflow:ellipsis; }" +
+    ".gpie-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; box-shadow:0 0 4px rgba(0,0,0,.2); }" +
+    ".gpie-leg-val { color:#ffffff; font-weight:800; margin-left:auto; padding-left:8px; }" +
+    ".gpie-empty { font-size:.72rem; color:#a5b3d6; padding:14px 4px; }" +
+    // --- latest-records strip at the bottom of the index ---
+    ".fresh-line { margin-top:16px; padding:12px 16px; border-radius:14px;" +
+    " background:linear-gradient(135deg,rgba(255,255,255,.6),rgba(230,238,255,.45));" +
+    " border:1px solid rgba(255,255,255,.7); box-shadow:0 6px 16px rgba(40,60,120,.10); }" +
+    ".fresh-line-head { font-size:.66rem; font-weight:850; color:#5a6a99; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }" +
+    ".fresh-row { display:flex; flex-wrap:wrap; gap:8px; }" +
+    ".fresh-chip { display:inline-flex; align-items:center; gap:6px; background:rgba(28,43,82,.60);" +
+    " border:1px solid rgba(150,170,255,.4); border-radius:999px; padding:4px 12px; font-size:.68rem; }" +
+    ".fresh-stamp { border-color:rgba(255,211,77,.55) !important; }" +
+    ".fresh-stamp i, #pageIndex .fresh-stamp i { color:#ffd34d !important; }" +
+    ".fresh-chip i { font-style:normal; color:#5a6a99; font-weight:700; }" +
+    ".fresh-chip b { color:#1d2f63; font-weight:800; }" +
+    // ============ TASK 21 — dark liquid-glass index + glass material ============
+    // Bokeh-hearts video is the always-on background layer of the index pane.
+    "#pageIndex { position:relative; background:radial-gradient(1200px 420px at 50% -80px,#1a2350 0%,#0a0f2c 60%,#06091c 100%);" +
+    " border-radius:22px; overflow:hidden; }" +
+    "#pageIndex > *:not(.bgnd-video) { position:relative; z-index:1; }" +
+    ".bgnd-video { position:absolute; z-index:0; inset:0; width:100%; height:100%; object-fit:cover;" +
+    " opacity:.8; pointer-events:none; }" +
+    "#pageIndex .index-hero h2 { color:#f5f8ff; text-shadow:0 2px 10px rgba(3,6,24,.7); }" +
+    "#pageIndex .tile-board { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.28);" +
+    "" +
+    " box-shadow:0 16px 40px rgba(2,5,24,.55), inset 0 1px 0 rgba(255,255,255,.14); }" +
+    "#pageIndex .tile-group-head, #pageIndex .tile-group-link { color:#e6ecff; }" +
+    "#pageIndex .tile-group-link:hover { color:#ffd477; }" +
+    // golden-glitter video layer: invisible until the tile is hovered
+    ".tile-glitter-vid { position:absolute; z-index:0; inset:0; width:100%; height:100%; object-fit:cover;" +
+    " border-radius:inherit; opacity:0; transition:opacity .2s ease; pointer-events:none; }" +
+    ".glass-tile:hover .tile-glitter-vid, .glass-tile:focus-visible .tile-glitter-vid { opacity:.62; }" +
+    ".glass-tile .tile-data, .glass-tile .tile-go { z-index:1; }" +
+    // index-side group charts & freshness strip on the dark backdrop
+    "#pageIndex .gpie-wrap { background:rgba(28,43,82,.60); }" +
+    "#pageIndex .fresh-line { background:rgba(28,43,82,.60); border-color:rgba(170,190,255,.28);" +
+    " }" +
+    "#pageIndex .fresh-line-head { color:#aebcff; }" +
+    "#pageIndex .fresh-chip { background:rgba(28,43,82,.60); border-color:rgba(170,190,255,.28); }" +
+    "#pageIndex .fresh-chip i { color:#aebcff; } #pageIndex .fresh-chip b { color:#ffffff; }" +
+    // ---- horizontal bar chart under each group title ----
+    ".gbar-group { display:flex; flex-direction:column; gap:5px; }" +
+    ".gbar-row { display:flex; align-items:center; gap:7px; }" +
+    ".gbar-lbl { width:86px; flex-shrink:0; font-size:.66rem; font-weight:800; color:#dbe7ff; letter-spacing:.02em;" +
+    " white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }" +
+    ".gbar-track { flex:1; height:9px; border-radius:999px; background:rgba(255,255,255,.12); overflow:hidden;" +
+    " box-shadow:inset 0 1px 2px rgba(20,30,80,.3); }" +
+    ".gbar-fill { display:block; height:100%; border-radius:inherit;" +
+    " box-shadow:0 0 8px rgba(80,120,255,.45), inset 0 -1px 2px rgba(0,0,0,.25), inset 0 1px 1px rgba(255,255,255,.5); }" +
+    ".gbar-val { width:56px; flex-shrink:0; text-align:right; font-size:.72rem; font-weight:850; color:#ffffff; }" +
+    // ---- liquid-glass material for every table & tile (owner's dribbble ref) ----
+    "table { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.32);" +
+    "" +
+    " box-shadow:0 18px 44px rgba(2,4,18,.6), 0 3px 12px rgba(2,4,18,.5), inset 0 1px 0 rgba(255,255,255,.14); }" +
+    "td { background:rgba(34,43,90,.92); }" +
+    "tbody tr:hover td { background:rgba(46,56,112,.95); }" +
+    ".card, .person-card, .tile {" +
+    "" +
+    " box-shadow:0 18px 44px rgba(2,4,18,.6), 0 3px 12px rgba(2,4,18,.5), inset 0 1px 0 rgba(255,255,255,.20), inset 0 -1px 0 rgba(0,0,0,.35); }" +
+    ".card { border:1px solid rgba(170,190,255,.28); }" +
+    ".person-card { border:1px solid rgba(170,190,255,.30); }" +
+    ".csat-chip { }" +
+    // ---- AMC & Bundle tables: side by side, splitting the width ----
+    ".iv-split { display:flex; gap:14px; align-items:flex-start; flex-wrap:wrap; }" +
+    ".iv-split .iv-left { flex:1 1 400px; min-width:0; }" +
+    ".iv-split .iv-left table { width:100%; }" +
+    ".iv-split .iv-right { flex:0 0 200px; width:200px; display:flex; flex-direction:column; gap:12px; }" +
+    ".iv-split .iv-right .card { width:100%; }" +
+    ".inc-pair { display:flex; gap:14px; align-items:stretch; flex-wrap:wrap; }" +
+    ".inc-pair .inc-cat { flex:1 1 46%; min-width:340px; margin-bottom:0; }" +
+    ".inc-pair table { width:100%; }" +
+    // ---- GP margin / discount panels: stacked, each one full-page-width ----
+    ".gp-stack { display:flex; flex-direction:column; gap:16px; }" +
+    ".gp-stack > .section { width:100%; box-sizing:border-box; margin-bottom:0; border:1px solid #d5dde6;" +
+    // ---- Task 47: A–G group banners on the SM master page ----
+    ".group-banner { display:flex; align-items:center; gap:10px; margin:26px 0 12px; padding:8px 14px;" +
+    " border-radius:9px; background:#172b43; color:#f8fbff; }" +
+    ".group-banner:first-child { margin-top:0; }" +
+    ".group-banner .gb-letter { font-size:1.02rem; font-weight:900; background:#ffd477; color:#17263a;" +
+    " border-radius:7px; padding:3px 9px; line-height:1.15; }" +
+    ".group-banner .gb-name { font-size:.9rem; font-weight:800; letter-spacing:.04em; }" +
+    // INDEX overview: headline KPI card pops.
+    "#idx-kpi .value.headline b { font-size:1.06em; }" +
+    " border-radius:9px; background:#ffffff; padding:10px 12px 14px; }" +
+    // ---- job table: fixed layout compressed to the page width ----
+    ".jobwrap { overflow-x:auto; }" +
+        ".jobtable { table-layout:auto; width:max-content; min-width:100%; }" +
+    ".jobtable th, .jobtable td { font-size:.72rem; padding:6px 7px; white-space:nowrap;" +
+    " overflow:visible; text-overflow:clip; font-weight:500; }" +
+    ".jobtable th { font-weight:800; }" +
+
+    // ---- next-slab chase line on the salesperson cards ----
+    ".next-slab { color:#8fc7ff; font-weight:700; }" +
+    // ---- live clock, top-middle of the page ----
+    // no card/frame at all — only the date & time digits, glowing
+    // golden yellow on the topbar.
+    ".topbar-clock { position:relative; overflow:visible; width:400px; height:96px; flex:0 0 auto;" +
+    " padding:0 8px; box-sizing:border-box;" +
+    " display:flex; align-items:center; justify-content:center; background:transparent; border:none; box-shadow:none; }" +
+    ".clock-text { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:1.296rem; font-weight:800;" +
+    " letter-spacing:.05em; color:#ffd34d;" +
+    " background-image:linear-gradient(115deg,#fff3a0 0%,#ffd34d 30%,#fff7c2 50%,#ffcf3d 70%,#ffe989 100%);" +
+    " -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;" +
+    " text-shadow:none;" +  // Task 65 — glittering yellow, no glowing halo
+    " white-space:nowrap; font-variant-numeric:tabular-nums; }" +
+    // ============ TASK 22 — one black-glitter backdrop for ALL pages ============
+    "body { background:#3f444d; color:#dbe4f6; }" +
+    "#globalBgVideo { position:fixed; inset:0; z-index:-1; width:100%; height:100%; object-fit:cover; }" +
+    // index pane no longer needs its own dark shell — the video is global now
+    "#pageIndex { background:none; border-radius:0; overflow:visible; }" +
+    // sticky topbar + tabs as dark liquid glass on the glitter
+    ".topbar { background:rgba(8,12,32,.78);" +
+    " border-bottom:1px solid rgba(170,190,255,.22); }" +
+    ".brand { color:#f5f8ff; text-shadow:0 2px 8px rgba(3,6,24,.7); }" +
+    ".brand-sub { color:#aebcff; font-size:.85rem; font-weight:700; letter-spacing:.04em; }" +
+    ".topbar .meta { color:#aebcff; }" +
+    ".topbar .note.ok { color:#6ee7b7; } .topbar .note.err { color:#ffb4c0; }" +
+    ".tabs { background:rgba(12,17,42,.72); border-color:rgba(170,190,255,.25);" +
+    " box-shadow:0 8px 22px rgba(4,8,26,.45); }" +
+    ".tab-btn { color:#c3cfee; }" +
+    ".tab-btn.active { background:linear-gradient(180deg,#ffffff,#dfe8ff); color:#1b2a52; box-shadow:0 4px 12px rgba(4,8,26,.5); }" +
+    // dark liquid-glass shells for every section on every page
+    ".sec { background:rgba(28,43,82,.60); border-color:rgba(170,190,255,.28);" +
+    "" +
+    " box-shadow:0 14px 34px rgba(4,8,26,.5), inset 0 1px 0 rgba(255,255,255,.10); }" +
+    ".gp-stack > .section { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.28);" +
+    " }" +
+    ".section h2, .sec h2, .section-title { color:#f2f6ff; }" +
+    ".sec-sub, .section-sub, .sec-desc { color:#a9b6d8; }" +
+    ".src-hint { background:rgba(255,255,255,.08); color:#cfe0ff; }" +
+    ".repair-strip { background:rgba(28,43,82,.60); border-color:rgba(170,190,255,.28); }" +
+    ".rs-label { color:#a9b6d8; } .rs-value { color:#ffffff; }" +
+    ".inc-cat-title { color:#cfe0ff; }" +
+    ".wp-head { color:#f2f6ff; }" +
+    ".map-line { color:#94a3bd; } .map-line b { color:#e6edff; }" +
+    ".legend-card { border-color:rgba(170,190,255,.28); }" +
+    ".legend-card b { color:#f2f6ff; } .legend-card .muted { color:#a9b6d8; }" +
+    ".subnote { color:#cfe0ff; }" +
+    // walk-in analysis + token creation locked side by side, sharing the width
+    ".walkin-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:stretch; }" +
+    ".walkin-pair .wp-left, .walkin-pair .wp-right { min-width:0; }" +
+    // three panes side by side — analysis | source | tokens.
+    ".walkin-pair { grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr); }" +
+    ".walkin-pair .wp-mid { min-width:0; background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.18);" +
+    " border-radius:12px; padding:12px; }" +
+    ".srcstable thead th { white-space:normal; }" +
+    ".srcstable td { white-space:normal; word-break:break-word; }" +
+    ".srcstable .totrow td { background:#101a38 !important; color:#ffffff; font-weight:900; border-top:1px solid rgba(142,170,255,.6); }" +
+    // walk-in lane tables: fill their pane, wrap long headers — nothing hidden.
+    ".walkin-pair table.walksum, .walkin-pair table.tokentable, .walkin-pair table.srcstable { width:100%; table-layout:fixed; }" +
+    ".walkin-pair table th, .walkin-pair table td { white-space:normal; word-break:break-word; }" +
+    "@media (max-width:1150px) { .walkin-pair { grid-template-columns:minmax(0,1fr); } }" +
+    ".walkin-pair .wp-right { background:rgba(28,43,82,.60); border:1px solid rgba(170,190,255,.18);" +
+    " border-radius:12px; padding:12px; }" +
+    // job table: entirely left-aligned
+    ".jobtable th, .jobtable td { text-align:left; }" +
+    // owner wants every value on ONE line — cells never wrap, never
+    // truncate; the table grows to content and .jobwrap scrolls sideways.
+    ".jobtable th, .jobtable td { white-space:nowrap; overflow:visible; text-overflow:clip; }" +
+    // case detail popover (click a Case ID).
+    ".caselink { background:none; border:none; color:#9fd7ff; font:inherit; font-weight:800;" +
+    " cursor:pointer; padding:0; text-decoration:underline dotted; }" +
+    ".caselink:hover, .caselink:focus { color:#d9efff; }" +
+    ".casemodal-overlay { position:fixed; inset:0; z-index:80; background:rgba(3,7,24,.72);" +
+    " display:flex; align-items:center; justify-content:center; }" +
+    ".casemodal { background:rgba(28,43,82,.98); border:1px solid rgba(170,190,255,.42); border-radius:14px;" +
+    " padding:16px 18px; max-width:460px; width:92%; box-shadow:0 24px 60px rgba(2,6,28,.7); }" +
+    ".casemodal .cm-top { display:flex; justify-content:space-between; align-items:center;" +
+    " margin-bottom:10px; color:#f2f6ff; font-size:1.02rem; }" +
+    ".casemodal .cm-top button { background:none; border:none; color:#ff9db0; font-size:1.2rem; cursor:pointer; line-height:1; }" +
+    ".casemodal table { width:100%; border-collapse:collapse; font-size:.82rem; }" +
+    ".casemodal td { padding:6px 8px; border-bottom:1px solid rgba(105,132,255,.16); color:#e9edff;" +
+    " vertical-align:top; white-space:normal; }" +
+    ".casemodal td:first-child { color:#9fb4e8; font-weight:700; width:46%; white-space:nowrap; }" +
+    // ============ TASK 39 — weekly revenue-type colours, deck/ops grids ============
+    // Weekly Revenue Analysis: soft per-type tints so the four groups read apart.
+    "#sec-weekly th.wt-svc { color:#8ecbff; }" +
+    "#sec-weekly th.wt-acc { color:#7fe3c2; }" +
+    "#sec-weekly th.wt-rep { color:#ffcf8f; }" +
+    "#sec-weekly th.wt-gp  { color:#b9f08c; }" +
+    "#sec-weekly td.wt-svc { background:rgba(90,150,255,.14) !important; }" +
+    "#sec-weekly td.wt-acc { background:rgba(70,220,185,.11) !important; }" +
+    "#sec-weekly td.wt-rep { background:rgba(255,185,85,.12) !important; }" +
+    "#sec-weekly td.wt-gp  { background:rgba(155,235,105,.10) !important; }" +
+    // Decline Repair & Requote/Win-back side by side (Operation page).
+    ".ops-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:stretch; }" +
+    ".ops-pair > .sec { margin-bottom:0; height:100%; }" +
+    // Deck page: the eight tables as four side-by-side pairs.
+    ".deck-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:stretch; margin-bottom:16px; }" +
+    ".deck-pair > .section { margin-bottom:0; height:100%; }" +
+    "@media (max-width:1100px) { .deck-pair, .ops-pair { grid-template-columns:minmax(0,1fr); } }" +
+    // date-wise table: bigger tiles, high-contrast text and the
+    // alternating light/dark salesperson shades (sp-a = light, sp-b = dark).
+    "#dwTable { font-size:.95rem; }" +
+    "#dwTable th, #dwTable td { padding:10px 12px; }" +
+    "#dwTable .apill { font-size:1rem; padding:4px 11px; }" +
+    "#dwTable td .tgt { font-size:.72rem; color:#c3d0fa; }" +
+    "#dwTable th.grp.sp-a { background:rgba(72,103,205,.62); color:#ffffff; }" +
+    "#dwTable th.grp.sp-b { background:rgba(16,26,70,.85); color:#e5ecff; }" +
+    "#dwTable td.sp-a { background:rgba(96,128,235,.16); }" +
+    "#dwTable td.sp-b { background:rgba(10,16,44,.34); }" +
+    // AR Attachment panel: owner found it washed out after the 60%
+    // background softening; darken the panel/cards and lift the text.
+    "#sec-ar .subpanel { background:rgba(8,14,40,.94); border-color:rgba(140,165,255,.45); }" +
+    "#sec-ar .card { background:rgba(15,23,58,.90); border-color:rgba(140,165,255,.38); color:#ffffff; }" +
+    "#sec-ar .card .label { color:#c9d6ff; }" +
+    "#sec-ar .card .value { color:#ffffff; text-shadow:0 1px 4px rgba(3,6,20,.65); }" +
+    "#sec-ar .card .sub { color:#aebcf0; }" +
+    "#sec-ar .sec-desc { color:#cdd8fb; }" +
+    "#sec-ar .subpanel .muted { color:#9fadde; }" +
+    "#sec-ar .subpanel-head { color:#e8eeff; }" +
+    "#sec-ar p.muted { color:#aebcf0; }" +
+    // jobs table subtitle header row + group-band subtitle chip.
+    ".jobtable tr.bucket-sub-row th { text-align:left !important; font-size:.74rem; letter-spacing:.10em; text-transform:uppercase; color:#ffe08a; background:rgba(20,30,74,.65); border-bottom:1px solid rgba(170,190,255,.35); }" +
+    ".jobtable tr.bucket-cols th { background:#1c2b52; color:#cfe0ff; font-size:.62rem; font-weight:800; letter-spacing:.05em; text-transform:uppercase; white-space:nowrap; }" +
+    // Task 45+46 — margin tables never overflow their tile (ellipsis safety
+    // net) but stay fully readable: the part column gets 38% of a now
+    // full-page-width panel and the invoice sub-line is .7rem, not shrunk.
+    "#sec-gpmargin .hl-half table { table-layout:fixed; width:100%; }" +
+    "#sec-gpmargin .hl-half th, #sec-gpmargin .hl-half td { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }" +
+    "#sec-gpmargin .hl-half th:first-child, #sec-gpmargin .hl-half td:first-child { width:38%; }" +
+    "#sec-gpmargin .cell-sub { display:block; font-size:.7rem; font-weight:700; color:#9fb4e8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }" +
+    "#sec-gpmargin .subpanel-head { font-size:.86rem; }" +
+    ".bucket-sub-note { font-weight:600; letter-spacing:.02em; color:#9fadde; text-transform:none; font-size:.66rem; }" +
+    ".grphead-sub { display:inline-block; margin-right:8px; font-weight:800; color:#ffe08a; font-size:.66rem; letter-spacing:.10em; text-transform:uppercase; }" +
+    // high/low margin tables share a tight two-pane grid.
+    ".hl-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:14px; margin-top:12px; }" +
+    "@media (max-width:900px) { .hl-pair { grid-template-columns:minmax(0,1fr); } }" +
+    "#sec-datewise .legend-card.sp-a { border-left:4px solid rgba(126,156,255,.85); }" +
+    "#sec-datewise .legend-card.sp-b { border-left:4px solid rgba(52,74,170,.95); }" +
+    "#sec-datewise .card .value { font-size:1.55rem; color:#ffffff; }" +
+    "#sec-datewise .card .label { color:#b9c6f2; }" +
+
+    // satisfaction table takes the full width; the chips become one
+    // wrapped horizontal band underneath it (was a narrow right column).
+    ".csat-left table.csat-table { width:100%; table-layout:fixed; }" +
+    ".csat-left table.csat-table th, .csat-left table.csat-table td {" +
+    " white-space:normal; overflow:hidden; text-overflow:clip; word-break:break-word; padding:7px 7px; }" +
+    ".csat-left table.csat-table thead th { font-size:.62rem; letter-spacing:.03em; }" +
+    ".csat-brow { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; }" +
+    ".csat-brow .csat-chip { flex:1 1 170px; width:auto; max-width:100%; }" +
+    // ---- index tiles: lighter glass, brighter luminous fonts ----
+    ".glass-tile { background:rgba(28,43,82,.60);" +
+    " border:1px solid rgba(255,255,255,.55); color:#f4f8ff; opacity:1; isolation:isolate;" +
+    " box-shadow:0 10px 28px rgba(3,7,26,.5), inset 0 1px 0 rgba(255,255,255,.6), inset 0 -10px 18px rgba(255,255,255,.06); }" +
+    ".tile-title { color:#ffffff; text-shadow:0 2px 8px rgba(4,8,26,.85); }" +
+    ".tile-blurb { color:#e6eeff; text-shadow:0 1px 5px rgba(4,8,26,.8); }" +
+    ".tile-stat { color:#e8f0ff; border-top-color:rgba(255,255,255,.40); }" +
+    ".tile-stat b { color:#ffe08a; text-shadow:0 1px 5px rgba(4,8,26,.8); }" +
+    ".tile-soon { color:#ffd477; text-shadow:0 1px 5px rgba(4,8,26,.8); }" +
+    ".tile-soon-sub { color:#e6eeff; }" +
+    ".tile-go { color:#ffd477; } .glass-tile:hover .tile-go { color:#ffe08a; }" +
+    ".tile-icon { filter:drop-shadow(0 2px 4px rgba(4,8,26,.75)); }" +
+    // golden-glitter video hugs the tile outline exactly (same radius, no bleed)
+    ".tile-glitter-vid { inset:0; border-radius:18px; }" +
+    ".glass-tile:hover .tile-glitter-vid, .glass-tile:focus-visible .tile-glitter-vid { opacity:.8; }" +
+    ".glass-tile:hover, .glass-tile:focus-visible {" +
+    " box-shadow:0 16px 36px rgba(3,7,26,.6), inset 0 1px 0 rgba(255,255,255,.7), 0 0 28px rgba(255,205,90,.35); }" +
+    // ============ TASK 23 — gif backdrop, tile fit, tables & chatbot ============
+    // Golden-glitter hover video hugs each tile's outline exactly and always
+    // sits BEHIND the text — it can never block what the tile says.
+    ".glass-tile { overflow:hidden; }" +
+    ".tile-glitter-vid { z-index:0; }" +
+    ".glass-tile .tile-icon, .glass-tile .tile-title, .glass-tile .tile-blurb," +
+    " .glass-tile .tile-data, .glass-tile .tile-soon, .glass-tile .tile-soon-sub," +
+    " .glass-tile .tile-go { position:relative; z-index:2; }" +
+    ".glass-tile .tile-sparkle { z-index:1; }" +
+    ".glass-tile:hover .tile-glitter-vid, .glass-tile:focus-visible .tile-glitter-vid {" +
+    " opacity:.55; filter:brightness(.85) saturate(1.3); }" +
+    // KPI table: expand to the entire page width, hugging the left edge.
+    ".kpi-pair { flex-direction:column; align-items:stretch; }" +
+    ".kpi-pair .kp-left { flex:0 0 auto; width:100%; }" +
+    ".kpi-pair .kp-left table { width:100%; min-width:0; }" +
+    ".kpi-pair .kp-right { flex:0 0 auto; width:100%; }" +
+    // Walk-in / token pair: both sides top-aligned on one line; day-wise
+    // table breaks out below and spans the full page width.
+    ".wp-daytable { margin-top:16px; width:100%; }" +
+    ".wp-daytable .scroll-x { width:100%; }" +
+    ".wp-daytable .walkintable { width:100%; }" +
+    // C-SAT chips: soften the glare — slightly grey-shaded instead of pure white.
+    ".csat-chip { background:rgba(28,43,82,.60); border-color:rgba(170,190,255,.32); box-shadow:0 2px 8px rgba(10,20,50,.18); }" +
+    // Job management: force every cell left (beats .ptable td.num), and bucket
+    // bands sweep from sky blue down to deep navy.
+    ".jobtable th, .jobtable td { text-align:left !important; }" +
+    ".grphead td { background:#1c2b52 !important;" +
+    " border-bottom-color:#8cc9ff !important; box-shadow:0 3px 10px rgba(11,54,114,.5); }" +
+    // ---- floating sheet-search chat bot (every page, bottom-right) ----
+    ".chat-widget { position:fixed; right:18px; bottom:18px; z-index:90; display:flex;" +
+    " flex-direction:column; align-items:flex-end; gap:10px; font-family:inherit; }" +
+    ".chat-fab { display:flex; align-items:center; gap:8px; border:none; cursor:pointer; color:#fff;" +
+    " background:linear-gradient(135deg,#4fb3f5,#0b3672); border-radius:999px; padding:11px 18px;" +
+    " font-size:.82rem; font-weight:800; letter-spacing:.02em;" +
+    " box-shadow:0 10px 26px rgba(4,10,34,.6), inset 0 1px 0 rgba(255,255,255,.4); }" +
+    ".chat-fab:hover { transform:translateY(-2px); box-shadow:0 14px 32px rgba(4,10,34,.7); }" +
+    ".chat-fab-icon { font-size:1.05rem; }" +
+    ".chat-panel { display:none; width:358px; max-width:calc(100vw - 30px); height:430px;" +
+    " transition:width .2s ease, max-height .2s ease;" +
+    " max-height:calc(100vh - 110px); flex-direction:column; overflow:hidden; border-radius:16px;" +
+    " background:rgba(10,15,40,.95); border:1px solid rgba(170,190,255,.3);" +
+    "" +
+    " box-shadow:0 18px 46px rgba(2,6,26,.75); }" +
+    ".chat-panel.open { display:flex; }" +
+    // a mobile/case answer widens the panel to half the page width.
+    ".chat-panel.half { width:50vw; max-width:calc(100vw - 30px); height:70vh; max-height:calc(100vh - 60px); }" +
+    ".chat-head { display:flex; align-items:center; gap:8px; padding:10px 12px;" +
+    " border-bottom:1px solid rgba(170,190,255,.22); color:#f2f6ff; font-size:.85rem; }" +
+    ".chat-head .chat-sub { font-size:.68rem; color:#9fb4e8; font-weight:500; }" +
+    ".chat-close { margin-left:auto; background:none; border:none; color:#9fb4e8; font-size:1.15rem;" +
+    " cursor:pointer; line-height:1; padding:2px 4px; } .chat-close:hover { color:#fff; }" +
+    ".chat-log { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px; }" +
+    ".chat-msg { max-width:92%; padding:8px 11px; border-radius:12px; font-size:.78rem; line-height:1.5; }" +
+    ".chat-msg.user { align-self:flex-end; color:#fff; border-radius:12px 12px 4px 12px;" +
+    " background:linear-gradient(135deg,#2b8ae0,#175fb0); }" +
+    ".chat-msg.bot { align-self:flex-start; color:#e8eefc; border-radius:12px 12px 12px 4px;" +
+    " background:rgba(255,255,255,.09); border:1px solid rgba(170,190,255,.16); }" +
+    ".chat-msg.bot b { color:#ffd477; } .chat-msg.bot .muted { color:#93a5d4; }" +
+    ".chat-title { font-weight:800; color:#cfe0ff; margin-bottom:6px; }" +
+    ".chat-table { width:100%; border-collapse:collapse; margin:6px 0 2px; font-size:.7rem; }" +
+    ".chat-table th { text-align:left; color:#9fb4e8; font-weight:800; padding:3px 5px;" +
+    " border-bottom:1px solid rgba(170,190,255,.28); }" +
+    ".chat-table td { padding:3px 5px; border-bottom:1px solid rgba(170,190,255,.12); vertical-align:top; }" +
+    ".chat-table .num { text-align:right; font-variant-numeric:tabular-nums; }" +
+    ".chat-dots i { display:inline-block; width:5px; height:5px; margin-right:3px; border-radius:50%;" +
+    " background:#9fb4e8; animation:chatBlink 1s infinite; }" +
+    ".chat-dots i:nth-child(2){animation-delay:.2s;} .chat-dots i:nth-child(3){animation-delay:.4s;}" +
+    "@keyframes chatBlink { 0%,80%,100%{opacity:.25;} 40%{opacity:1;} }" +
+    ".chat-inputrow { display:flex; gap:8px; padding:10px 12px; border-top:1px solid rgba(170,190,255,.22); }" +
+    ".chat-input { flex:1; border:1px solid rgba(170,190,255,.3); border-radius:999px; background:rgba(255,255,255,.08);" +
+    " color:#fff; padding:8px 14px; font-size:.8rem; outline:none; }" +
+    ".chat-input::placeholder { color:#8fa3d4; } .chat-input:focus { border-color:#4fb3f5; }" +
+    ".chat-send { border:none; cursor:pointer; border-radius:999px; padding:8px 14px; color:#fff;" +
+    " background:linear-gradient(135deg,#4fb3f5,#0b3672); font-size:.85rem; font-weight:800; }" +
+    "@media (max-width:640px){ .brand{font-size:1.1rem;} .card .value{font-size:1rem;} }" +
+
+    ".mini-export { float:right; border:1px solid rgba(170,190,255,.35); border-radius:8px;" +
+    " background:rgba(18,28,68,.8); color:#bcd0ff; font-size:.68rem; font-weight:800;" +
+    " padding:3px 9px; cursor:pointer; margin-left:10px; letter-spacing:.02em; }" +
+    ".mini-export:hover { background:#223b59; color:#e6eeff; }" +
+    ".mini-export:disabled { opacity:.6; cursor:wait; }" +
+    ".pane-loading { text-align:center; color:#8fa3d4; padding:40px 0; }" +
+    // off-screen sections are not laid out — big win for tab taps and
+    // first paint on lower-end devices.
+    ".wrap .section, .wrap .sec, .wrap .subpanel {" +
+    " content-visibility:auto; contain-intrinsic-size:auto 520px; }" +
+    "" +
+    // ============ TASK 50 — one house look everywhere =====================
+    // Same background colour + the same table texture on every page and every
+    // module; colour now lives ONLY in the text. These end-of-file overrides
+    // neutralise the older per-module surface colours (white/light panels,
+    // per-page table tints) without touching their definitions.
+    // uniform surfaces — one deep-glass background for every panel
+    "/* ==== TASK 50 — one house look everywhere: same background + same table " +
+    "texture on every module; colour lives in the text only ==== */" +
+    ".wrap .section, .wrap .sec, .wrap .subpanel, .wrap .hl-half, .wrap .legend-card," +
+    " .wrap .card, .wrap .tile, .wrap .csat-chip, .wrap .fresh-chip, .wrap .index-hero {" +
+    " background:rgba(28,43,82,.60) !important; border:1px solid rgba(170,190,255,.28) !important; }" +
+    // uniform table texture — EVERY table everywhere, body + cells
+    ".wrap table, .wrap table th, .wrap table td," +
+    " .wrap .jobtable td, .wrap tbody tr, .wrap .deadsum td {" +
+    " background:rgba(28,43,82,.60) !important; color:#eef2ff; }" +
+    // one deeper same-hue shade for header-ish rows so head vs body still reads
+    ".wrap thead th, .wrap thead tr th, .wrap .totrow td, .wrap .bucket-cols th," +
+    " .wrap .bucket-sub-row th, .wrap .grphead td {" +
+    " background:rgba(18,28,68,.80) !important; color:#bcd0ff !important; }" +
+    // meaning stays in the TEXT colour — same semantic palette everywhere
+    ".wrap .pos, .wrap td.csat-pos, .wrap .csat-pos { color:#63e6b7 !important; }" +
+    ".wrap .neg, .wrap td.csat-neg, .wrap .csat-neg { color:#ff9da7 !important; }" +
+    ".wrap td.csat-mid, .wrap .csat-mid { color:#ffd477 !important; }" +
+    ".wrap .jobtable td.comm-neg { color:#ff9da7 !important; }" +
+    ".wrap .jobtable td.comm-pos { color:#63e6b7 !important; }" +
+    ".wrap .jobtable td.comm-warn { color:#ffd477 !important; }" +
+    ".wrap td.dead, .wrap .deadsum td { color:#ff9da7 !important; }" +
+    // ============ TASK 65 — fit, view modes, sizes, colours =================
+    // (a) every "%" number renders 30% bigger (boostPcts wraps short % texts)
+    ".pct-big{font-size:130% !important;}" +
+    // (b) pages & tables fit the width tightly — nothing overflows or clips
+    ".wrap{width:100%;box-sizing:border-box}" +
+    ".section,.sec{width:100%;max-width:100%;box-sizing:border-box}" +
+    "table{width:100%;max-width:100%}" +
+    ".scroll-x{max-width:100%;overflow-x:auto}" +
+    ".ptable td,.ptable th,.jobtable td,.jobtable th{overflow-wrap:break-word}" +
+    // (c) F1 legend — name in yellow, figures white
+    ".legend-card{color:#f6f8ff} .legend-card b{color:#ffe86b}" +
+    ".legend-card .muted{color:#eef2ff}" +
+    // (d) Comm. Updated cells — darker text on a pale light shade
+    ".comm-pos{color:#0a3d24 !important;background:#e7f9ee !important}" +
+    ".comm-neg{color:#7f1d1d !important;background:#fdecec !important}" +
+    ".wrap .jobtable td.comm-pos{color:#0a3d24 !important;background:#e7f9ee !important}" +
+    ".wrap .jobtable td.comm-neg{color:#7f1d1d !important;background:#fdecec !important}" +
+    // (e) mobile/pc switch styling
+    ".vm-toggle{display:flex;gap:5px;margin-top:6px}" +
+    ".vm-btn{font-size:.70rem;font-weight:800;letter-spacing:.03em;padding:4px 11px;" +
+      "border-radius:999px;border:1px solid rgba(170,190,255,.4);background:transparent;color:#cfe0ff;cursor:pointer}" +
+    ".vm-btn.on{background:rgba(255,212,109,.18);border-color:#ffd34d;color:#ffd34d}" +
+    // (f) small screens get the mobile fit automatically (pc stays normal)
+    "@media (max-width:760px){" +
+      " .wrap{padding:10px 8px 28px !important} table{font-size:.72rem}" +
+      " .ptable th,.ptable td,.jobtable th,.jobtable td{padding:4px 6px}" +
+      " .cards{grid-template-columns:repeat(2,minmax(0,1fr)) !important}" +
+      " .topbar-clock{width:auto !important;padding:0 4px} .clock-text{font-size:1rem}" +
+      "}" +
+    "body.v-mob .wrap{padding:10px 8px 28px !important}" +
+    "body.v-mob table{font-size:.70rem}" +
+    "body.v-mob .ptable th,body.v-mob .ptable td,body.v-mob .jobtable th,body.v-mob .jobtable td{padding:4px 5px}" +
+    "body.v-mob .cards{grid-template-columns:repeat(2,minmax(0,1fr)) !important}" +
+    "body.v-mob .card .value{font-size:1.02rem}" +
+    "body.v-mob .topbar-clock{width:auto !important}" +
+    "body.v-mob .tabs-wide{flex-wrap:wrap;justify-content:center}" +
+    ".wrap .grphead td, .wrap .grphead .grphead-sub { color:#ffe08a !important; }" +
+    // ============ TASK 79 — uniform texture: one font/colour/size system =====
+    // The A1-tile template (navy glass tiles, white titles, glass metric chips
+    // sky/mint/lavender/amber, blue-railed per-day strips, glossy bars) plus a
+    // UNIFORM typography scale so every tile & table on INDEX / CRE / TECH /
+    // SM / DECK / PRODUCTIVITY / LOGIC uses the same family, weights & sizes.
+    ":root{--target:#8fc7ff;--achieved:#63e6b7;--percent:#dfb2ff;--balance:#ffd477;--completed:#63efbb;--danger:#ff9da7;--f-label:.60rem;--f-val:.95rem;--f-th:.62rem;--f-td:.74rem;}" +
+    "body{background:linear-gradient(135deg,#E8F4EF 0%,#EDEFFB 45%,#FDEEDF 100%) fixed !important;color:#22304F !important}" +
+    "#globalBgVideo,#globalBgGif{display:none !important}" +
+    // ---- ONE font family & role-wise sizes for the whole dashboard (Task 79)
+    "body,body *{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}" +
+    "table th{font-size:var(--f-th) !important;font-weight:800 !important;letter-spacing:.045em !important;text-transform:uppercase}" +
+    "table td{font-size:var(--f-td) !important;font-weight:600 !important;font-variant-numeric:tabular-nums}" +
+    ".card .label,.metric span,.dreq span{font-size:var(--f-label) !important;font-weight:800 !important;letter-spacing:.045em !important;text-transform:uppercase !important;line-height:1.15 !important}" +
+    ".card .value,.metric strong,.dreq strong{font-size:var(--f-val) !important;font-weight:800 !important;letter-spacing:-.01em !important;line-height:1.15 !important;font-variant-numeric:tabular-nums !important;white-space:nowrap}" +
+    ".rt-head h3,.subpanel-head{font-size:.85rem !important;font-weight:800 !important;letter-spacing:-.01em !important}" +
+    ".status,.badge{font-size:.58rem !important;font-weight:800 !important;letter-spacing:.03em !important;text-transform:uppercase}" +
+    ".legend,.small,.note{font-size:.70rem !important;font-weight:500 !important}" +
+    // ---- readability floor on the LIGHT page + light ink on navy surfaces
+    ".muted{color:#4E5B7E !important}" +
+    ".small,.note{color:#5A6688 !important}" +
+    "a{color:#26337A}" +
+    ".legend{color:#43506E !important}" +
+    // ---- A1 template: navy glass tiles (done-state lighter), white titles
+    ".card{background:rgba(15,23,58,.90) !important;border:1px solid rgba(170,190,255,.28) !important;border-top:none !important;border-radius:12px !important;box-shadow:0 16px 38px rgba(2,4,18,.55), inset 0 1px 0 rgba(255,255,255,.14) !important}" +
+    ".card.rtile.done{background:rgba(28,43,82,.60) !important}" +
+    ".card{color:#f8fbff !important}" +
+    ".card .label{color:#aebdd0 !important}" +
+    ".card .sub{color:#aebdd0 !important}" +
+    ".card .value{color:#f8fbff !important}" +
+    // ---- A1 template: navy glass panels & tables
+    ".subpanel{background:rgba(8,14,40,.94) !important;border-color:rgba(140,165,255,.45) !important;box-shadow:none !important}" +
+    ".legend-card{background:rgba(28,43,82,.60) !important;color:#f6f8ff !important;border-color:rgba(170,190,255,.25) !important;box-shadow:none !important}" +
+    "table.ptable,table.matrix,table.jobtable,table.csat-table{background:rgba(28,43,82,.60) !important;border-color:rgba(105,132,255,.34) !important;box-shadow:0 10px 26px rgba(8,12,48,.38) !important}" +
+    "table th{background:#1c2b52 !important;color:#FFFFFF !important;text-shadow:0 1px 2px rgba(12,20,70,.65) !important}" +
+    "table td{background:rgba(34,43,90,.92) !important;color:#e9edff !important;border-bottom:1px solid rgba(105,132,255,.16) !important}" +
+    "tbody tr:nth-child(even) td{background:rgba(34,43,90,.92) !important}" +
+    "tbody tr:hover td{background:rgba(46,56,112,.95) !important}" +
+    "table.hdr-deep tr.total-row td{background:#101a38 !important}" +
+    ".grphead td{background:#101a38 !important;color:#ffe08a !important}" +
+    // ---- light text wherever light-page ink would sit on navy
+    ".card .muted,.subpanel .muted,table .muted,.legend-card .muted{color:#9FB0D8 !important}" +
+    ".card .small,.card .note,.subpanel .small,.subpanel .note,table .small,table .note{color:#9FB0D8 !important}" +
+    ".card .legend,.subpanel .legend,.legend-card .legend{color:#dbe7ff !important}" +
+    ".card a,.subpanel a{color:#8fc7ff}" +
+    ".subpanel .muted{color:#9fadde !important}" +
+    ".empty-note,.sec-desc2{color:#9fb4e8 !important}" +
+    // ---- A1 template: glass metric chips with the A1 value colours
+    ".metric{background:rgba(255,255,255,.055) !important;border:none !important}" +
+    ".metric span{color:#aebdd0 !important}" +
+    ".metric.t strong,.tgt,.grphead-count{color:#8fc7ff !important}" +
+    ".metric.a strong,.value.pos,.pos{color:#63e6b7 !important}" +
+    ".metric.p strong,.pct{color:#dfb2ff !important}" +
+    ".metric.b strong{color:#ffd477 !important}" +
+    // ---- A1 template: per-day strip (blue rail, icy number)
+    ".dreq{background:rgba(255,255,255,.055) !important;border:none !important;border-left:3px solid rgba(120,160,255,.7) !important}" +
+    ".dreq span{color:#aebdd0 !important}" +
+    ".dreq strong{color:#e9fbff !important}" +
+    // ---- Task 79: baseline strip under each A1 tile ("as-on-day LM · 3-mo avg")
+    ".trend{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}" +
+    ".trend span{flex:1;background:rgba(255,255,255,.055);border-left:3px solid rgba(120,160,255,.7);border-radius:7px;padding:5px 8px;font-size:.56rem;font-weight:700;letter-spacing:.02em;color:#9FB0D8}" +
+    ".trend b{color:#e9fbff;font-variant-numeric:tabular-nums;white-space:nowrap}" +
+    // ---- A1 template: glass status/badge pills (blue-white text)
+    ".status,.badge{background:rgba(255,255,255,.08) !important;border:none !important}" +
+    ".status,.badge,.status.on,.status.pending,.badge.good,.badge.info,.badge.warn,.badge.bad{color:#cfe0ff !important}" +
+    ".comm-yes{color:#63e6b7 !important}" +
+    ".neg{color:#ff9da7 !important}" +
+    ".bal-neg,.bal-warn,.age-warn{color:#ffd477 !important}" +
+    // ---- colourful rails above the navy template
+    ".section>h2,.sec-head h2{background:linear-gradient(90deg,#26337A 0%,#5B3FBF 100%) !important;color:#FFFFFF !important;border-radius:11px;box-shadow:0 6px 16px rgba(38,51,122,.28) !important;padding:10px 14px !important;margin-bottom:11px !important;border:none !important}" +
+    ".subpanel-head{color:#e9edff !important}" +
+    ".rt-head h3{color:#FFFFFF !important}" +
+    ".brand{background:linear-gradient(90deg,#2F7BFF 0%,#9B4BFF 100%);-webkit-background-clip:text;background-clip:text;color:transparent !important;-webkit-text-fill-color:transparent !important}" +
+    ".tabs{background:linear-gradient(90deg,#26337A,#5B3FBF) !important;border:none !important}" +
+    ".tab-btn{color:#D9E2FF !important}" +
+    ".tab-btn.active{background:#FFFFFF !important;color:#26337A !important}" +
+    ".topbar-clock{color:#7A2DBE !important;text-shadow:none !important}" +
+    // subtitles, footers, condition & logic lines live only on the LOGIC page
+    ".sec-desc,p.defline,.brand-sub,.grphead-sub,.subpanel-head .muted{display:none}" +
+    // perfect page-width fit
+    ".wrap,.topbar-inner{max-width:100% !important}" +
+    ".wrap{overflow:hidden}" +
+    ".scroll-x{overflow-x:auto;width:100%}" +
+    "table.ptable,table.matrix,table.jobtable{min-width:100%;table-layout:auto}" +
+    "table{max-width:100%} img,svg,video{max-width:100%}" +
+    // refresh pinned top-right; clock centred
+    ".topbar-inner{position:relative !important}" +
+    ".refresh-btn{position:absolute;top:10px;right:16px;margin:0 !important}" +
+    ".topbar-clock{position:absolute !important;left:50%;top:12px;transform:translateX(-50%);z-index:4}"
+  ) + [
+    /* Colourful professional presentation layer — CSS only */
+    "body{background:linear-gradient(135deg,#edf4ff 0%,#f4efff 48%,#fff6ec 100%) fixed!important;color:#22304d!important}" +
+    ".topbar{background:linear-gradient(110deg,#172554 0%,#263b83 52%,#49318f 100%)!important;border-bottom:1px solid rgba(255,255,255,.16)!important;box-shadow:0 8px 24px rgba(30,41,99,.22)!important}" +
+    ".topbar-inner{max-width:100%!important}.brand{background:linear-gradient(90deg,#fff 0%,#bfe3ff 48%,#e9d5ff 100%);-webkit-background-clip:text;background-clip:text;color:transparent!important;-webkit-text-fill-color:transparent!important}" +
+    ".brand-sub{color:#d7e3ff!important}.topbar .meta{color:#c4d2f5!important}.topbar .note{color:#e6edff!important}.topbar-clock{color:#ffe6a6!important;text-shadow:0 1px 12px rgba(255,230,166,.18)!important}" +
+    ".tabs{background:rgba(255,255,255,.14)!important;border:1px solid rgba(255,255,255,.22)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.12)!important}.tab-btn{color:#e4eaff!important}.tab-btn:hover{background:rgba(255,255,255,.14)!important;color:#fff!important}.tab-btn.active{background:linear-gradient(135deg,#fff 0%,#e8edff 100%)!important;color:#263b83!important;box-shadow:0 4px 12px rgba(9,18,57,.22)!important}" +
+    ".refresh-btn{background:linear-gradient(135deg,#f59e0b 0%,#f97316 100%)!important;border:1px solid rgba(255,255,255,.32)!important;color:#fff!important;box-shadow:0 5px 14px rgba(249,115,22,.25)!important}.refresh-btn:hover{filter:brightness(1.06)}.wrap{max-width:100%!important}" +
+    ".section>h2,.sec-head h2{background:linear-gradient(100deg,#263b83 0%,#5b3db5 58%,#8b45a8 100%)!important;color:#fff!important;border:0!important;border-radius:11px!important;padding:11px 15px!important;box-shadow:0 5px 14px rgba(49,46,129,.18)!important;letter-spacing:.005em!important}" +
+    ".cards{gap:13px!important}.card{position:relative!important;background:linear-gradient(145deg,#fff 0%,#f8faff 100%)!important;color:#1e2d49!important;border:1px solid #dce6f4!important;border-top:3px solid #4f7fe8!important;border-radius:14px!important;box-shadow:0 8px 22px rgba(37,57,110,.09),inset 0 1px 0 #fff!important;transition:transform .16s ease,box-shadow .16s ease!important}" +
+    ".card:nth-child(4n+2){border-top-color:#8b5cf6!important}.card:nth-child(4n+3){border-top-color:#0ea5a4!important}.card:nth-child(4n+4){border-top-color:#f59e0b!important}.card:hover{transform:translateY(-2px);box-shadow:0 12px 26px rgba(37,57,110,.13)!important}.card.rtile.done{background:linear-gradient(145deg,#edfff7 0%,#f8fffc 100%)!important;border-top-color:#10a875!important}" +
+    ".card .label{color:#62718d!important}.card .value{color:#172b52!important}.card .sub,.card .muted{color:#687995!important}" +
+    ".metric{background:linear-gradient(100deg,#f0f5ff 0%,#f7f4ff 100%)!important;border:1px solid #e1e8f6!important;border-radius:9px!important}.metric span{color:#64748b!important}.metric.t strong,.tgt,.grphead-count{color:#2874d0!important}.metric.a strong,.value.pos,.pos{color:#07966d!important}.metric.p strong,.pct{color:#8650c4!important}.metric.b strong{color:#c08313!important}" +
+    ".dreq{background:linear-gradient(100deg,#eef5ff 0%,#f4f0ff 100%)!important;border-left:3px solid #547fe5!important;border-radius:9px!important}.dreq span{color:#65748e!important}.dreq strong{color:#263d70!important}.trend span{background:#f1f6ff!important;border-left-color:#6c8fe9!important;color:#62718c!important}.trend b{color:#263b70!important}" +
+    ".subpanel{background:linear-gradient(145deg,#fff 0%,#fbfcff 100%)!important;border:1px solid #dfe7f2!important;border-radius:14px!important;box-shadow:0 7px 20px rgba(37,57,110,.07)!important}.subpanel-head,.rt-head h3{color:#253a66!important}.legend-card{background:linear-gradient(120deg,#f1f6ff,#f7f1ff)!important;border:1px solid #e1e8f5!important;color:#455878!important}" +
+    "table.ptable,table.matrix,table.jobtable,table.csat-table{background:#fff!important;border:1px solid #dce5f1!important;border-radius:12px!important;box-shadow:0 6px 18px rgba(37,57,110,.07)!important}table th{background:linear-gradient(100deg,#243b80 0%,#4c3a9a 100%)!important;color:#fff!important;border-bottom:0!important;text-shadow:none!important}table td{background:#fff!important;color:#334765!important;border-bottom:1px solid #e9eef6!important}tbody tr:nth-child(even) td{background:#f5f8ff!important}tbody tr:hover td{background:#eaf2ff!important}table.hdr-deep tr.total-row td{background:#e9efff!important;color:#253b76!important}.grphead td{background:#eeeaff!important;color:#523b9a!important}" +
+    ".status,.badge{background:#edf3ff!important;color:#365d9e!important;border:1px solid #dce7fb!important}.status.on,.badge.good{background:#e5f8ef!important;color:#087b55!important;border-color:#c7eddb!important}.status.pending,.badge.warn{background:#fff5df!important;color:#986a0d!important;border-color:#f6e4b7!important}.badge.bad{background:#fff0f1!important;color:#b43d4b!important;border-color:#f4d5da!important}.comm-yes{color:#07966d!important}.neg{color:#d34755!important}.bal-neg,.bal-warn,.age-warn{color:#b77a0e!important}" +
+    ".card a,.subpanel a{color:#2869bd!important}.muted,.small,.legend{color:#65758f!important}.chat-fab{background:linear-gradient(135deg,#273d83 0%,#6842a9 100%)!important;border:1px solid rgba(255,255,255,.35)!important;box-shadow:0 8px 22px rgba(49,46,129,.28)!important}.chat-panel{border:1px solid #dce5f1!important;box-shadow:0 16px 42px rgba(30,41,99,.2)!important}.chat-head{background:linear-gradient(100deg,#243b80,#563a9a)!important}" +
+    ".scroll-x::-webkit-scrollbar-thumb{background:linear-gradient(90deg,#7295e9,#a48ae4)!important}@media(max-width:700px){.topbar-clock{color:#ffe6a6!important}.card:hover{transform:none}}"
   ].join("");
 }
-
 /* ==========================================================================
  * 16 · PUBLIC ENDPOINTS                                                   *
  * ======================================================================== */
@@ -5674,12 +8114,27 @@ function getDashboardCss_() {
  * repeat visits are near-instant. Opening the URL with "?refresh=1" (what
  * the on-page Refresh button does) skips the cache and recomputes.
  */
+
+/**
+ * ACCESS (Task 78) — OPEN TO EVERYONE.
+ * The dashboard no longer asks for a Google account: the page, the refresh
+ * endpoint, the table-export endpoint and the sheet-search endpoint answer
+ * ANY visitor, signed in or not. No email is read server-side.
+ *
+ * DEPLOYMENT NOTE (Web app): set "Execute as: Me" and "Who has access:
+ * Anyone". "Anyone" (not "Anyone with Google account") means the visitor's
+ * browser never hits a Google sign-in wall — the sheet is read with the
+ * script owner's authority, and sessions stay anonymous.
+ */
+
 function doGet(e) {
+  // Task 78 — public access: no login gate; anyone with the link can view.
+  try {
   var wantsFresh = !!(e && e.parameter && e.parameter.refresh);
   // deep-linkable tabs: "?page=cre" serves the CRE pane already
   // visible, so navigation keeps working even where inline JS is stripped.
   var page = (e && e.parameter && e.parameter.page) ? String(e.parameter.page).toLowerCase() : "index";
-  if (["index", "cre", "tech", "sm"].indexOf(page) === -1) page = "index";
+  if (["index", "cre", "tech", "sm", "deck", "productivity", "logic"].indexOf(page) === -1) page = "index";
   var cache = CacheService.getScriptCache();
 
   // ---- fast page loads, three tiers --------------------------------------
@@ -5696,7 +8151,7 @@ function doGet(e) {
         var metaJ = cache.get("dash_meta_v6");
         if (metaJ) {
           var panes = {}, cold = false;
-          ["index", "cre", "tech", "sm"].forEach(function (pg) {
+          ["index", "cre", "tech", "sm", "deck", "productivity", "logic"].forEach(function (pg) {
             var h = paneCacheGet_(cache, "dash_pane_v6_" + pg);
             if (h == null) cold = true; else panes[pg] = h;
           });
@@ -5741,6 +8196,27 @@ function doGet(e) {
     .setTitle("Sales Performance Dashboard")
     .addMetaTag("viewport", "width=device-width, initial-scale=1")
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  } catch (fatal) {
+    // Task 66 — broken sheet structure (e.g. renamed crm headers) shows a
+    // readable error card with the parser's findings, not a bare stack.
+    return buildDataErrorPage_(fatal);
+  }
+}
+
+/** Task 66 — styled card for sheet-structure/load failures. */
+function buildDataErrorPage_(err) {
+  var msg = str_(err && err.message ? err.message : err).replace(/</g, "&lt;");
+  return HtmlService.createHtmlOutput(
+    "<!DOCTYPE html><html><head><meta charset='utf-8'>" +
+    "<meta name='viewport' content='width=device-width, initial-scale=1'><title>Data load error</title>" +
+    "<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b1020;color:#dfe6ff;font:15px/1.6 system-ui,sans-serif}" +
+    ".card{max-width:700px;margin:16px;padding:28px 32px;border:1px solid rgba(255,120,120,.45);border-radius:14px;background:rgba(255,60,60,.06)}" +
+    ".t{font-size:26px}.card b{display:block;margin-top:8px;font-size:17px}" +
+    "pre{white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,.35);padding:12px 14px;border-radius:10px;font-size:12.5px;line-height:1.55;color:#ffd7d7}</style>" +
+    "</head><body><div class='card'><div class='t'>⚠️</div><b>Dashboard data could not be loaded</b>" +
+    "<p>A required sheet/tab structure was not found. Fix the headers listed below, then reload.</p>" +
+    "<pre>" + msg + "</pre></div></body></html>")
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
 /**
@@ -5769,7 +8245,10 @@ function refreshDashboardSections() {
     index: panes.index,
     cre: panes.cre,
     tech: panes.tech,
-    sm: panes.sm
+    sm: panes.sm,
+    deck: panes.deck,
+    productivity: panes.productivity,
+    logic: panes.logic
   });
 }
 
